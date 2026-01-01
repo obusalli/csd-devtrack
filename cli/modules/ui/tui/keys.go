@@ -59,20 +59,20 @@ func DefaultKeyMap() KeyMap {
 	return KeyMap{
 		// Navigation
 		Up: key.NewBinding(
-			key.WithKeys("up", "k"),
-			key.WithHelp("↑/k", "up"),
+			key.WithKeys("up"),
+			key.WithHelp("↑", "up"),
 		),
 		Down: key.NewBinding(
 			key.WithKeys("down", "j"),
 			key.WithHelp("↓/j", "down"),
 		),
 		Left: key.NewBinding(
-			key.WithKeys("left", "h"),
-			key.WithHelp("←/h", "left"),
+			key.WithKeys("left"),
+			key.WithHelp("←", "left"),
 		),
 		Right: key.NewBinding(
-			key.WithKeys("right", "l"),
-			key.WithHelp("→/l", "right"),
+			key.WithKeys("right"),
+			key.WithHelp("→", "right"),
 		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup", "ctrl+u"),
@@ -83,8 +83,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("PgDn", "page down"),
 		),
 		Home: key.NewBinding(
-			key.WithKeys("home", "g"),
-			key.WithHelp("Home/g", "go to start"),
+			key.WithKeys("home"),
+			key.WithHelp("Home", "go to start"),
 		),
 		End: key.NewBinding(
 			key.WithKeys("end", "G"),
@@ -153,12 +153,12 @@ func DefaultKeyMap() KeyMap {
 
 		// Project actions
 		Build: key.NewBinding(
-			key.WithKeys("b"),
-			key.WithHelp("b", "build"),
+			key.WithKeys("f5"),
+			key.WithHelp("F5", "build"),
 		),
 		BuildAll: key.NewBinding(
-			key.WithKeys("B"),
-			key.WithHelp("B", "build all"),
+			key.WithKeys("ctrl+b"),
+			key.WithHelp("C-b", "build all"),
 		),
 		Run: key.NewBinding(
 			key.WithKeys("r"),
@@ -169,30 +169,30 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("s", "stop"),
 		),
 		Restart: key.NewBinding(
-			key.WithKeys("R"),
-			key.WithHelp("R", "restart"),
+			key.WithKeys("ctrl+r"),
+			key.WithHelp("C-r", "restart"),
 		),
 		Kill: key.NewBinding(
-			key.WithKeys("K"),
-			key.WithHelp("K", "kill"),
+			key.WithKeys("k"),
+			key.WithHelp("k", "kill"),
 		),
 		Logs: key.NewBinding(
-			key.WithKeys("L"),
-			key.WithHelp("L", "view logs"),
+			key.WithKeys("ctrl+l"),
+			key.WithHelp("C-l", "view logs"),
 		),
 
-		// Git
+		// Git (in Git view only)
 		GitStatus: key.NewBinding(
-			key.WithKeys("g"),
-			key.WithHelp("g", "git status"),
+			key.WithKeys("S"),
+			key.WithHelp("S", "git status"),
 		),
 		GitDiff: key.NewBinding(
-			key.WithKeys("d"),
-			key.WithHelp("d", "git diff"),
+			key.WithKeys("D"),
+			key.WithHelp("D", "git diff"),
 		),
 		GitLog: key.NewBinding(
-			key.WithKeys("c"),
-			key.WithHelp("c", "git log"),
+			key.WithKeys("H"),
+			key.WithHelp("H", "git history"),
 		),
 
 		// Other

@@ -1,5 +1,6 @@
 # Binaries
 targets/
+cli/csd-devtrack
 *.exe
 *.exe~
 *.dll

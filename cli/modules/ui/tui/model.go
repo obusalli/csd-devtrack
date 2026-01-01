@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	"csd-devtrack/cli/modules/ui/core"
@@ -511,32 +512,31 @@ func (m *Model) handleEnter() tea.Cmd {
 // handleActionKey handles action keys (b, r, s, etc.)
 func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
+	keyLower := strings.ToLower(key)
 
-	// Quick view navigation shortcuts (work from anywhere)
-	switch key {
+	// Quick view navigation shortcuts (work from anywhere, case insensitive)
+	// These ALWAYS navigate to views - no exceptions
+	switch keyLower {
 	case "d":
-		if m.currentView == core.VMGit {
-			return m.sendEvent(core.NewEvent(core.EventGitDiff).WithProject(m.getSelectedProjectID()))
-		}
-		// d -> Dashboard (if not in git view)
+		// d/D -> Dashboard
 		return m.selectView(0)
 	case "p":
-		// p -> Projects
+		// p/P -> Projects
 		return m.selectView(1)
+	case "b":
+		// b/B -> Build
+		return m.selectView(2)
 	case "o":
-		// o -> prOcesses
+		// o/O -> prOcesses
 		return m.selectView(3)
 	case "l":
-		// l -> Logs
+		// l/L -> Logs
 		return m.selectView(4)
 	case "g":
-		// g -> Git
+		// g/G -> Git
 		return m.selectView(5)
 	case "c":
-		if m.currentView == core.VMGit {
-			return m.sendEvent(core.NewEvent(core.EventGitLog).WithProject(m.getSelectedProjectID()))
-		}
-		// c -> Config (if not in git view)
+		// c/C -> Config
 		return m.selectView(6)
 	}
 
@@ -579,25 +579,35 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
-	// Action keys
+	// Git view specific keys (use uppercase to avoid conflict with navigation)
+	if m.currentView == core.VMGit {
+		switch key {
+		case "D": // Shift+D for diff
+			return m.sendEvent(core.NewEvent(core.EventGitDiff).WithProject(m.getSelectedProjectID()))
+		case "H": // H for history (log)
+			return m.sendEvent(core.NewEvent(core.EventGitLog).WithProject(m.getSelectedProjectID()))
+		}
+	}
+
+	// Action keys (use F-keys and special keys to avoid conflicts)
 	switch key {
-	case "b":
+	case "f5":
+		// F5 to build selected project
 		return m.buildSelected()
-	case "B":
+	case "ctrl+b":
+		// Ctrl+B to build all
 		return m.buildAll()
 	case "r":
 		return m.runSelected()
 	case "s":
 		return m.stopSelected()
-	case "R":
+	case "ctrl+r":
 		return m.restartSelected()
-	case "K":
+	case "k":
 		m.dialogType = "kill"
 		m.dialogMessage = "Kill the selected process?"
 		m.showDialog = true
 		return nil
-	case "L":
-		return m.viewLogs()
 	}
 	return nil
 }
