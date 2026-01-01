@@ -266,7 +266,7 @@ func (m *Model) renderFooter() string {
 			)
 		}
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("type")+HelpDescStyle.Render(" search  "),
+			HelpKeyStyle.Render("/ or type")+HelpDescStyle.Render(" search  "),
 			HelpKeyStyle.Render("x")+HelpDescStyle.Render(" clear  "),
 			HelpKeyStyle.Render("e")+HelpDescStyle.Render(" err  "),
 			HelpKeyStyle.Render("w")+HelpDescStyle.Render(" warn  "),
@@ -1753,7 +1753,7 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		"  Ctrl+C    Cancel current build",
 		"",
 		HelpKeyStyle.Render("Logs"),
-		"  <type>    Search logs (direct input)",
+		"  / or type Start search (direct input)",
 		"  e w i a   Filter: error/warn/info/all",
 		"  x/Del     Clear search",
 		"  Bksp      Delete last char",

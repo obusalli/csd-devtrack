@@ -1013,6 +1013,12 @@ func (m *Model) handleLogsKeyInput(msg tea.KeyMsg) bool {
 		return false
 	}
 
+	// '/' focuses on search field (already focused, just a noop to indicate ready)
+	if key == "/" {
+		// Already in search mode, just consume the key
+		return true
+	}
+
 	// Level filter shortcuts
 	switch key {
 	case "e":
