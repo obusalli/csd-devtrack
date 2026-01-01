@@ -1,9 +1,14 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"csd-devtrack/cli/modules/core/projects"
+	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/ui/core"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -13,6 +18,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// BrowserEntry represents a directory entry in the file browser
+type BrowserEntry struct {
+	Name      string
+	IsDir     bool
+	IsProject bool // Has detectable project structure
+	Path      string
+}
+
+// DetectedProjectInfo holds info about a detected project
+type DetectedProjectInfo struct {
+	Name       string
+	Path       string
+	Type       string   // full-stack, backend-only, etc.
+	Components []string // agent, cli, backend, frontend
+}
 
 // FocusArea represents which area has focus
 type FocusArea int
@@ -67,6 +88,12 @@ type Model struct {
 	// Build profiles
 	currentBuildProfile string // "dev", "test", "prod"
 
+	// Config view - file browser state
+	configMode      string   // "projects", "browser", "settings"
+	browserPath     string   // Current directory path
+	browserEntries  []BrowserEntry // Directory entries (uses mainIndex for selection)
+	detectedProject *DetectedProjectInfo // Detected project in current dir
+
 	// Components
 	help     help.Model
 	spinner  spinner.Model
@@ -93,6 +120,12 @@ func NewModel(presenter core.Presenter) *Model {
 	h.Styles.ShortDesc = HelpDescStyle
 	h.Styles.ShortSeparator = HelpDescStyle
 
+	// Get initial browser path (home directory)
+	homeDir, _ := os.UserHomeDir()
+	if homeDir == "" {
+		homeDir, _ = os.Getwd()
+	}
+
 	return &Model{
 		presenter:           presenter,
 		state:               core.NewAppState(),
@@ -105,7 +138,9 @@ func NewModel(presenter core.Presenter) *Model {
 		notifications:       make([]*core.Notification, 0),
 		visibleMainRows:     10,
 		visibleDetailRows:   5,
-		currentBuildProfile: "dev", // Default to dev profile
+		currentBuildProfile: "dev",   // Default to dev profile
+		configMode:          "projects", // Start with projects view
+		browserPath:         homeDir,
 	}
 }
 
@@ -589,6 +624,69 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
+	// Config view specific keys
+	if m.currentView == core.VMConfig {
+		switch key {
+		case "1":
+			m.configMode = "projects"
+			m.mainIndex = 0
+			return nil
+		case "2":
+			m.configMode = "browser"
+			m.loadBrowserEntries()
+			return nil
+		case "3":
+			m.configMode = "settings"
+			return nil
+		case "enter":
+			if m.configMode == "browser" {
+				m.enterBrowserDirectory()
+				return nil
+			}
+		case "backspace":
+			if m.configMode == "browser" && m.browserPath != "/" {
+				m.browserPath = filepath.Dir(m.browserPath)
+				m.mainIndex = 0
+				m.loadBrowserEntries()
+				return nil
+			}
+		case "a", "A":
+			// Add project to config
+			if m.configMode == "browser" && m.detectedProject != nil {
+				if !m.isProjectInConfig(m.detectedProject.Path) {
+					if err := m.addProjectToConfig(); err == nil {
+						m.loadBrowserEntries() // Refresh
+					}
+				}
+				return nil
+			}
+		case "x", "X":
+			// Remove project from config
+			if m.configMode == "projects" {
+				cfg := config.GetGlobal()
+				if cfg != nil && m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
+					path := cfg.Projects[m.mainIndex].Path
+					if err := m.removeProjectFromConfig(path); err == nil {
+						if m.mainIndex >= len(cfg.Projects)-1 {
+							m.mainIndex = len(cfg.Projects) - 2
+							if m.mainIndex < 0 {
+								m.mainIndex = 0
+							}
+						}
+					}
+				}
+				return nil
+			} else if m.configMode == "browser" && m.detectedProject != nil {
+				if m.isProjectInConfig(m.detectedProject.Path) {
+					if err := m.removeProjectFromConfig(m.detectedProject.Path); err == nil {
+						m.loadBrowserEntries() // Refresh
+					}
+				}
+				return nil
+			}
+		}
+	}
+
 	// Action keys (use F-keys and special keys to avoid conflicts)
 	switch key {
 	case "f5":
@@ -844,4 +942,193 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// ============================================================================
+// File Browser functions for Config view
+// ============================================================================
+
+// loadBrowserEntries loads directory entries for the file browser
+func (m *Model) loadBrowserEntries() {
+	entries, err := os.ReadDir(m.browserPath)
+	if err != nil {
+		m.browserEntries = nil
+		return
+	}
+
+	m.browserEntries = make([]BrowserEntry, 0)
+	detector := projects.NewDetector()
+	cfg := config.GetGlobal()
+
+	// Add parent directory entry
+	if m.browserPath != "/" {
+		m.browserEntries = append(m.browserEntries, BrowserEntry{
+			Name:  "..",
+			IsDir: true,
+			Path:  filepath.Dir(m.browserPath),
+		})
+	}
+
+	// Process directory entries
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue // Only show directories
+		}
+
+		name := entry.Name()
+		// Skip hidden directories
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+
+		fullPath := filepath.Join(m.browserPath, name)
+		browserEntry := BrowserEntry{
+			Name:  name,
+			IsDir: true,
+			Path:  fullPath,
+		}
+
+		// Check if this is a detectable project
+		if proj, err := detector.DetectProject(fullPath); err == nil && len(proj.Components) > 0 {
+			browserEntry.IsProject = true
+		}
+
+		// Check if already in config
+		if cfg != nil {
+			for _, p := range cfg.Projects {
+				if p.Path == fullPath {
+					browserEntry.IsProject = true
+					break
+				}
+			}
+		}
+
+		m.browserEntries = append(m.browserEntries, browserEntry)
+	}
+
+	// Sort: directories first, then by name
+	sort.Slice(m.browserEntries, func(i, j int) bool {
+		if m.browserEntries[i].Name == ".." {
+			return true
+		}
+		if m.browserEntries[j].Name == ".." {
+			return false
+		}
+		return m.browserEntries[i].Name < m.browserEntries[j].Name
+	})
+
+	// Update detected project for current directory
+	m.updateDetectedProject()
+}
+
+// updateDetectedProject checks if the current directory is a project
+func (m *Model) updateDetectedProject() {
+	detector := projects.NewDetector()
+	proj, err := detector.DetectProject(m.browserPath)
+	if err != nil || len(proj.Components) == 0 {
+		m.detectedProject = nil
+		return
+	}
+
+	// Build component list
+	var components []string
+	for compType := range proj.Components {
+		components = append(components, string(compType))
+	}
+
+	m.detectedProject = &DetectedProjectInfo{
+		Name:       proj.Name,
+		Path:       proj.Path,
+		Type:       string(proj.Type),
+		Components: components,
+	}
+}
+
+// isProjectInConfig checks if a path is already in config
+func (m *Model) isProjectInConfig(path string) bool {
+	cfg := config.GetGlobal()
+	if cfg == nil {
+		return false
+	}
+	for _, p := range cfg.Projects {
+		if p.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// getProjectFromConfig returns the project config for a path
+func (m *Model) getProjectFromConfig(path string) *projects.Project {
+	cfg := config.GetGlobal()
+	if cfg == nil {
+		return nil
+	}
+	for i, p := range cfg.Projects {
+		if p.Path == path {
+			return &cfg.Projects[i]
+		}
+	}
+	return nil
+}
+
+// addProjectToConfig adds the detected project to config
+func (m *Model) addProjectToConfig() error {
+	if m.detectedProject == nil {
+		return nil
+	}
+
+	detector := projects.NewDetector()
+	proj, err := detector.DetectProject(m.detectedProject.Path)
+	if err != nil {
+		return err
+	}
+
+	cfg := config.GetGlobal()
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+
+	// Check if already exists
+	for _, p := range cfg.Projects {
+		if p.Path == proj.Path {
+			return nil // Already in config
+		}
+	}
+
+	cfg.Projects = append(cfg.Projects, *proj)
+	return config.SaveGlobal()
+}
+
+// removeProjectFromConfig removes a project from config by path
+func (m *Model) removeProjectFromConfig(path string) error {
+	cfg := config.GetGlobal()
+	if cfg == nil {
+		return nil
+	}
+
+	newProjects := make([]projects.Project, 0)
+	for _, p := range cfg.Projects {
+		if p.Path != path {
+			newProjects = append(newProjects, p)
+		}
+	}
+	cfg.Projects = newProjects
+	return config.SaveGlobal()
+}
+
+// enterBrowserDirectory enters the selected directory
+func (m *Model) enterBrowserDirectory() {
+	if m.mainIndex < 0 || m.mainIndex >= len(m.browserEntries) {
+		return
+	}
+
+	entry := m.browserEntries[m.mainIndex]
+	if !entry.IsDir {
+		return
+	}
+
+	m.browserPath = entry.Path
+	m.mainIndex = 0
+	m.loadBrowserEntries()
 }

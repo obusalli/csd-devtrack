@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"csd-devtrack/cli/modules"
+	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/ui/core"
 
 	"github.com/charmbracelet/lipgloss"
@@ -1029,21 +1030,56 @@ func (m *Model) renderGit(width, height int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel)
 }
 
-// renderConfig renders the config view
+// renderConfig renders the config view with tabs
 func (m *Model) renderConfig(width, height int) string {
-	vm := m.state.Config
-	if vm == nil {
-		return m.renderLoading()
+	// Load browser entries if not loaded
+	if m.configMode == "browser" && len(m.browserEntries) == 0 {
+		m.loadBrowserEntries()
 	}
 
-	title := PanelTitleStyle.Render("Configuration")
-	pathInfo := SubtitleStyle.Render(fmt.Sprintf("Config: %s", vm.ConfigPath))
+	// Tab styles
+	tabActive := lipgloss.NewStyle().
+		Background(ColorPrimary).
+		Foreground(lipgloss.Color("#000")).
+		Padding(0, 2).
+		Bold(true)
+	tabInactive := lipgloss.NewStyle().
+		Background(lipgloss.Color("#444")).
+		Foreground(lipgloss.Color("#fff")).
+		Padding(0, 2)
 
-	// Settings
-	var settingsLines []string
-	for key, value := range vm.Settings {
-		settingsLines = append(settingsLines,
-			fmt.Sprintf("  %s: %v", key, value))
+	// Render tabs
+	var tabs []string
+	modes := []struct {
+		key  string
+		name string
+	}{
+		{"projects", "[1] Projects"},
+		{"browser", "[2] Browser"},
+		{"settings", "[3] Settings"},
+	}
+	for _, mode := range modes {
+		if m.configMode == mode.key {
+			tabs = append(tabs, tabActive.Render(mode.name))
+		} else {
+			tabs = append(tabs, tabInactive.Render(mode.name))
+		}
+	}
+	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+
+	// Render content based on mode
+	var content string
+	contentHeight := height - 6
+
+	switch m.configMode {
+	case "projects":
+		content = m.renderConfigProjects(width-4, contentHeight)
+	case "browser":
+		content = m.renderConfigBrowser(width-4, contentHeight)
+	case "settings":
+		content = m.renderConfigSettings(width-4, contentHeight)
+	default:
+		content = m.renderConfigProjects(width-4, contentHeight)
 	}
 
 	var style lipgloss.Style
@@ -1055,12 +1091,249 @@ func (m *Model) renderConfig(width, height int) string {
 
 	return style.Width(width - 2).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
-			title,
-			pathInfo,
+			tabBar,
 			"",
-			PanelTitleStyle.Render("Settings"),
-			strings.Join(settingsLines, "\n"),
+			content,
 		),
+	)
+}
+
+// renderConfigProjects renders the projects list in config view
+func (m *Model) renderConfigProjects(width, height int) string {
+	cfg := config.GetGlobal()
+	if cfg == nil || len(cfg.Projects) == 0 {
+		return SubtitleStyle.Render("No projects configured.\nUse [2] Browser to add projects.")
+	}
+
+	title := PanelTitleStyle.Render(fmt.Sprintf("Configured Projects (%d)", len(cfg.Projects)))
+
+	var rows []string
+	for i, proj := range cfg.Projects {
+		indicator := "  "
+		style := lipgloss.NewStyle()
+		if i == m.mainIndex && m.focusArea == FocusMain {
+			indicator = "> "
+			style = TableRowSelectedStyle
+		}
+
+		// Component badges
+		var compBadges []string
+		for compType := range proj.Components {
+			compBadges = append(compBadges, string(compType))
+		}
+		comps := ""
+		if len(compBadges) > 0 {
+			comps = lipgloss.NewStyle().
+				Foreground(ColorSecondary).
+				Render(" [" + strings.Join(compBadges, ",") + "]")
+		}
+
+		row := fmt.Sprintf("%s%s%s", indicator, proj.Name, comps)
+		rows = append(rows, style.Render(row))
+	}
+
+	// Show selected project details
+	var details string
+	if m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
+		proj := cfg.Projects[m.mainIndex]
+		details = "\n" + lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorMuted).
+			Padding(0, 1).
+			Render(
+				lipgloss.JoinVertical(lipgloss.Left,
+					PanelTitleStyle.Render(proj.Name),
+					fmt.Sprintf("Path: %s", proj.Path),
+					fmt.Sprintf("Type: %s", proj.Type),
+					"",
+					"[Enter] View details  [x] Remove from config",
+				),
+			)
+	}
+
+	m.maxMainItems = len(cfg.Projects)
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		title,
+		"",
+		strings.Join(rows, "\n"),
+		details,
+	)
+}
+
+// renderConfigBrowser renders the file browser in config view
+func (m *Model) renderConfigBrowser(width, height int) string {
+	// Path display
+	pathStyle := lipgloss.NewStyle().
+		Foreground(ColorSecondary).
+		Bold(true)
+	pathDisplay := pathStyle.Render("📁 " + m.browserPath)
+
+	// Detected project info
+	var projectInfo string
+	if m.detectedProject != nil {
+		inConfig := m.isProjectInConfig(m.detectedProject.Path)
+		var actionHint string
+		if inConfig {
+			actionHint = lipgloss.NewStyle().
+				Foreground(ColorWarning).
+				Render("[x] Remove from config")
+		} else {
+			actionHint = lipgloss.NewStyle().
+				Foreground(ColorSuccess).
+				Render("[a] Add to config")
+		}
+
+		projectInfo = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorSuccess).
+			Padding(0, 1).
+			Render(
+				lipgloss.JoinVertical(lipgloss.Left,
+					PanelTitleStyle.Render("✓ Project Detected: "+m.detectedProject.Name),
+					fmt.Sprintf("Type: %s", m.detectedProject.Type),
+					fmt.Sprintf("Components: %s", strings.Join(m.detectedProject.Components, ", ")),
+					"",
+					actionHint,
+				),
+			)
+	}
+
+	// Directory listing
+	var rows []string
+	visibleRows := height - 10
+	if projectInfo != "" {
+		visibleRows -= 6
+	}
+
+	startIdx := 0
+	if m.mainIndex >= visibleRows {
+		startIdx = m.mainIndex - visibleRows + 1
+	}
+
+	for i, entry := range m.browserEntries {
+		if i < startIdx || i >= startIdx+visibleRows {
+			continue
+		}
+
+		indicator := "  "
+		style := lipgloss.NewStyle()
+		if i == m.mainIndex && m.focusArea == FocusMain {
+			indicator = "> "
+			style = TableRowSelectedStyle
+		}
+
+		icon := "📁"
+		if entry.Name == ".." {
+			icon = "⬆️"
+		}
+
+		suffix := ""
+		if entry.IsProject {
+			if m.isProjectInConfig(entry.Path) {
+				suffix = lipgloss.NewStyle().
+					Foreground(ColorSuccess).
+					Render(" ✓ configured")
+			} else {
+				suffix = lipgloss.NewStyle().
+					Foreground(ColorWarning).
+					Render(" ★ project")
+			}
+		}
+
+		row := fmt.Sprintf("%s%s %s%s", indicator, icon, entry.Name, suffix)
+		rows = append(rows, style.Render(row))
+	}
+
+	// Scroll indicator
+	scrollInfo := ""
+	if len(m.browserEntries) > visibleRows {
+		scrollInfo = SubtitleStyle.Render(
+			fmt.Sprintf(" [%d/%d]", m.mainIndex+1, len(m.browserEntries)))
+	}
+
+	m.maxMainItems = len(m.browserEntries)
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		pathDisplay+scrollInfo,
+		"",
+		strings.Join(rows, "\n"),
+	)
+
+	if projectInfo != "" {
+		content = lipgloss.JoinVertical(lipgloss.Left,
+			content,
+			"",
+			projectInfo,
+		)
+	}
+
+	return content
+}
+
+// renderConfigSettings renders the settings in config view
+func (m *Model) renderConfigSettings(width, height int) string {
+	vm := m.state.Config
+	if vm == nil {
+		return m.renderLoading()
+	}
+
+	title := PanelTitleStyle.Render("Settings")
+	pathInfo := SubtitleStyle.Render(fmt.Sprintf("Config file: %s", vm.ConfigPath))
+
+	// Settings with categories
+	var sections []string
+
+	// Build settings
+	sections = append(sections, lipgloss.NewStyle().
+		Foreground(ColorSecondary).
+		Bold(true).
+		Render("Build"))
+	if val, ok := vm.Settings["parallel_builds"]; ok {
+		sections = append(sections, fmt.Sprintf("  Parallel builds: %v", val))
+	}
+
+	// Logging
+	sections = append(sections, "", lipgloss.NewStyle().
+		Foreground(ColorSecondary).
+		Bold(true).
+		Render("Logging"))
+	if val, ok := vm.Settings["log_buffer_size"]; ok {
+		sections = append(sections, fmt.Sprintf("  Buffer size: %v", val))
+	}
+	if val, ok := vm.Settings["log_level"]; ok {
+		sections = append(sections, fmt.Sprintf("  Log level: %v", val))
+	}
+
+	// Web server
+	sections = append(sections, "", lipgloss.NewStyle().
+		Foreground(ColorSecondary).
+		Bold(true).
+		Render("Web Server"))
+	if val, ok := vm.Settings["web_enabled"]; ok {
+		sections = append(sections, fmt.Sprintf("  Enabled: %v", val))
+	}
+	if val, ok := vm.Settings["web_port"]; ok {
+		sections = append(sections, fmt.Sprintf("  Port: %v", val))
+	}
+
+	// UI
+	sections = append(sections, "", lipgloss.NewStyle().
+		Foreground(ColorSecondary).
+		Bold(true).
+		Render("UI"))
+	if val, ok := vm.Settings["theme"]; ok {
+		sections = append(sections, fmt.Sprintf("  Theme: %v", val))
+	}
+	if val, ok := vm.Settings["refresh_rate"]; ok {
+		sections = append(sections, fmt.Sprintf("  Refresh rate: %vms", val))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		title,
+		pathInfo,
+		"",
+		strings.Join(sections, "\n"),
 	)
 }
 
