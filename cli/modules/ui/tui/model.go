@@ -843,6 +843,19 @@ func (m *Model) updateItemCounts() {
 		if m.state.Builds != nil {
 			m.maxMainItems = len(m.state.Builds.BuildHistory)
 		}
+	case core.VMConfig:
+		// Config view - count depends on current tab
+		switch m.configMode {
+		case "projects":
+			cfg := config.GetGlobal()
+			if cfg != nil {
+				m.maxMainItems = len(cfg.Projects)
+			}
+		case "browser":
+			m.maxMainItems = len(m.browserEntries)
+		case "settings":
+			m.maxMainItems = 0 // No navigation in settings
+		}
 	}
 }
 
@@ -1032,6 +1045,9 @@ func (m *Model) loadBrowserEntries() {
 		}
 		return m.browserEntries[i].Name < m.browserEntries[j].Name
 	})
+
+	// Update max items for navigation
+	m.maxMainItems = len(m.browserEntries)
 
 	// Update detected project for current directory
 	m.updateDetectedProject()
