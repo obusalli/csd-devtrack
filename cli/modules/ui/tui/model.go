@@ -566,6 +566,21 @@ func (m *Model) handleEnter() tea.Cmd {
 		case core.VMProcesses:
 			// Enter on a process -> view logs
 			return m.viewLogs()
+		case core.VMConfig:
+			// Config view - depends on current tab
+			if m.configMode == "browser" {
+				m.enterBrowserDirectory()
+			} else if m.configMode == "projects" {
+				// Navigate to project in browser
+				cfg := config.GetGlobal()
+				if cfg != nil && m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
+					proj := cfg.Projects[m.mainIndex]
+					m.browserPath = proj.Path
+					m.configMode = "browser"
+					m.mainIndex = 0
+					m.loadBrowserEntries()
+				}
+			}
 		}
 	}
 	return nil
@@ -685,22 +700,6 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				m.loadBrowserEntries()
 			}
 			return nil
-		case "enter":
-			if m.configMode == "browser" {
-				m.enterBrowserDirectory()
-				return nil
-			} else if m.configMode == "projects" {
-				// Navigate to project in browser
-				cfg := config.GetGlobal()
-				if cfg != nil && m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
-					proj := cfg.Projects[m.mainIndex]
-					m.browserPath = proj.Path
-					m.configMode = "browser"
-					m.mainIndex = 0
-					m.loadBrowserEntries()
-				}
-				return nil
-			}
 		case "backspace":
 			if m.configMode == "browser" && m.browserPath != "/" {
 				m.browserPath = filepath.Dir(m.browserPath)
