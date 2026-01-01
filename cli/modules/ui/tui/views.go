@@ -70,26 +70,27 @@ func (m *Model) renderHeader() string {
 
 // sidebarViews defines the navigation menu items
 var sidebarViews = []struct {
-	key   string
-	name  string
-	icon  string
-	vtype core.ViewModelType
+	key      string
+	name     string
+	icon     string
+	shortcut string // Additional shortcut key
+	vtype    core.ViewModelType
 }{
-	{"1", "Dashboard", "◉", core.VMDashboard},
-	{"2", "Projects", "◎", core.VMProjects},
-	{"3", "Build", "⚙", core.VMBuild},
-	{"4", "Processes", "▶", core.VMProcesses},
-	{"5", "Logs", "☰", core.VMLogs},
-	{"6", "Git", "⎇", core.VMGit},
-	{"7", "Config", "⚙", core.VMConfig},
+	{"1", "Dashboard", "◉", "d", core.VMDashboard},
+	{"2", "Projects", "◎", "p", core.VMProjects},
+	{"3", "Build", "⚙", "b", core.VMBuild},
+	{"4", "Processes", "▶", "o", core.VMProcesses},
+	{"5", "Logs", "☰", "l", core.VMLogs},
+	{"6", "Git", "⎇", "g", core.VMGit},
+	{"7", "Config", "⚙", "c", core.VMConfig},
 }
 
 // getSidebarWidth calculates the optimal sidebar width based on menu items
 func getSidebarWidth() int {
 	maxLen := 0
 	for _, v := range sidebarViews {
-		// Format: "▶ X Name" = indicator(2) + key(1) + space(1) + name
-		itemLen := 4 + len(v.name)
+		// Format: "> 1 Dashboard  [d]" = indicator(2) + key(1) + space(1) + name + spaces(2) + [shortcut](3)
+		itemLen := 4 + len(v.name) + 2 + 3
 		if itemLen > maxLen {
 			maxLen = itemLen
 		}
@@ -102,11 +103,31 @@ func getSidebarWidth() int {
 // renderSidebar renders the left navigation sidebar
 func (m *Model) renderSidebar() string {
 	width := getSidebarWidth()
+	itemWidth := width - 4
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorSecondary).
+		Padding(0, 2).
+		Width(itemWidth)
+	title := titleStyle.Render("≡ MENU")
+	separator := lipgloss.NewStyle().
+		Foreground(ColorBorder).
+		Padding(0, 2).
+		Width(itemWidth).
+		Render(strings.Repeat("─", itemWidth-4))
 
 	var items []string
+	items = append(items, title, separator)
+
 	for i, v := range sidebarViews {
-		// Build the menu item text (without indicator)
-		menuText := fmt.Sprintf("%s %s", v.key, v.name)
+		// Build the menu item with shortcut hint
+		// Format: "1 Dashboard  [d]"
+		shortcutHint := SubtitleStyle.Render(fmt.Sprintf("[%s]", v.shortcut))
+		nameWidth := itemWidth - 8 // space for prefix, key, and shortcut
+		paddedName := fmt.Sprintf("%-*s", nameWidth, v.name)
+		menuText := fmt.Sprintf("%s %s %s", v.key, paddedName, shortcutHint)
 
 		// Selection indicator prefix (using fixed-width ASCII)
 		var prefix string
@@ -123,7 +144,6 @@ func (m *Model) renderSidebar() string {
 		item := prefix + menuText
 
 		// Apply consistent styling with same padding for all states
-		itemWidth := width - 4
 		if m.currentView == v.vtype {
 			// Current active view
 			item = NavItemActiveStyle.Width(itemWidth).Render(item)
@@ -140,6 +160,12 @@ func (m *Model) renderSidebar() string {
 			item = NavItemStyle.Width(itemWidth).Render(item)
 		}
 		items = append(items, item)
+	}
+
+	// Scroll indicator at bottom if sidebar has focus
+	if m.focusArea == FocusSidebar && len(sidebarViews) > 0 {
+		scrollInfo := SubtitleStyle.Render(fmt.Sprintf("  %d/%d", m.sidebarIndex+1, len(sidebarViews)))
+		items = append(items, "", scrollInfo)
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, items...)
@@ -224,8 +250,11 @@ func (m *Model) renderFooter() string {
 		)
 	case core.VMBuild:
 		shortcuts = append(shortcuts,
+			HelpKeyStyle.Render("1")+HelpDescStyle.Render(" dev  "),
+			HelpKeyStyle.Render("2")+HelpDescStyle.Render(" test  "),
+			HelpKeyStyle.Render("3")+HelpDescStyle.Render(" prod  "),
 			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
-			HelpKeyStyle.Render("B")+HelpDescStyle.Render(" build all  "),
+			HelpKeyStyle.Render("B")+HelpDescStyle.Render(" all  "),
 		)
 	case core.VMProcesses:
 		shortcuts = append(shortcuts,
@@ -236,8 +265,12 @@ func (m *Model) renderFooter() string {
 		)
 	case core.VMLogs:
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("/")+HelpDescStyle.Render(" filter  "),
-			HelpKeyStyle.Render("G")+HelpDescStyle.Render(" bottom  "),
+			HelpKeyStyle.Render("/")+HelpDescStyle.Render(" search  "),
+			HelpKeyStyle.Render("e")+HelpDescStyle.Render(" err  "),
+			HelpKeyStyle.Render("w")+HelpDescStyle.Render(" warn  "),
+			HelpKeyStyle.Render("i")+HelpDescStyle.Render(" info  "),
+			HelpKeyStyle.Render("a")+HelpDescStyle.Render(" all  "),
+			HelpKeyStyle.Render("x")+HelpDescStyle.Render(" clear  "),
 		)
 	case core.VMGit:
 		shortcuts = append(shortcuts,
@@ -312,14 +345,14 @@ func (m *Model) getFocusIndicatorLine() string {
 	return " Focus: " + strings.Join(parts, " → ")
 }
 
-// renderDashboard renders the dashboard view
+// renderDashboard renders the dashboard view with split panes
 func (m *Model) renderDashboard(width, height int) string {
 	vm := m.state.Dashboard
 	if vm == nil {
 		return m.renderLoading()
 	}
 
-	// Stats row
+	// Stats row (compact)
 	stats := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		m.renderStatBox("Projects", fmt.Sprintf("%d", vm.ProjectCount), ColorSecondary),
@@ -328,13 +361,24 @@ func (m *Model) renderDashboard(width, height int) string {
 		m.renderStatBox("Errors", fmt.Sprintf("%d", vm.ErrorCount), ColorError),
 	)
 
-	// Projects list
-	projectsPanel := m.renderProjectsList(vm.Projects, width/2-2, height-8, m.focusArea == FocusMain)
+	// Calculate panel sizes
+	panelHeight := height - 10
+	leftWidth := width / 2
+	rightWidth := width - leftWidth - 2
 
-	// Processes panel
-	processesPanel := m.renderProcessesList(vm.RunningProcesses, width/2-2, height-8, false)
+	// Left: Projects list
+	projectsPanel := m.renderProjectsList(vm.Projects, leftWidth, panelHeight, m.focusArea == FocusMain)
 
-	panels := lipgloss.JoinHorizontal(lipgloss.Top, projectsPanel, processesPanel)
+	// Right: Split between Processes (top) and Logs (bottom)
+	processHeight := panelHeight / 2
+	logsHeight := panelHeight - processHeight
+
+	processesPanel := m.renderProcessesList(vm.RunningProcesses, rightWidth, processHeight, false)
+	logsPanel := m.renderMiniLogs(rightWidth, logsHeight)
+
+	rightPane := lipgloss.JoinVertical(lipgloss.Left, processesPanel, logsPanel)
+
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, projectsPanel, rightPane)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		PanelTitleStyle.Render("Dashboard"),
@@ -342,6 +386,48 @@ func (m *Model) renderDashboard(width, height int) string {
 		stats,
 		"",
 		panels,
+	)
+}
+
+// renderMiniLogs renders a compact logs panel for dashboard
+func (m *Model) renderMiniLogs(width, height int) string {
+	title := PanelTitleStyle.Render("Recent Logs")
+
+	var lines []string
+	if m.state.Logs != nil && len(m.state.Logs.Lines) > 0 {
+		// Show last N lines that fit
+		maxLines := height - 4
+		start := len(m.state.Logs.Lines) - maxLines
+		if start < 0 {
+			start = 0
+		}
+
+		for _, line := range m.state.Logs.Lines[start:] {
+			// Compact format: [source] message
+			var levelStyle lipgloss.Style
+			switch line.Level {
+			case "error":
+				levelStyle = LogErrorStyle
+			case "warn":
+				levelStyle = LogWarnStyle
+			default:
+				levelStyle = LogInfoStyle
+			}
+			logLine := fmt.Sprintf("%s %s",
+				LogSourceStyle.Render(fmt.Sprintf("[%-8s]", truncate(line.Source, 8))),
+				levelStyle.Render(truncate(line.Message, width-14)))
+			lines = append(lines, logLine)
+		}
+	}
+
+	if len(lines) == 0 {
+		lines = append(lines, SubtitleStyle.Render("  No recent logs"))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+
+	return UnfocusedBorderStyle.Width(width).Height(height).Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, content),
 	)
 }
 
@@ -523,22 +609,49 @@ func (m *Model) renderBuild(width, height int) string {
 
 	title := PanelTitleStyle.Render("Build")
 
+	// Profile selector bar
+	profiles := []struct {
+		key  string
+		name string
+		desc string
+	}{
+		{"dev", "DEV", "Debug symbols, verbose"},
+		{"test", "TEST", "Race detection"},
+		{"prod", "PROD", "Optimized, stripped"},
+	}
+
+	var profileButtons []string
+	for _, p := range profiles {
+		if m.currentBuildProfile == p.key {
+			profileButtons = append(profileButtons, ButtonActiveStyle.Render(p.name))
+		} else {
+			profileButtons = append(profileButtons, ButtonStyle.Render(p.name))
+		}
+	}
+	profileBar := lipgloss.JoinHorizontal(lipgloss.Center,
+		SubtitleStyle.Render("Profile: "),
+		strings.Join(profileButtons, " "),
+		"  ",
+		SubtitleStyle.Render(m.getProfileDescription()),
+	)
+
 	// Current build status
 	var buildStatus string
 	if vm.CurrentBuild != nil {
 		b := vm.CurrentBuild
 		progress := renderProgressBar(b.Progress, 20)
 		buildStatus = fmt.Sprintf(
-			"%s Building %s/%s %s\n",
+			"%s Building %s/%s [%s] %s\n",
 			m.spinner.View(),
 			b.ProjectName,
 			b.Component,
+			strings.ToUpper(m.currentBuildProfile),
 			progress,
 		)
 
 		// Build output (last lines)
 		outputLines := b.Output
-		maxLines := height - 12
+		maxLines := height - 16
 		if len(outputLines) > maxLines {
 			outputLines = outputLines[len(outputLines)-maxLines:]
 		}
@@ -548,7 +661,7 @@ func (m *Model) renderBuild(width, height int) string {
 	} else if vm.IsBuilding {
 		buildStatus = m.spinner.View() + " Building..."
 	} else {
-		buildStatus = SubtitleStyle.Render("No active build. Press 'b' to build selected project.")
+		buildStatus = SubtitleStyle.Render("No active build. Press 'b' to build, 'B' for all.")
 	}
 
 	// Build history
@@ -580,6 +693,7 @@ func (m *Model) renderBuild(width, height int) string {
 	return style.Width(width - 2).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			title,
+			profileBar,
 			"",
 			buildStatus,
 			"",
@@ -587,6 +701,20 @@ func (m *Model) renderBuild(width, height int) string {
 			strings.Join(historyLines, "\n"),
 		),
 	)
+}
+
+// getProfileDescription returns description for current build profile
+func (m *Model) getProfileDescription() string {
+	switch m.currentBuildProfile {
+	case "dev":
+		return "Debug symbols, verbose output"
+	case "test":
+		return "Race detection enabled"
+	case "prod":
+		return "Optimized, symbols stripped"
+	default:
+		return ""
+	}
 }
 
 // renderProgressBar renders a progress bar
@@ -653,7 +781,7 @@ func (m *Model) renderProcesses(width, height int) string {
 	)
 }
 
-// renderLogs renders the logs view
+// renderLogs renders the logs view with filtering
 func (m *Model) renderLogs(width, height int) string {
 	vm := m.state.Logs
 	if vm == nil {
@@ -662,44 +790,107 @@ func (m *Model) renderLogs(width, height int) string {
 
 	title := PanelTitleStyle.Render("Logs")
 
-	// Filter info
-	filterInfo := SubtitleStyle.Render(fmt.Sprintf(
-		"Filter: %s  │  Auto-scroll: %v",
-		orDefault(vm.FilterProject, "all"),
-		vm.AutoScroll,
-	))
+	// Filter controls bar
+	levelFilters := []string{"ALL", "ERR", "WRN", "INF", "DBG"}
+	levelValues := []string{"", "error", "warn", "info", "debug"}
+	var filterButtons []string
+	for i, lbl := range levelFilters {
+		if m.logLevelFilter == levelValues[i] {
+			filterButtons = append(filterButtons, ButtonActiveStyle.Render(lbl))
+		} else {
+			filterButtons = append(filterButtons, ButtonStyle.Render(lbl))
+		}
+	}
+	levelBar := strings.Join(filterButtons, " ")
 
-	// Log lines
-	var logLines []string
-	maxLines := height - 6
-	start := 0
-	if len(vm.Lines) > maxLines {
-		start = len(vm.Lines) - maxLines
+	// Search box
+	searchLabel := SubtitleStyle.Render("Search: ")
+	var searchBox string
+	if m.logSearchActive {
+		searchBox = InputFocusedStyle.Width(20).Render(m.logSearchText + "█")
+	} else if m.logSearchText != "" {
+		searchBox = InputStyle.Width(20).Render(m.logSearchText)
+	} else {
+		searchBox = InputStyle.Width(20).Render(SubtitleStyle.Render("/ to search"))
 	}
 
-	for _, line := range vm.Lines[start:] {
+	filterBar := lipgloss.JoinHorizontal(lipgloss.Center,
+		levelBar,
+		"  ",
+		searchLabel,
+		searchBox,
+	)
+
+	// Filter log lines
+	var filteredLines []core.LogLineVM
+	for _, line := range vm.Lines {
+		// Level filter
+		if m.logLevelFilter != "" && line.Level != m.logLevelFilter {
+			continue
+		}
+		// Text search filter
+		if m.logSearchText != "" {
+			searchLower := strings.ToLower(m.logSearchText)
+			if !strings.Contains(strings.ToLower(line.Message), searchLower) &&
+				!strings.Contains(strings.ToLower(line.Source), searchLower) {
+				continue
+			}
+		}
+		filteredLines = append(filteredLines, line)
+	}
+
+	// Display log lines
+	var logLines []string
+	maxLines := height - 8
+	start := 0
+	if len(filteredLines) > maxLines {
+		start = len(filteredLines) - maxLines
+	}
+
+	for _, line := range filteredLines[start:] {
 		timestamp := LogTimestampStyle.Render(line.TimeStr)
-		source := LogSourceStyle.Render(fmt.Sprintf("[%-15s]", truncate(line.Source, 15)))
+		source := LogSourceStyle.Render(fmt.Sprintf("[%-12s]", truncate(line.Source, 12)))
 
 		var levelStyle lipgloss.Style
+		var levelIcon string
 		switch line.Level {
 		case "error":
 			levelStyle = LogErrorStyle
+			levelIcon = "E"
 		case "warn":
 			levelStyle = LogWarnStyle
+			levelIcon = "W"
 		case "debug":
 			levelStyle = LogDebugStyle
+			levelIcon = "D"
 		default:
 			levelStyle = LogInfoStyle
+			levelIcon = "I"
 		}
 
-		logLine := fmt.Sprintf("%s %s %s",
-			timestamp, source, levelStyle.Render(truncate(line.Message, width-35)))
+		// Highlight search matches
+		message := line.Message
+		if m.logSearchText != "" {
+			message = highlightMatch(message, m.logSearchText, width-40)
+		} else {
+			message = truncate(message, width-40)
+		}
+
+		logLine := fmt.Sprintf("%s %s %s %s",
+			timestamp,
+			levelStyle.Render(levelIcon),
+			source,
+			levelStyle.Render(message))
 		logLines = append(logLines, logLine)
 	}
 
+	// Stats line
+	statsLine := SubtitleStyle.Render(fmt.Sprintf(
+		"Showing %d of %d lines │ Auto-scroll: %v",
+		len(filteredLines), len(vm.Lines), vm.AutoScroll))
+
 	if len(logLines) == 0 {
-		logLines = append(logLines, SubtitleStyle.Render("No logs"))
+		logLines = append(logLines, SubtitleStyle.Render("No logs matching filters"))
 	}
 
 	content := strings.Join(logLines, "\n")
@@ -712,8 +903,35 @@ func (m *Model) renderLogs(width, height int) string {
 	}
 
 	return style.Width(width - 2).Height(height - 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, filterInfo, "", content),
+		lipgloss.JoinVertical(lipgloss.Left, title, filterBar, statsLine, "", content),
 	)
+}
+
+// highlightMatch truncates and highlights matching text
+func highlightMatch(text, search string, maxLen int) string {
+	text = truncate(text, maxLen)
+	if search == "" {
+		return text
+	}
+
+	lower := strings.ToLower(text)
+	searchLower := strings.ToLower(search)
+	idx := strings.Index(lower, searchLower)
+	if idx == -1 {
+		return text
+	}
+
+	// Simple highlight by making the match bold/colored
+	before := text[:idx]
+	match := text[idx : idx+len(search)]
+	after := text[idx+len(search):]
+
+	highlighted := lipgloss.NewStyle().
+		Background(ColorWarning).
+		Foreground(ColorBg).
+		Render(match)
+
+	return before + highlighted + after
 }
 
 // renderGit renders the git view
@@ -966,6 +1184,51 @@ func orDefault(s, def string) string {
 
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+// renderScrollIndicator renders a vertical scroll bar
+// total: total number of items, visible: visible items, offset: current scroll offset
+func renderScrollIndicator(total, visible, offset, height int) string {
+	if total <= visible || height < 3 {
+		return strings.Repeat(" ", height)
+	}
+
+	// Calculate scroll bar position and size
+	barHeight := height - 2 // space for arrows
+	thumbSize := max(1, barHeight*visible/total)
+	thumbPos := barHeight * offset / total
+
+	var sb strings.Builder
+	sb.WriteString(SubtitleStyle.Render("▲") + "\n") // Up arrow
+
+	for i := 0; i < barHeight; i++ {
+		if i >= thumbPos && i < thumbPos+thumbSize {
+			sb.WriteString(lipgloss.NewStyle().Foreground(ColorPrimary).Render("█"))
+		} else {
+			sb.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Render("│"))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(SubtitleStyle.Render("▼")) // Down arrow
+	return sb.String()
+}
+
+// renderScrollInfo renders scroll position info like "[1-10 of 50]"
+func renderScrollInfo(total, visible, offset int) string {
+	if total <= visible {
+		return ""
+	}
+	start := offset + 1
+	end := min(offset+visible, total)
+	return SubtitleStyle.Render(fmt.Sprintf("[%d-%d of %d]", start, end, total))
+}
+
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

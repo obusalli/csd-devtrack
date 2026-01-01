@@ -58,6 +58,14 @@ type Model struct {
 	dialogMessage string
 	dialogConfirm bool
 
+	// Log filtering
+	logLevelFilter  string // "", "error", "warn", "info", "debug"
+	logSearchText   string
+	logSearchActive bool
+
+	// Build profiles
+	currentBuildProfile string // "dev", "test", "prod"
+
 	// Components
 	help     help.Model
 	spinner  spinner.Model
@@ -85,17 +93,18 @@ func NewModel(presenter core.Presenter) *Model {
 	h.Styles.ShortSeparator = HelpDescStyle
 
 	return &Model{
-		presenter:     presenter,
-		state:         core.NewAppState(),
-		keys:          DefaultKeyMap(),
-		currentView:   core.VMDashboard,
-		focusArea:     FocusSidebar,
-		sidebarIndex:  0,
-		help:          h,
-		spinner:       s,
-		notifications: make([]*core.Notification, 0),
-		visibleMainRows: 10,
-		visibleDetailRows: 5,
+		presenter:           presenter,
+		state:               core.NewAppState(),
+		keys:                DefaultKeyMap(),
+		currentView:         core.VMDashboard,
+		focusArea:           FocusSidebar,
+		sidebarIndex:        0,
+		help:                h,
+		spinner:             s,
+		notifications:       make([]*core.Notification, 0),
+		visibleMainRows:     10,
+		visibleDetailRows:   5,
+		currentBuildProfile: "dev", // Default to dev profile
 	}
 }
 
@@ -127,7 +136,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.YPosition = headerHeight
 
 	case tea.KeyMsg:
-		if m.filterActive {
+		if m.logSearchActive {
+			cmd := m.handleLogSearchInput(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		} else if m.filterActive {
 			cmd := m.handleFilterInput(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
@@ -496,7 +510,77 @@ func (m *Model) handleEnter() tea.Cmd {
 
 // handleActionKey handles action keys (b, r, s, etc.)
 func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
+	key := msg.String()
+
+	// Quick view navigation shortcuts (work from anywhere)
+	switch key {
+	case "d":
+		if m.currentView == core.VMGit {
+			return m.sendEvent(core.NewEvent(core.EventGitDiff).WithProject(m.getSelectedProjectID()))
+		}
+		// d -> Dashboard (if not in git view)
+		return m.selectView(0)
+	case "p":
+		// p -> Projects
+		return m.selectView(1)
+	case "o":
+		// o -> prOcesses
+		return m.selectView(3)
+	case "l":
+		// l -> Logs
+		return m.selectView(4)
+	case "g":
+		// g -> Git
+		return m.selectView(5)
+	case "c":
+		if m.currentView == core.VMGit {
+			return m.sendEvent(core.NewEvent(core.EventGitLog).WithProject(m.getSelectedProjectID()))
+		}
+		// c -> Config (if not in git view)
+		return m.selectView(6)
+	}
+
+	// Build view specific keys
+	if m.currentView == core.VMBuild {
+		switch key {
+		case "1":
+			m.currentBuildProfile = "dev"
+			return nil
+		case "2":
+			m.currentBuildProfile = "test"
+			return nil
+		case "3":
+			m.currentBuildProfile = "prod"
+			return nil
+		}
+	}
+
+	// Log view specific keys
+	if m.currentView == core.VMLogs {
+		switch key {
+		case "/":
+			m.logSearchActive = true
+			return nil
+		case "e":
+			m.toggleLogLevel("error")
+			return nil
+		case "w":
+			m.toggleLogLevel("warn")
+			return nil
+		case "i":
+			m.toggleLogLevel("info")
+			return nil
+		case "a":
+			m.logLevelFilter = "" // All
+			return nil
+		case "x":
+			m.logSearchText = "" // Clear search
+			return nil
+		}
+	}
+
+	// Action keys
+	switch key {
 	case "b":
 		return m.buildSelected()
 	case "B":
@@ -514,16 +598,17 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	case "L":
 		return m.viewLogs()
-	case "d":
-		if m.currentView == core.VMGit {
-			return m.sendEvent(core.NewEvent(core.EventGitDiff).WithProject(m.getSelectedProjectID()))
-		}
-	case "c":
-		if m.currentView == core.VMGit {
-			return m.sendEvent(core.NewEvent(core.EventGitLog).WithProject(m.getSelectedProjectID()))
-		}
 	}
 	return nil
+}
+
+// toggleLogLevel toggles or sets the log level filter
+func (m *Model) toggleLogLevel(level string) {
+	if m.logLevelFilter == level {
+		m.logLevelFilter = "" // Toggle off
+	} else {
+		m.logLevelFilter = level
+	}
 }
 
 // handleDialogKey handles keys when a dialog is open
@@ -545,6 +630,28 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 	switch m.dialogType {
 	case "kill":
 		return m.killSelected()
+	}
+	return nil
+}
+
+// handleLogSearchInput handles typing in log search mode
+func (m *Model) handleLogSearchInput(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "enter":
+		m.logSearchActive = false
+		return nil
+	case "esc":
+		m.logSearchActive = false
+		m.logSearchText = ""
+		return nil
+	case "backspace":
+		if len(m.logSearchText) > 0 {
+			m.logSearchText = m.logSearchText[:len(m.logSearchText)-1]
+		}
+	default:
+		if len(msg.String()) == 1 {
+			m.logSearchText += msg.String()
+		}
 	}
 	return nil
 }

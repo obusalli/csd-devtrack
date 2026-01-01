@@ -6,9 +6,23 @@ import (
 
 // Config represents the main configuration
 type Config struct {
-	Version  string              `yaml:"version"`
-	Settings *Settings           `yaml:"settings"`
-	Projects []projects.Project  `yaml:"projects"`
+	Version       string              `yaml:"version"`
+	Settings      *Settings           `yaml:"settings"`
+	Projects      []projects.Project  `yaml:"projects"`
+	BuildProfiles map[string]*BuildProfile `yaml:"build_profiles,omitempty"`
+}
+
+// BuildProfile represents a build configuration profile
+type BuildProfile struct {
+	Name        string            `yaml:"name" json:"name"`
+	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
+	EnvVars     map[string]string `yaml:"env_vars,omitempty" json:"env_vars,omitempty"`
+	BuildFlags  []string          `yaml:"build_flags,omitempty" json:"build_flags,omitempty"`
+	LDFlags     string            `yaml:"ld_flags,omitempty" json:"ld_flags,omitempty"`
+	Tags        []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Race        bool              `yaml:"race,omitempty" json:"race,omitempty"`
+	Verbose     bool              `yaml:"verbose,omitempty" json:"verbose,omitempty"`
+	Optimize    bool              `yaml:"optimize,omitempty" json:"optimize,omitempty"` // -O for production
 }
 
 // Settings represents global application settings
@@ -69,12 +83,53 @@ func DefaultSettings() *Settings {
 	}
 }
 
+// DefaultBuildProfiles returns the default build profiles
+func DefaultBuildProfiles() map[string]*BuildProfile {
+	return map[string]*BuildProfile{
+		"dev": {
+			Name:        "dev",
+			Description: "Development build with debug symbols",
+			EnvVars: map[string]string{
+				"CGO_ENABLED": "0",
+			},
+			BuildFlags: []string{"-v"},
+			Race:       false,
+			Verbose:    true,
+			Optimize:   false,
+		},
+		"test": {
+			Name:        "test",
+			Description: "Test build with race detection",
+			EnvVars: map[string]string{
+				"CGO_ENABLED": "1",
+			},
+			BuildFlags: []string{"-v"},
+			Race:       true,
+			Verbose:    true,
+			Optimize:   false,
+		},
+		"prod": {
+			Name:        "prod",
+			Description: "Production build, optimized",
+			EnvVars: map[string]string{
+				"CGO_ENABLED": "0",
+			},
+			LDFlags:  "-s -w",
+			Tags:     []string{"production"},
+			Race:     false,
+			Verbose:  false,
+			Optimize: true,
+		},
+	}
+}
+
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Version:  "1.0",
-		Settings: DefaultSettings(),
-		Projects: []projects.Project{},
+		Version:       "1.0",
+		Settings:      DefaultSettings(),
+		Projects:      []projects.Project{},
+		BuildProfiles: DefaultBuildProfiles(),
 	}
 }
 
