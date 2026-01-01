@@ -375,10 +375,10 @@ func (m *Model) navigateDown() {
 	}
 }
 
-// navigateLeft moves focus or selection left
+// navigateLeft moves selection left (Config tabs only)
 func (m *Model) navigateLeft() {
-	// In Config view with focus on Main, switch tabs instead
-	if m.currentView == core.VMConfig && m.focusArea == FocusMain {
+	// Only used for Config tabs - use Tab for panel switching
+	if m.currentView == core.VMConfig {
 		switch m.configMode {
 		case "browser":
 			m.configMode = "projects"
@@ -388,18 +388,13 @@ func (m *Model) navigateLeft() {
 			m.mainIndex = 0
 			m.loadBrowserEntries()
 		}
-		return
-	}
-
-	if m.focusArea > FocusSidebar {
-		m.focusArea--
 	}
 }
 
-// navigateRight moves focus or selection right
+// navigateRight moves selection right (Config tabs only)
 func (m *Model) navigateRight() {
-	// In Config view with focus on Main, switch tabs instead
-	if m.currentView == core.VMConfig && m.focusArea == FocusMain {
+	// Only used for Config tabs - use Tab for panel switching
+	if m.currentView == core.VMConfig {
 		switch m.configMode {
 		case "projects":
 			m.configMode = "browser"
@@ -409,15 +404,6 @@ func (m *Model) navigateRight() {
 			m.configMode = "settings"
 			m.mainIndex = 0
 		}
-		return
-	}
-
-	maxFocus := FocusMain
-	if m.hasDetailPanel() {
-		maxFocus = FocusDetail
-	}
-	if m.focusArea < maxFocus {
-		m.focusArea++
 	}
 }
 
