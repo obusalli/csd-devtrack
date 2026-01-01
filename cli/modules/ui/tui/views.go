@@ -133,18 +133,16 @@ func (m *Model) renderSidebar() string {
 			prefix = "  "
 		}
 
-		// Highlight the [X] shortcut in the name
-		displayName := highlightShortcut(v.name)
-
-		// Format: prefix + name
-		item := fmt.Sprintf("%s%s", prefix, displayName)
-
 		// Apply consistent styling with same padding for all states
+		var item string
 		if m.currentView == v.vtype {
-			// Current active view
+			// Current active view - use plain name (no shortcut highlighting)
+			// to ensure background applies to all characters
+			item = fmt.Sprintf("%s%s", prefix, v.name)
 			item = NavItemActiveStyle.Width(itemWidth).Render(item)
 		} else if i == m.sidebarIndex && m.focusArea == FocusSidebar {
-			// Selected with focus (but not current view)
+			// Selected with focus (but not current view) - use plain name
+			item = fmt.Sprintf("%s%s", prefix, v.name)
 			item = lipgloss.NewStyle().
 				Padding(0, 2). // Same padding as NavItemStyle
 				Width(itemWidth).
@@ -152,7 +150,9 @@ func (m *Model) renderSidebar() string {
 				Foreground(ColorText).
 				Render(item)
 		} else {
-			// Normal item
+			// Normal item - highlight shortcut
+			displayName := highlightShortcut(v.name)
+			item = fmt.Sprintf("%s%s", prefix, displayName)
 			item = NavItemStyle.Width(itemWidth).Render(item)
 		}
 		items = append(items, item)
