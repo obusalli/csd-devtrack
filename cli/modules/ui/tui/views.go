@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -1291,69 +1292,71 @@ func (m *Model) renderConfigBrowser(width, height int) string {
 	return content
 }
 
-// renderConfigSettings renders the settings in config view
+// renderConfigSettings renders the settings in config view (raw YAML file)
 func (m *Model) renderConfigSettings(width, height int) string {
-	vm := m.state.Config
-	if vm == nil {
-		return m.renderLoading()
+	configPath := config.GetGlobalPath()
+	if configPath == "" {
+		return SubtitleStyle.Render("No config file loaded")
 	}
 
-	title := PanelTitleStyle.Render("Settings")
-	pathInfo := SubtitleStyle.Render(fmt.Sprintf("Config file: %s", vm.ConfigPath))
+	title := PanelTitleStyle.Render("Config File (read-only)")
+	pathInfo := SubtitleStyle.Render(fmt.Sprintf("📄 %s", configPath))
 
-	// Settings with categories
-	var sections []string
-
-	// Build settings
-	sections = append(sections, lipgloss.NewStyle().
-		Foreground(ColorSecondary).
-		Bold(true).
-		Render("Build"))
-	if val, ok := vm.Settings["parallel_builds"]; ok {
-		sections = append(sections, fmt.Sprintf("  Parallel builds: %v", val))
-	}
-
-	// Logging
-	sections = append(sections, "", lipgloss.NewStyle().
-		Foreground(ColorSecondary).
-		Bold(true).
-		Render("Logging"))
-	if val, ok := vm.Settings["log_buffer_size"]; ok {
-		sections = append(sections, fmt.Sprintf("  Buffer size: %v", val))
-	}
-	if val, ok := vm.Settings["log_level"]; ok {
-		sections = append(sections, fmt.Sprintf("  Log level: %v", val))
+	// Read the raw config file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return lipgloss.JoinVertical(lipgloss.Left,
+			title,
+			pathInfo,
+			"",
+			StatusError.Render(fmt.Sprintf("Error reading file: %v", err)),
+		)
 	}
 
-	// Web server
-	sections = append(sections, "", lipgloss.NewStyle().
-		Foreground(ColorSecondary).
-		Bold(true).
-		Render("Web Server"))
-	if val, ok := vm.Settings["web_enabled"]; ok {
-		sections = append(sections, fmt.Sprintf("  Enabled: %v", val))
-	}
-	if val, ok := vm.Settings["web_port"]; ok {
-		sections = append(sections, fmt.Sprintf("  Port: %v", val))
+	// Split into lines
+	lines := strings.Split(string(data), "\n")
+	totalLines := len(lines)
+	visibleLines := height - 8
+	if visibleLines < 5 {
+		visibleLines = 5
 	}
 
-	// UI
-	sections = append(sections, "", lipgloss.NewStyle().
-		Foreground(ColorSecondary).
-		Bold(true).
-		Render("UI"))
-	if val, ok := vm.Settings["theme"]; ok {
-		sections = append(sections, fmt.Sprintf("  Theme: %v", val))
+	// Update maxMainItems for scroll navigation
+	m.maxMainItems = totalLines
+
+	// Calculate scroll offset based on mainIndex
+	scrollOffset := m.mainIndex
+	if scrollOffset > totalLines-visibleLines {
+		scrollOffset = totalLines - visibleLines
 	}
-	if val, ok := vm.Settings["refresh_rate"]; ok {
-		sections = append(sections, fmt.Sprintf("  Refresh rate: %vms", val))
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+
+	// Display lines with scroll
+	var displayLines []string
+	endIdx := scrollOffset + visibleLines
+	if endIdx > totalLines {
+		endIdx = totalLines
+	}
+
+	for i := scrollOffset; i < endIdx; i++ {
+		lineNum := lipgloss.NewStyle().Foreground(ColorMuted).Render(fmt.Sprintf("%3d │ ", i+1))
+		displayLines = append(displayLines, lineNum+lines[i])
+	}
+
+	// Scroll indicator
+	scrollInfo := ""
+	if totalLines > visibleLines {
+		scrollInfo = SubtitleStyle.Render(fmt.Sprintf("  [%d-%d of %d lines] ↑↓ to scroll", scrollOffset+1, endIdx, totalLines))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		pathInfo,
+		scrollInfo,
 		"",
-		strings.Join(sections, "\n"),
+		strings.Join(displayLines, "\n"),
 	)
 }
 
