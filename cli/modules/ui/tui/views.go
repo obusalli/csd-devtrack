@@ -271,11 +271,13 @@ func (m *Model) renderFooter() string {
 		)
 	case core.VMConfig:
 		// Config-specific shortcuts based on current tab
+		shortcuts = append(shortcuts,
+			HelpKeyStyle.Render("←→")+HelpDescStyle.Render(" tabs  "),
+		)
 		switch m.configMode {
 		case "projects":
 			shortcuts = append(shortcuts,
 				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" remove  "),
-				HelpKeyStyle.Render("n")+HelpDescStyle.Render(" next tab  "),
 			)
 		case "browser":
 			shortcuts = append(shortcuts,
@@ -283,11 +285,6 @@ func (m *Model) renderFooter() string {
 				HelpKeyStyle.Render("Bksp")+HelpDescStyle.Render(" back  "),
 				HelpKeyStyle.Render("a")+HelpDescStyle.Render(" add  "),
 				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" remove  "),
-				HelpKeyStyle.Render("n")+HelpDescStyle.Render(" next tab  "),
-			)
-		case "settings":
-			shortcuts = append(shortcuts,
-				HelpKeyStyle.Render("n")+HelpDescStyle.Render(" next tab  "),
 			)
 		}
 	}
@@ -1082,7 +1079,7 @@ func (m *Model) renderConfig(width, height int) string {
 		}
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	tabHint := SubtitleStyle.Render("  Shift+←/→ or n/N")
+	tabHint := SubtitleStyle.Render("  ←/→")
 	tabBar = lipgloss.JoinHorizontal(lipgloss.Center, tabBar, tabHint)
 
 	// Render content based on mode
