@@ -268,17 +268,17 @@ func (m *Model) renderFooter() string {
 		if m.logSearchActive {
 			// In search mode
 			shortcuts = append(shortcuts,
-				HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" exit search  "),
-				HelpKeyStyle.Render("Bksp")+HelpDescStyle.Render(" del char  "),
+				HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" exit  "),
+				HelpKeyStyle.Render("Bksp")+HelpDescStyle.Render(" del  "),
 			)
 		} else {
 			// Not in search mode
 			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("s/←→")+HelpDescStyle.Render(" source  "),
+				HelpKeyStyle.Render("t")+HelpDescStyle.Render(" type  "),
+				HelpKeyStyle.Render("e/w/a")+HelpDescStyle.Render(" level  "),
 				HelpKeyStyle.Render("/")+HelpDescStyle.Render(" search  "),
-				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" clear  "),
-				HelpKeyStyle.Render("e")+HelpDescStyle.Render(" err  "),
-				HelpKeyStyle.Render("w")+HelpDescStyle.Render(" warn  "),
-				HelpKeyStyle.Render("a")+HelpDescStyle.Render(" all  "),
+				HelpKeyStyle.Render("c")+HelpDescStyle.Render(" clear all  "),
 			)
 		}
 	case core.VMGit:
@@ -1008,41 +1008,87 @@ func (m *Model) renderLogs(width, height int) string {
 
 	title := PanelTitleStyle.Render("Logs")
 
-	// Filter controls bar
-	levelFilters := []string{"ALL", "ERR", "WRN", "INF", "DBG"}
-	levelValues := []string{"", "error", "warn", "info", "debug"}
-	var filterButtons []string
-	for i, lbl := range levelFilters {
-		if m.logLevelFilter == levelValues[i] {
-			filterButtons = append(filterButtons, ButtonActiveStyle.Render(lbl))
+	// Build source options from log lines
+	m.updateLogSourceOptions()
+
+	// Source filter (project/component)
+	sourceLabel := SubtitleStyle.Render("Source:")
+	var sourceValue string
+	if m.logSourceFilter == "" {
+		sourceValue = "ALL"
+	} else {
+		sourceValue = truncate(m.logSourceFilter, 15)
+	}
+	sourceBox := ButtonActiveStyle.Render(" " + sourceValue + " ◂▸")
+
+	// Type filter (build/process)
+	typeLabel := SubtitleStyle.Render("Type:")
+	typeButtons := []string{}
+	for _, t := range []struct{ lbl, val string }{{"ALL", ""}, {"BUILD", "build"}, {"RUN", "process"}} {
+		if m.logTypeFilter == t.val {
+			typeButtons = append(typeButtons, ButtonActiveStyle.Render(t.lbl))
 		} else {
-			filterButtons = append(filterButtons, ButtonStyle.Render(lbl))
+			typeButtons = append(typeButtons, ButtonStyle.Render(t.lbl))
 		}
 	}
-	levelBar := strings.Join(filterButtons, " ")
+	typeBar := strings.Join(typeButtons, " ")
 
-	// Search box - always editable when in focus
-	searchLabel := SubtitleStyle.Render("Search: ")
+	// Level filter
+	levelLabel := SubtitleStyle.Render("Level:")
+	levelButtons := []string{}
+	for _, l := range []struct{ lbl, val string }{{"ALL", ""}, {"ERR", "error"}, {"WRN", "warn"}, {"INF", "info"}} {
+		if m.logLevelFilter == l.val {
+			levelButtons = append(levelButtons, ButtonActiveStyle.Render(l.lbl))
+		} else {
+			levelButtons = append(levelButtons, ButtonStyle.Render(l.lbl))
+		}
+	}
+	levelBar := strings.Join(levelButtons, " ")
+
+	// Search box
+	searchLabel := SubtitleStyle.Render("Search:")
 	var searchBox string
-	if m.focusArea == FocusMain {
-		// Show cursor when focused
-		searchBox = InputFocusedStyle.Width(25).Render(m.logSearchText + "█")
+	if m.logSearchActive {
+		searchBox = InputFocusedStyle.Width(20).Render(m.logSearchText + "█")
 	} else if m.logSearchText != "" {
-		searchBox = InputStyle.Width(25).Render(m.logSearchText)
+		searchBox = InputStyle.Width(20).Render(m.logSearchText)
 	} else {
-		searchBox = InputStyle.Width(25).Render(SubtitleStyle.Render("type to search..."))
+		searchBox = InputStyle.Width(20).Render(SubtitleStyle.Render("/ to search"))
 	}
 
-	filterBar := lipgloss.JoinHorizontal(lipgloss.Center,
-		levelBar,
-		"  ",
-		searchLabel,
-		searchBox,
+	// Filter bar row 1: Source and Type
+	filterBar1 := lipgloss.JoinHorizontal(lipgloss.Center,
+		sourceLabel, " ", sourceBox,
+		"   ",
+		typeLabel, " ", typeBar,
+	)
+
+	// Filter bar row 2: Level and Search
+	filterBar2 := lipgloss.JoinHorizontal(lipgloss.Center,
+		levelLabel, " ", levelBar,
+		"   ",
+		searchLabel, " ", searchBox,
 	)
 
 	// Filter log lines
 	var filteredLines []core.LogLineVM
 	for _, line := range vm.Lines {
+		// Source filter
+		if m.logSourceFilter != "" {
+			if !strings.HasPrefix(line.Source, m.logSourceFilter) {
+				continue
+			}
+		}
+		// Type filter (build: starts with "build:", process: doesn't start with "build:")
+		if m.logTypeFilter != "" {
+			isBuild := strings.HasPrefix(line.Source, "build:")
+			if m.logTypeFilter == "build" && !isBuild {
+				continue
+			}
+			if m.logTypeFilter == "process" && isBuild {
+				continue
+			}
+		}
 		// Level filter
 		if m.logLevelFilter != "" && line.Level != m.logLevelFilter {
 			continue
@@ -1060,7 +1106,7 @@ func (m *Model) renderLogs(width, height int) string {
 
 	// Display log lines
 	var logLines []string
-	maxLines := height - 8
+	maxLines := height - 10 // Account for 2 filter rows
 	start := 0
 	if len(filteredLines) > maxLines {
 		start = len(filteredLines) - maxLines
@@ -1122,7 +1168,7 @@ func (m *Model) renderLogs(width, height int) string {
 	}
 
 	return style.Width(width - 2).Height(height - 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, filterBar, statsLine, "", content),
+		lipgloss.JoinVertical(lipgloss.Left, title, filterBar1, filterBar2, statsLine, "", content),
 	)
 }
 
@@ -1762,10 +1808,11 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		"  Ctrl+C    Cancel current build",
 		"",
 		HelpKeyStyle.Render("Logs"),
-		"  /         Enter search mode",
-		"  Esc       Exit search mode",
-		"  e w i a   Filter: error/warn/info/all",
-		"  x         Clear search",
+		"  s/←→      Cycle source (project/component)",
+		"  t         Cycle type (all/build/run)",
+		"  e w i a   Filter level: error/warn/info/all",
+		"  /         Enter search mode, Esc to exit",
+		"  c         Clear all filters",
 		"",
 		HelpKeyStyle.Render("Git"),
 		"  Enter     Show files / Show diff",

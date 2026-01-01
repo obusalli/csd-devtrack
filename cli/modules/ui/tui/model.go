@@ -100,9 +100,12 @@ type Model struct {
 	dialogConfirm bool
 
 	// Log filtering
-	logLevelFilter  string // "", "error", "warn", "info", "debug"
-	logSearchText   string
-	logSearchActive bool
+	logLevelFilter   string // "", "error", "warn", "info", "debug"
+	logSourceFilter  string // "", "project-id", "project-id/component"
+	logTypeFilter    string // "", "build", "process"
+	logSearchText    string
+	logSearchActive  bool
+	logSourceOptions []string // Available sources for selection
 
 	// Build profiles
 	currentBuildProfile string // "dev", "test", "prod"
@@ -1025,14 +1028,100 @@ func (m *Model) handleLogsShortcuts(msg tea.KeyMsg) bool {
 		m.toggleLogLevel("info")
 		return true
 	case "a":
-		m.logLevelFilter = "" // All
+		m.logLevelFilter = "" // All levels
 		return true
 	case "x":
 		m.logSearchText = "" // Clear search
 		return true
+	case "s", "left", "right":
+		// Cycle source filter
+		m.cycleLogSource(key == "left")
+		return true
+	case "t":
+		// Cycle type filter
+		m.cycleLogType()
+		return true
+	case "c":
+		// Clear all filters
+		m.logSourceFilter = ""
+		m.logTypeFilter = ""
+		m.logLevelFilter = ""
+		m.logSearchText = ""
+		return true
 	}
 
 	return false
+}
+
+// updateLogSourceOptions builds the list of available sources from log lines
+func (m *Model) updateLogSourceOptions() {
+	if m.state.Logs == nil {
+		return
+	}
+
+	sources := make(map[string]bool)
+	for _, line := range m.state.Logs.Lines {
+		// Extract project/component from source
+		source := line.Source
+		// Remove "build:" prefix if present
+		if strings.HasPrefix(source, "build:") {
+			source = strings.TrimPrefix(source, "build:")
+		}
+		sources[source] = true
+	}
+
+	// Build sorted list
+	m.logSourceOptions = []string{}
+	for source := range sources {
+		m.logSourceOptions = append(m.logSourceOptions, source)
+	}
+	sort.Strings(m.logSourceOptions)
+}
+
+// cycleLogSource cycles through source options
+func (m *Model) cycleLogSource(reverse bool) {
+	if len(m.logSourceOptions) == 0 {
+		return
+	}
+
+	// Add "all" option at the beginning
+	options := append([]string{""}, m.logSourceOptions...)
+
+	// Find current index
+	currentIdx := 0
+	for i, opt := range options {
+		if opt == m.logSourceFilter {
+			currentIdx = i
+			break
+		}
+	}
+
+	// Cycle
+	if reverse {
+		currentIdx--
+		if currentIdx < 0 {
+			currentIdx = len(options) - 1
+		}
+	} else {
+		currentIdx++
+		if currentIdx >= len(options) {
+			currentIdx = 0
+		}
+	}
+
+	m.logSourceFilter = options[currentIdx]
+}
+
+// cycleLogType cycles through type options
+func (m *Model) cycleLogType() {
+	switch m.logTypeFilter {
+	case "":
+		m.logTypeFilter = "build"
+	case "build":
+		m.logTypeFilter = "process"
+	case "process":
+		m.logTypeFilter = ""
+	}
 }
 
 // handleLogsSearchInput handles typing in Logs search mode
