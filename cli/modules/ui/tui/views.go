@@ -232,7 +232,7 @@ func (m *Model) renderFooter() string {
 
 	// Navigation hints
 	navHint := HelpKeyStyle.Render("↑↓") + HelpDescStyle.Render(" nav  ")
-	tabHint := HelpKeyStyle.Render("Tab") + HelpDescStyle.Render(" switch  ")
+	tabHint := HelpKeyStyle.Render("Tab") + HelpDescStyle.Render(" focus  ")
 
 	shortcuts = append(shortcuts, navHint, tabHint)
 
@@ -240,24 +240,21 @@ func (m *Model) renderFooter() string {
 	switch m.currentView {
 	case core.VMDashboard, core.VMProjects:
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
+			HelpKeyStyle.Render("F5")+HelpDescStyle.Render(" build  "),
 			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
 		)
 	case core.VMBuild:
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("1")+HelpDescStyle.Render(" dev  "),
-			HelpKeyStyle.Render("2")+HelpDescStyle.Render(" test  "),
-			HelpKeyStyle.Render("3")+HelpDescStyle.Render(" prod  "),
-			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
-			HelpKeyStyle.Render("B")+HelpDescStyle.Render(" all  "),
+			HelpKeyStyle.Render("F5")+HelpDescStyle.Render(" build  "),
+			HelpKeyStyle.Render("C-b")+HelpDescStyle.Render(" all  "),
 		)
 	case core.VMProcesses:
 		shortcuts = append(shortcuts,
+			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
-			HelpKeyStyle.Render("R")+HelpDescStyle.Render(" restart  "),
-			HelpKeyStyle.Render("K")+HelpDescStyle.Render(" kill  "),
-			HelpKeyStyle.Render("L")+HelpDescStyle.Render(" logs  "),
+			HelpKeyStyle.Render("C-r")+HelpDescStyle.Render(" restart  "),
+			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
 		)
 	case core.VMLogs:
 		shortcuts = append(shortcuts,
@@ -266,13 +263,33 @@ func (m *Model) renderFooter() string {
 			HelpKeyStyle.Render("w")+HelpDescStyle.Render(" warn  "),
 			HelpKeyStyle.Render("i")+HelpDescStyle.Render(" info  "),
 			HelpKeyStyle.Render("a")+HelpDescStyle.Render(" all  "),
-			HelpKeyStyle.Render("x")+HelpDescStyle.Render(" clear  "),
 		)
 	case core.VMGit:
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("d")+HelpDescStyle.Render(" diff  "),
-			HelpKeyStyle.Render("c")+HelpDescStyle.Render(" commits  "),
+			HelpKeyStyle.Render("D")+HelpDescStyle.Render(" diff  "),
+			HelpKeyStyle.Render("H")+HelpDescStyle.Render(" history  "),
 		)
+	case core.VMConfig:
+		// Config-specific shortcuts based on current tab
+		switch m.configMode {
+		case "projects":
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" remove  "),
+				HelpKeyStyle.Render("n")+HelpDescStyle.Render(" next tab  "),
+			)
+		case "browser":
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" open  "),
+				HelpKeyStyle.Render("Bksp")+HelpDescStyle.Render(" back  "),
+				HelpKeyStyle.Render("a")+HelpDescStyle.Render(" add  "),
+				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" remove  "),
+				HelpKeyStyle.Render("n")+HelpDescStyle.Render(" next tab  "),
+			)
+		case "settings":
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("n")+HelpDescStyle.Render(" next tab  "),
+			)
+		}
 	}
 
 	// Always show help and quit

@@ -499,10 +499,22 @@ func (m *Model) selectView(index int) tea.Cmd {
 	if index >= 0 && index < len(views) {
 		m.sidebarIndex = index
 		m.currentView = views[index]
+		m.focusArea = FocusMain // Auto-focus on main content
 		m.mainIndex = 0
 		m.mainScrollOffset = 0
 		m.detailIndex = 0
 		m.detailScrollOffset = 0
+
+		// Initialize Config view
+		if m.currentView == core.VMConfig {
+			if m.configMode == "" {
+				m.configMode = "projects"
+			}
+			if m.configMode == "browser" {
+				m.loadBrowserEntries()
+			}
+		}
+
 		m.state.SetCurrentView(m.currentView)
 		return m.sendEvent(core.NavigateEvent(m.currentView))
 	}
@@ -613,6 +625,7 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		switch key {
 		case "]", "n", "shift+right":
 			// Switch to next tab (cycle)
+			m.focusArea = FocusMain // Ensure focus is on main content
 			switch m.configMode {
 			case "projects":
 				m.configMode = "browser"
@@ -628,6 +641,7 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		case "[", "N", "shift+left":
 			// Switch to previous tab (cycle)
+			m.focusArea = FocusMain // Ensure focus is on main content
 			switch m.configMode {
 			case "projects":
 				m.configMode = "settings"
