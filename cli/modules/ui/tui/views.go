@@ -1054,9 +1054,9 @@ func (m *Model) renderConfig(width, height int) string {
 		key  string
 		name string
 	}{
-		{"projects", "[1] Projects"},
-		{"browser", "[2] Browser"},
-		{"settings", "[3] Settings"},
+		{"projects", "Projects"},
+		{"browser", "Browser"},
+		{"settings", "Settings"},
 	}
 	for _, mode := range modes {
 		if m.configMode == mode.key {
@@ -1066,6 +1066,8 @@ func (m *Model) renderConfig(width, height int) string {
 		}
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	tabHint := SubtitleStyle.Render("  [n]/[N] switch tabs")
+	tabBar = lipgloss.JoinHorizontal(lipgloss.Center, tabBar, tabHint)
 
 	// Render content based on mode
 	var content string

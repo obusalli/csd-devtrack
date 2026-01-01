@@ -627,16 +627,34 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	// Config view specific keys
 	if m.currentView == core.VMConfig {
 		switch key {
-		case "1":
-			m.configMode = "projects"
-			m.mainIndex = 0
+		case "]", "n":
+			// Switch to next tab (cycle) - ] or n for next
+			switch m.configMode {
+			case "projects":
+				m.configMode = "browser"
+				m.mainIndex = 0
+				m.loadBrowserEntries()
+			case "browser":
+				m.configMode = "settings"
+				m.mainIndex = 0
+			case "settings":
+				m.configMode = "projects"
+				m.mainIndex = 0
+			}
 			return nil
-		case "2":
-			m.configMode = "browser"
-			m.loadBrowserEntries()
-			return nil
-		case "3":
-			m.configMode = "settings"
+		case "[", "N":
+			// Switch to previous tab (cycle) - [ or N for previous
+			switch m.configMode {
+			case "projects":
+				m.configMode = "settings"
+			case "browser":
+				m.configMode = "projects"
+				m.mainIndex = 0
+			case "settings":
+				m.configMode = "browser"
+				m.mainIndex = 0
+				m.loadBrowserEntries()
+			}
 			return nil
 		case "enter":
 			if m.configMode == "browser" {
