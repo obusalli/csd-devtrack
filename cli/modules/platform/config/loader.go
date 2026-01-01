@@ -153,7 +153,11 @@ func LoadGlobal(configPath string) error {
 	}
 
 	// Auto-add csd-devtrack as self project if in correct directory
-	ensureSelfProject(config, configPath)
+	// If added, save to YAML so it persists and can be customized
+	if ensureSelfProject(config, configPath) {
+		// Save the config with the new self project
+		_ = loader.Save(config)
+	}
 
 	globalConfig = config
 	globalConfigPath = configPath
@@ -162,17 +166,20 @@ func LoadGlobal(configPath string) error {
 }
 
 // ensureSelfProject adds csd-devtrack itself to the project list if detected
-func ensureSelfProject(cfg *Config, configPath string) {
+// Returns true if a self project was added (config was modified)
+func ensureSelfProject(cfg *Config, configPath string) bool {
 	// Get the directory containing the config file
 	configDir := filepath.Dir(configPath)
 	if configDir == "" || configDir == "." {
 		configDir, _ = os.Getwd()
 	}
+	configDir, _ = filepath.Abs(configDir)
 
-	// Check if csd-devtrack is already in the config
+	// Check if a project with the same path already exists
 	for _, p := range cfg.Projects {
-		if p.Self {
-			return // Already has a self project
+		projectPath, _ := filepath.Abs(p.Path)
+		if projectPath == configDir {
+			return false // Already has a project for this directory
 		}
 	}
 
@@ -180,22 +187,23 @@ func ensureSelfProject(cfg *Config, configPath string) {
 	detector := projects.NewDetector()
 	selfProject, err := detector.DetectProject(configDir)
 	if err != nil {
-		return // Not a valid project directory
+		return false // Not a valid project directory
 	}
 
 	// Verify it's actually csd-devtrack (has cli with csd-devtrack.go)
 	cliComp := selfProject.GetComponent(projects.ComponentCLI)
 	if cliComp == nil || cliComp.EntryPoint != "csd-devtrack.go" {
-		return // Not csd-devtrack
+		return false // Not csd-devtrack
 	}
 
-	// Mark as self and add to config
-	selfProject.Self = true
+	// Set ID and name, add to config
+	// Note: Self flag is computed dynamically at load time based on path
 	selfProject.ID = "csd-devtrack"
 	selfProject.Name = "csd-devtrack"
 
 	// Insert at the beginning of the project list
 	cfg.Projects = append([]projects.Project{*selfProject}, cfg.Projects...)
+	return true
 }
 
 // GetGlobal returns the global configuration

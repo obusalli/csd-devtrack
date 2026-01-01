@@ -14,6 +14,20 @@ settings:
     refresh_rate: 0
     show_timestamps: false
 projects:
+    - id: csd-devtrack
+      name: csd-devtrack
+      path: /Users/bubu/data/devel/infra/csd-devtrack
+      type: daemon
+      components:
+        cli:
+            type: cli
+            path: cli/
+            entry_point: csd-devtrack.go
+            binary: csd-devtrack
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
     - id: csd-core
       name: csd-core
       path: /Users/bubu/data/devel/infra/csd-core

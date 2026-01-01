@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -38,6 +39,9 @@ type AppPresenter struct {
 	// Context
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// Self process tracking
+	startTime time.Time // When csd-devtrack started
 }
 
 // NewAppPresenter creates a new application presenter
@@ -51,6 +55,7 @@ func NewAppPresenter(
 		state:                 NewAppState(),
 		stateCallbacks:        make([]func(StateUpdate), 0),
 		notificationCallbacks: make([]func(*Notification), 0),
+		startTime:             time.Now(), // Track when we started
 	}
 }
 
@@ -482,13 +487,35 @@ func (p *AppPresenter) refreshProcesses() {
 	allProcesses := p.processService.GetAllProcesses()
 
 	p.mu.Lock()
-	p.state.Processes.Processes = make([]ProcessVM, len(allProcesses))
-	for i, proc := range allProcesses {
-		p.state.Processes.Processes[i] = p.processToVM(proc)
+	// Start with supervised processes
+	p.state.Processes.Processes = make([]ProcessVM, 0, len(allProcesses)+1)
+	for _, proc := range allProcesses {
+		p.state.Processes.Processes = append(p.state.Processes.Processes, p.processToVM(proc))
 	}
 
-	// Sort by project name for consistent ordering
+	// Add self process (csd-devtrack itself)
+	selfProcess := ProcessVM{
+		ID:          "self",
+		ProjectID:   "csd-devtrack",
+		ProjectName: "csd-devtrack",
+		Component:   projects.ComponentCLI,
+		State:       processes.ProcessStateRunning,
+		PID:         os.Getpid(),
+		Uptime:      time.Since(p.startTime).Round(time.Second).String(),
+		Restarts:    0,
+		IsSelf:      true,
+	}
+	p.state.Processes.Processes = append(p.state.Processes.Processes, selfProcess)
+
+	// Sort by project name for consistent ordering (self will be at the end due to 'c' in csd-devtrack)
 	sort.Slice(p.state.Processes.Processes, func(i, j int) bool {
+		// Put self first
+		if p.state.Processes.Processes[i].IsSelf {
+			return true
+		}
+		if p.state.Processes.Processes[j].IsSelf {
+			return false
+		}
 		return p.state.Processes.Processes[i].ProjectName < p.state.Processes.Processes[j].ProjectName
 	})
 
@@ -592,6 +619,11 @@ func (p *AppPresenter) projectToVM(proj *projects.Project) ProjectVM {
 				cvm.IsRunning = true
 				cvm.PID = proc.PID
 				vm.RunningCount++
+			} else if proj.Self && ct == projects.ComponentCLI {
+				// Self project CLI is always running (it's us!)
+				cvm.IsRunning = true
+				cvm.PID = os.Getpid()
+				vm.RunningCount++
 			}
 
 			vm.Components = append(vm.Components, cvm)
@@ -604,8 +636,10 @@ func (p *AppPresenter) projectToVM(proj *projects.Project) ProjectVM {
 func (p *AppPresenter) processToVM(proc *processes.Process) ProcessVM {
 	proj, _ := p.projectService.GetProject(proc.ProjectID)
 	name := proc.ProjectID
+	isSelf := false
 	if proj != nil {
 		name = proj.Name
+		isSelf = proj.Self
 	}
 
 	vm := ProcessVM{
@@ -617,6 +651,7 @@ func (p *AppPresenter) processToVM(proc *processes.Process) ProcessVM {
 		PID:         proc.PID,
 		Restarts:    proc.Restarts,
 		LastError:   proc.LastError,
+		IsSelf:      isSelf,
 	}
 
 	if proc.State == processes.ProcessStateRunning && !proc.StartedAt.IsZero() {
@@ -684,9 +719,31 @@ func (p *AppPresenter) handleBuildEvent(event builds.BuildEvent) {
 	case builds.BuildEventFinished:
 		p.state.Builds.IsBuilding = false
 	}
+
+	// Also add to Logs view for persistence
+	logLine := LogLineVM{
+		Timestamp: event.Timestamp,
+		TimeStr:   event.Timestamp.Format("15:04:05"),
+		Source:    fmt.Sprintf("build:%s/%s", event.ProjectID, event.Component),
+		Message:   event.Message,
+	}
+	switch event.Type {
+	case builds.BuildEventError:
+		logLine.Level = "error"
+	case builds.BuildEventWarning:
+		logLine.Level = "warn"
+	default:
+		logLine.Level = "info"
+	}
+	p.state.Logs.Lines = append(p.state.Logs.Lines, logLine)
+	if len(p.state.Logs.Lines) > p.state.Logs.MaxLines {
+		p.state.Logs.Lines = p.state.Logs.Lines[1:]
+	}
+
 	p.mu.Unlock()
 
 	p.notifyStateUpdate(VMBuild, p.state.Builds)
+	p.notifyStateUpdate(VMLogs, p.state.Logs)
 }
 
 func (p *AppPresenter) handleProcessEvent(event processes.ProcessEvent) {

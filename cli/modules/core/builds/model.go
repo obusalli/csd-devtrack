@@ -17,20 +17,24 @@ const (
 	BuildStatusCanceled BuildStatus = "canceled"
 )
 
+// BuildOutputHandler is called when output is added to a build
+type BuildOutputHandler func(eventType BuildEventType, message string)
+
 // Build represents a build operation
 type Build struct {
-	ID          string                 `json:"id"`
-	ProjectID   string                 `json:"project_id"`
-	Component   projects.ComponentType `json:"component"`
-	Status      BuildStatus            `json:"status"`
-	StartedAt   time.Time              `json:"started_at"`
-	FinishedAt  *time.Time             `json:"finished_at,omitempty"`
-	Duration    time.Duration          `json:"duration"`
-	Output      []string               `json:"output"`
-	Errors      []string               `json:"errors"`
-	Warnings    []string               `json:"warnings"`
-	ExitCode    int                    `json:"exit_code"`
-	Artifact    string                 `json:"artifact,omitempty"`
+	ID            string                 `json:"id"`
+	ProjectID     string                 `json:"project_id"`
+	Component     projects.ComponentType `json:"component"`
+	Status        BuildStatus            `json:"status"`
+	StartedAt     time.Time              `json:"started_at"`
+	FinishedAt    *time.Time             `json:"finished_at,omitempty"`
+	Duration      time.Duration          `json:"duration"`
+	Output        []string               `json:"output"`
+	Errors        []string               `json:"errors"`
+	Warnings      []string               `json:"warnings"`
+	ExitCode      int                    `json:"exit_code"`
+	Artifact      string                 `json:"artifact,omitempty"`
+	outputHandler BuildOutputHandler     `json:"-"`
 }
 
 // NewBuild creates a new build
@@ -76,19 +80,39 @@ func (b *Build) Cancel() {
 	}
 }
 
+// SetOutputHandler sets the handler for build output events
+func (b *Build) SetOutputHandler(handler BuildOutputHandler) {
+	b.outputHandler = handler
+}
+
 // AddOutput adds output lines to the build
 func (b *Build) AddOutput(lines ...string) {
 	b.Output = append(b.Output, lines...)
+	if b.outputHandler != nil {
+		for _, line := range lines {
+			b.outputHandler(BuildEventOutput, line)
+		}
+	}
 }
 
 // AddError adds error lines to the build
 func (b *Build) AddError(lines ...string) {
 	b.Errors = append(b.Errors, lines...)
+	if b.outputHandler != nil {
+		for _, line := range lines {
+			b.outputHandler(BuildEventError, line)
+		}
+	}
 }
 
 // AddWarning adds warning lines to the build
 func (b *Build) AddWarning(lines ...string) {
 	b.Warnings = append(b.Warnings, lines...)
+	if b.outputHandler != nil {
+		for _, line := range lines {
+			b.outputHandler(BuildEventWarning, line)
+		}
+	}
 }
 
 // IsComplete returns true if the build is complete

@@ -120,15 +120,26 @@ func (m *Manager) buildCommand(project *projects.Project, component *projects.Co
 	// Default commands based on component type
 	switch component.Type {
 	case projects.ComponentFrontend:
-		return "npm", []string{"run", "dev"}
+		args := []string{"run", "dev"}
+		if len(component.Args) > 0 {
+			args = append(args, "--")
+			args = append(args, component.Args...)
+		}
+		return "npm", args
 
 	case projects.ComponentCLI, projects.ComponentBackend, projects.ComponentAgent:
-		// Run the built binary
-		binaryPath := filepath.Join(project.Path, "targets", component.Binary)
-		if runtime.GOOS == "windows" {
-			binaryPath += ".exe"
+		// Use go run with entry point file
+		// Working directory is already set to component path
+		entryPoint := component.EntryPoint
+		if entryPoint == "" {
+			entryPoint = "."
 		}
-		return binaryPath, []string{}
+		args := []string{"run", entryPoint}
+		// Append component-specific arguments from config
+		if len(component.Args) > 0 {
+			args = append(args, component.Args...)
+		}
+		return "go", args
 	}
 
 	return "", nil

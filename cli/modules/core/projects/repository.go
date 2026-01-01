@@ -46,10 +46,20 @@ func (r *Repository) Load() error {
 		return fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	// Convert to map
+	// Get config directory for self-detection
+	configDir := filepath.Dir(r.configPath)
+	if configDir == "" || configDir == "." {
+		configDir, _ = os.Getwd()
+	}
+	configDir, _ = filepath.Abs(configDir)
+
+	// Convert to map and compute Self flag
 	r.projects = make(map[string]*Project)
 	for _, p := range config.Projects {
 		project := p // Create a copy
+		// Compute Self: project is self if its path matches config directory
+		projectPath, _ := filepath.Abs(project.Path)
+		project.Self = (projectPath == configDir)
 		r.projects[project.ID] = &project
 	}
 
@@ -155,8 +165,14 @@ func (r *Repository) Remove(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, exists := r.projects[id]; !exists {
+	project, exists := r.projects[id]
+	if !exists {
 		return fmt.Errorf("project not found: %s", id)
+	}
+
+	// Prevent removal of self project
+	if project.Self {
+		return fmt.Errorf("cannot remove self project: %s", id)
 	}
 
 	delete(r.projects, id)

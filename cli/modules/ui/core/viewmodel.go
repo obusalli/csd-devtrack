@@ -81,6 +81,7 @@ type ProcessVM struct {
 	Restarts    int                    `json:"restarts"`
 	LastError   string                 `json:"last_error,omitempty"`
 	LogLines    []string               `json:"log_lines,omitempty"`
+	IsSelf      bool                   `json:"is_self,omitempty"` // Is this csd-devtrack itself?
 }
 
 // BuildVM represents a build for display

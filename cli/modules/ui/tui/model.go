@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,6 +36,12 @@ type DetectedProjectInfo struct {
 	Components []string // agent, cli, backend, frontend
 }
 
+// GitFileEntry represents a file in git status
+type GitFileEntry struct {
+	Path   string // File path
+	Status string // "staged", "modified", "untracked", "deleted"
+}
+
 // FocusArea represents which area has focus
 type FocusArea int
 
@@ -43,6 +50,15 @@ const (
 	FocusMain
 	FocusDetail
 )
+
+// ViewState holds the saved state for a view
+type ViewState struct {
+	FocusArea          FocusArea
+	MainIndex          int
+	DetailIndex        int
+	MainScrollOffset   int
+	DetailScrollOffset int
+}
 
 // Model is the main Bubble Tea model for the TUI
 type Model struct {
@@ -71,6 +87,9 @@ type Model struct {
 	visibleMainRows    int
 	visibleDetailRows  int
 
+	// Per-view state preservation
+	viewStates map[core.ViewModelType]*ViewState
+
 	// View-specific state
 	filterText    string
 	filterActive  bool
@@ -96,6 +115,12 @@ type Model struct {
 
 	// Pending actions (for dialogs)
 	pendingRemovePath string // Path of project to remove (for confirmation dialog)
+
+	// Git view state
+	gitShowDiff       bool     // Showing diff view
+	gitDiffContent    []string // Diff content lines
+	gitFiles          []GitFileEntry // Flat list of all files for current project
+	gitFilesProjectID string   // Project ID for which gitFiles was built
 
 	// Components
 	help     help.Model
@@ -144,6 +169,44 @@ func NewModel(presenter core.Presenter) *Model {
 		currentBuildProfile: "dev",   // Default to dev profile
 		configMode:          "projects", // Start with projects view
 		browserPath:         homeDir,
+		viewStates:          make(map[core.ViewModelType]*ViewState),
+	}
+}
+
+// saveViewState saves the current view state
+func (m *Model) saveViewState() {
+	m.viewStates[m.currentView] = &ViewState{
+		FocusArea:          m.focusArea,
+		MainIndex:          m.mainIndex,
+		DetailIndex:        m.detailIndex,
+		MainScrollOffset:   m.mainScrollOffset,
+		DetailScrollOffset: m.detailScrollOffset,
+	}
+}
+
+// restoreViewState restores the saved state for a view
+func (m *Model) restoreViewState(view core.ViewModelType) {
+	if state, ok := m.viewStates[view]; ok {
+		m.focusArea = state.FocusArea
+		m.mainIndex = state.MainIndex
+		m.detailIndex = state.DetailIndex
+		m.mainScrollOffset = state.MainScrollOffset
+		m.detailScrollOffset = state.DetailScrollOffset
+	} else {
+		// Default state for new views
+		m.focusArea = FocusMain
+		m.mainIndex = 0
+		m.detailIndex = 0
+		m.mainScrollOffset = 0
+		m.detailScrollOffset = 0
+	}
+
+	// When restoring to detail panel for Git view, rebuild file list for navigation
+	if m.focusArea == FocusDetail && view == core.VMGit {
+		if m.state.Git != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Git.Projects) {
+			p := m.state.Git.Projects[m.mainIndex]
+			m.buildGitFileList(&p)
+		}
 	}
 }
 
@@ -219,6 +282,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		cmds = append(cmds, m.refreshData, tickCmd())
+
+	case gitDiffMsg:
+		m.gitDiffContent = msg.lines
+		m.gitShowDiff = true
+		m.detailScrollOffset = 0
 	}
 
 	return m, tea.Batch(cmds...)
@@ -243,6 +311,35 @@ func (m Model) View() string {
 
 // handleKeyPress processes keyboard input
 func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
+	// Handle Escape for context-specific exits
+	if msg.String() == "esc" {
+		// Git diff view - go back to file list
+		if m.currentView == core.VMGit && m.gitShowDiff {
+			m.gitShowDiff = false
+			m.gitDiffContent = nil
+			m.detailScrollOffset = 0
+			return nil
+		}
+		// Focus detail -> back to main
+		if m.focusArea == FocusDetail {
+			m.focusArea = FocusMain
+			return nil
+		}
+		return nil
+	}
+
+	// Handle Shift+Up/Down for page scrolling in git diff view
+	if m.currentView == core.VMGit && m.gitShowDiff {
+		switch msg.String() {
+		case "shift+up":
+			m.gitDiffPageUp()
+			return nil
+		case "shift+down":
+			m.gitDiffPageDown()
+			return nil
+		}
+	}
+
 	switch {
 	// Quit
 	case key.Matches(msg, m.keys.Quit):
@@ -323,6 +420,14 @@ func (m *Model) cycleFocus(direction int) {
 		newFocus = 0
 	}
 	m.focusArea = FocusArea(newFocus)
+
+	// When entering detail panel for Git view, build the file list for navigation
+	if m.focusArea == FocusDetail && m.currentView == core.VMGit {
+		if m.state.Git != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Git.Projects) {
+			p := m.state.Git.Projects[m.mainIndex]
+			m.buildGitFileList(&p)
+		}
+	}
 }
 
 // hasDetailPanel returns true if the current view has a detail panel
@@ -335,8 +440,36 @@ func (m *Model) hasDetailPanel() bool {
 	}
 }
 
+// gitDiffPageUp scrolls the git diff view up by a page
+func (m *Model) gitDiffPageUp() {
+	m.detailScrollOffset -= m.visibleDetailRows
+	if m.detailScrollOffset < 0 {
+		m.detailScrollOffset = 0
+	}
+}
+
+// gitDiffPageDown scrolls the git diff view down by a page
+func (m *Model) gitDiffPageDown() {
+	maxScroll := len(m.gitDiffContent) - m.visibleDetailRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	m.detailScrollOffset += m.visibleDetailRows
+	if m.detailScrollOffset > maxScroll {
+		m.detailScrollOffset = maxScroll
+	}
+}
+
 // navigateUp moves selection up in current focus area
 func (m *Model) navigateUp() {
+	// Special handling for git diff view - scroll the diff
+	if m.currentView == core.VMGit && m.gitShowDiff {
+		if m.detailScrollOffset > 0 {
+			m.detailScrollOffset--
+		}
+		return
+	}
+
 	switch m.focusArea {
 	case FocusSidebar:
 		if m.sidebarIndex > 0 {
@@ -357,6 +490,18 @@ func (m *Model) navigateUp() {
 
 // navigateDown moves selection down in current focus area
 func (m *Model) navigateDown() {
+	// Special handling for git diff view - scroll the diff
+	if m.currentView == core.VMGit && m.gitShowDiff {
+		maxScroll := len(m.gitDiffContent) - m.visibleDetailRows
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.detailScrollOffset < maxScroll {
+			m.detailScrollOffset++
+		}
+		return
+	}
+
 	switch m.focusArea {
 	case FocusSidebar:
 		if m.sidebarIndex < 6 { // 7 views (0-6)
@@ -514,13 +659,17 @@ func (m *Model) selectView(index int) tea.Cmd {
 	}
 
 	if index >= 0 && index < len(views) {
+		newView := views[index]
+
+		// Save current view state before switching
+		m.saveViewState()
+
+		// Switch view
 		m.sidebarIndex = index
-		m.currentView = views[index]
-		m.focusArea = FocusMain // Auto-focus on main content
-		m.mainIndex = 0
-		m.mainScrollOffset = 0
-		m.detailIndex = 0
-		m.detailScrollOffset = 0
+		m.currentView = newView
+
+		// Restore saved state for new view
+		m.restoreViewState(newView)
 
 		// Initialize Config view
 		if m.currentView == core.VMConfig {
@@ -552,6 +701,16 @@ func (m *Model) handleEnter() tea.Cmd {
 		case core.VMProcesses:
 			// Enter on a process -> view logs
 			return m.viewLogs()
+		case core.VMGit:
+			// Git view - move focus to file list
+			if m.state.Git != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Git.Projects) {
+				// Build git files for the selected project
+				p := m.state.Git.Projects[m.mainIndex]
+				m.buildGitFileList(&p)
+			}
+			m.focusArea = FocusDetail
+			m.detailIndex = 0
+			m.detailScrollOffset = 0
 		case core.VMConfig:
 			// Config view - depends on current tab
 			if m.configMode == "browser" {
@@ -568,6 +727,13 @@ func (m *Model) handleEnter() tea.Cmd {
 				}
 			}
 		}
+	case FocusDetail:
+		// Detail panel Enter actions
+		switch m.currentView {
+		case core.VMGit:
+			// Show diff for selected file
+			return m.showGitFileDiff()
+		}
 	}
 	return nil
 }
@@ -575,32 +741,46 @@ func (m *Model) handleEnter() tea.Cmd {
 // handleActionKey handles action keys (b, r, s, etc.)
 func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	key := msg.String()
-	keyLower := strings.ToLower(key)
 
-	// Quick view navigation shortcuts (work from anywhere, case insensitive)
+	// Quick view navigation shortcuts (uppercase only)
 	// These ALWAYS navigate to views - no exceptions
-	switch keyLower {
-	case "d":
-		// d/D -> Dashboard
-		return m.selectView(0)
-	case "p":
-		// p/P -> Projects
-		return m.selectView(1)
-	case "b":
-		// b/B -> Build
-		return m.selectView(2)
-	case "o":
-		// o/O -> prOcesses
-		return m.selectView(3)
-	case "l":
-		// l/L -> Logs
-		return m.selectView(4)
-	case "g":
-		// g/G -> Git
-		return m.selectView(5)
-	case "c":
-		// c/C -> Config
-		return m.selectView(6)
+	switch key {
+	case "D":
+		return m.selectView(0) // Dashboard
+	case "P":
+		return m.selectView(1) // Projects
+	case "B":
+		return m.selectView(2) // Build
+	case "O":
+		return m.selectView(3) // PrOcesses
+	case "L":
+		return m.selectView(4) // Logs
+	case "G":
+		return m.selectView(5) // Git
+	case "C":
+		return m.selectView(6) // Config
+	}
+
+	// Projects/Processes view action keys (lowercase)
+	if m.currentView == core.VMProjects || m.currentView == core.VMProcesses || m.currentView == core.VMDashboard {
+		switch key {
+		case "b":
+			return m.buildSelected()
+		case "r":
+			return m.runSelected()
+		case "s":
+			return m.stopSelected()
+		case "k":
+			if m.isSelectedProjectSelf() {
+				m.lastError = "Cannot kill self"
+				m.lastErrorTime = time.Now()
+				return nil
+			}
+			m.dialogType = "kill"
+			m.dialogMessage = "Kill the selected process?"
+			m.showDialog = true
+			return nil
+		}
 	}
 
 	// Build view specific keys
@@ -615,6 +795,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		case "3":
 			m.currentBuildProfile = "prod"
 			return nil
+		case "b":
+			return m.buildSelected()
 		}
 	}
 
@@ -741,25 +923,14 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
-	// Action keys (use F-keys and special keys to avoid conflicts)
+	// Global action keys (F-keys and Ctrl shortcuts)
 	switch key {
 	case "f5":
-		// F5 to build selected project
 		return m.buildSelected()
 	case "ctrl+b":
-		// Ctrl+B to build all
 		return m.buildAll()
-	case "r":
-		return m.runSelected()
-	case "s":
-		return m.stopSelected()
 	case "ctrl+r":
 		return m.restartSelected()
-	case "k":
-		m.dialogType = "kill"
-		m.dialogMessage = "Kill the selected process?"
-		m.showDialog = true
-		return nil
 	}
 	return nil
 }
@@ -882,7 +1053,16 @@ func (m *Model) updateItemCounts() {
 	switch m.currentView {
 	case core.VMProjects:
 		if m.state.Projects != nil {
-			m.maxMainItems = len(m.state.Projects.Projects)
+			// Count total component rows (one line per component)
+			count := 0
+			for _, p := range m.state.Projects.Projects {
+				if len(p.Components) == 0 {
+					count++ // Project with no components still shows 1 row
+				} else {
+					count += len(p.Components)
+				}
+			}
+			m.maxMainItems = count
 		}
 	case core.VMProcesses:
 		if m.state.Processes != nil {
@@ -891,6 +1071,11 @@ func (m *Model) updateItemCounts() {
 	case core.VMGit:
 		if m.state.Git != nil {
 			m.maxMainItems = len(m.state.Git.Projects)
+			// Also update maxDetailItems if in detail panel
+			if m.focusArea == FocusDetail && m.mainIndex >= 0 && m.mainIndex < len(m.state.Git.Projects) {
+				p := m.state.Git.Projects[m.mainIndex]
+				m.buildGitFileList(&p)
+			}
 		}
 	case core.VMDashboard:
 		if m.state.Dashboard != nil {
@@ -939,10 +1124,21 @@ func (m *Model) buildSelected() tea.Cmd {
 	if projectID == "" {
 		return nil
 	}
-	return m.sendEvent(core.NewEvent(core.EventStartBuild).WithProject(projectID))
+
+	// Get selected component BEFORE changing view
+	component := m.getSelectedComponent()
+
+	// Switch to Build view to show output
+	m.currentView = core.VMBuild
+	m.sidebarIndex = 2 // Build view index
+
+	return m.sendEvent(core.NewEvent(core.EventStartBuild).WithProject(projectID).WithComponent(component))
 }
 
 func (m *Model) buildAll() tea.Cmd {
+	// Switch to Build view to show output
+	m.currentView = core.VMBuild
+	m.sidebarIndex = 2 // Build view index
 	return m.sendEvent(core.NewEvent(core.EventBuildAll))
 }
 
@@ -951,7 +1147,14 @@ func (m *Model) runSelected() tea.Cmd {
 	if projectID == "" {
 		return nil
 	}
-	return m.sendEvent(core.NewEvent(core.EventStartProcess).WithProject(projectID))
+	// Cannot run self (csd-devtrack) - it's already running
+	if m.isSelectedProjectSelf() {
+		m.lastError = "Cannot run csd-devtrack (already running as self)"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+	component := m.getSelectedComponent()
+	return m.sendEvent(core.NewEvent(core.EventStartProcess).WithProject(projectID).WithComponent(component))
 }
 
 func (m *Model) stopSelected() tea.Cmd {
@@ -959,7 +1162,14 @@ func (m *Model) stopSelected() tea.Cmd {
 	if projectID == "" {
 		return nil
 	}
-	return m.sendEvent(core.NewEvent(core.EventStopProcess).WithProject(projectID))
+	// Cannot stop self (csd-devtrack)
+	if m.isSelectedProjectSelf() {
+		m.lastError = "Cannot stop csd-devtrack (self)"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+	component := m.getSelectedComponent()
+	return m.sendEvent(core.NewEvent(core.EventStopProcess).WithProject(projectID).WithComponent(component))
 }
 
 func (m *Model) restartSelected() tea.Cmd {
@@ -967,7 +1177,14 @@ func (m *Model) restartSelected() tea.Cmd {
 	if projectID == "" {
 		return nil
 	}
-	return m.sendEvent(core.NewEvent(core.EventRestartProcess).WithProject(projectID))
+	// Cannot restart self (csd-devtrack)
+	if m.isSelectedProjectSelf() {
+		m.lastError = "Cannot restart csd-devtrack (self)"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+	component := m.getSelectedComponent()
+	return m.sendEvent(core.NewEvent(core.EventRestartProcess).WithProject(projectID).WithComponent(component))
 }
 
 func (m *Model) killSelected() tea.Cmd {
@@ -975,7 +1192,14 @@ func (m *Model) killSelected() tea.Cmd {
 	if projectID == "" {
 		return nil
 	}
-	return m.sendEvent(core.NewEvent(core.EventKillProcess).WithProject(projectID))
+	// Cannot kill self (csd-devtrack)
+	if m.isSelectedProjectSelf() {
+		m.lastError = "Cannot kill csd-devtrack (self)"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+	component := m.getSelectedComponent()
+	return m.sendEvent(core.NewEvent(core.EventKillProcess).WithProject(projectID).WithComponent(component))
 }
 
 func (m *Model) viewLogs() tea.Cmd {
@@ -990,7 +1214,13 @@ func (m *Model) viewLogs() tea.Cmd {
 
 func (m *Model) getSelectedProjectID() string {
 	switch m.currentView {
-	case core.VMProjects, core.VMDashboard:
+	case core.VMProjects:
+		// mainIndex is now a component row index, need to find the project
+		proj := m.getProjectForComponentRow(m.mainIndex)
+		if proj != nil {
+			return proj.ID
+		}
+	case core.VMDashboard:
 		projects := core.SelectProjects(m.state)
 		if m.mainIndex >= 0 && m.mainIndex < len(projects) {
 			return projects[m.mainIndex].ID
@@ -1005,6 +1235,132 @@ func (m *Model) getSelectedProjectID() string {
 		}
 	}
 	return ""
+}
+
+// getProjectForComponentRow returns the project for a given component row index in Projects view
+func (m *Model) getProjectForComponentRow(rowIndex int) *core.ProjectVM {
+	if m.state.Projects == nil {
+		return nil
+	}
+	currentRow := 0
+	for i := range m.state.Projects.Projects {
+		p := &m.state.Projects.Projects[i]
+		compCount := len(p.Components)
+		if compCount == 0 {
+			compCount = 1
+		}
+		if rowIndex < currentRow+compCount {
+			return p
+		}
+		currentRow += compCount
+	}
+	return nil
+}
+
+// getSelectedComponent returns the component type for the selected row in Projects view
+func (m *Model) getSelectedComponent() projects.ComponentType {
+	if m.currentView != core.VMProjects || m.state.Projects == nil {
+		return ""
+	}
+	currentRow := 0
+	for i := range m.state.Projects.Projects {
+		p := &m.state.Projects.Projects[i]
+		if len(p.Components) == 0 {
+			if m.mainIndex == currentRow {
+				return "" // Project with no components
+			}
+			currentRow++
+		} else {
+			for _, comp := range p.Components {
+				if m.mainIndex == currentRow {
+					return comp.Type
+				}
+				currentRow++
+			}
+		}
+	}
+	return ""
+}
+
+// isSelectedProjectSelf returns true if the selected project is csd-devtrack itself
+func (m *Model) isSelectedProjectSelf() bool {
+	switch m.currentView {
+	case core.VMProjects:
+		proj := m.getProjectForComponentRow(m.mainIndex)
+		if proj != nil {
+			return proj.IsSelf
+		}
+	case core.VMDashboard:
+		projects := core.SelectProjects(m.state)
+		if m.mainIndex >= 0 && m.mainIndex < len(projects) {
+			return projects[m.mainIndex].IsSelf
+		}
+	case core.VMProcesses:
+		if m.state.Processes != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Processes.Processes) {
+			return m.state.Processes.Processes[m.mainIndex].IsSelf
+		}
+	}
+	return false
+}
+
+// showGitFileDiff shows the diff for the selected file
+func (m *Model) showGitFileDiff() tea.Cmd {
+	if m.state.Git == nil || m.mainIndex < 0 || m.mainIndex >= len(m.state.Git.Projects) {
+		return nil
+	}
+	if m.detailIndex < 0 || m.detailIndex >= len(m.gitFiles) {
+		return nil
+	}
+
+	p := m.state.Git.Projects[m.mainIndex]
+	f := m.gitFiles[m.detailIndex]
+
+	// Get project path
+	cfg := config.GetGlobal()
+	var projectPath string
+	for _, proj := range cfg.Projects {
+		if proj.ID == p.ProjectID {
+			projectPath = proj.Path
+			break
+		}
+	}
+	if projectPath == "" {
+		return nil
+	}
+
+	// Get diff using git command
+	return func() tea.Msg {
+		var cmd *exec.Cmd
+		if f.Status == "staged" {
+			cmd = exec.Command("git", "diff", "--cached", "--", f.Path)
+		} else if f.Status == "untracked" {
+			// For untracked files, show file content
+			cmd = exec.Command("cat", f.Path)
+		} else {
+			cmd = exec.Command("git", "diff", "--", f.Path)
+		}
+		cmd.Dir = projectPath
+
+		output, err := cmd.Output()
+		if err != nil {
+			return gitDiffMsg{lines: []string{"Error getting diff: " + err.Error()}}
+		}
+
+		lines := strings.Split(string(output), "\n")
+		if f.Status == "untracked" {
+			// Add header for untracked files
+			lines = append([]string{
+				"New file: " + f.Path,
+				"---",
+			}, lines...)
+		}
+		return gitDiffMsg{lines: lines}
+	}
+}
+
+// gitDiffMsg contains the diff result
+type gitDiffMsg struct {
+	lines []string
 }
 
 // Message types
@@ -1212,6 +1568,11 @@ func (m *Model) removeProjectFromConfig(path string) error {
 
 	newProjects := make([]projects.Project, 0)
 	for _, p := range cfg.Projects {
+		// Never remove self project
+		if p.Self {
+			newProjects = append(newProjects, p)
+			continue
+		}
 		if p.Path != path {
 			newProjects = append(newProjects, p)
 		}

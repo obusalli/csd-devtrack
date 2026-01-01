@@ -3,6 +3,7 @@ package git
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
@@ -93,6 +94,12 @@ func (r *Repository) GetStatus() (*Status, error) {
 			result.HasModified = true
 		}
 	}
+
+	// Sort file lists for consistent ordering
+	sort.Strings(result.Staged)
+	sort.Strings(result.Modified)
+	sort.Strings(result.Untracked)
+	sort.Strings(result.Deleted)
 
 	// Get remote info
 	remotes, err := r.repo.Remotes()

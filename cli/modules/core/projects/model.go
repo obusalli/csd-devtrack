@@ -43,6 +43,7 @@ type Component struct {
 	Binary     string        `yaml:"binary" json:"binary"`           // E.g., "csd-corectl"
 	BuildCmd   string        `yaml:"build_cmd" json:"build_cmd"`     // Override build command
 	RunCmd     string        `yaml:"run_cmd" json:"run_cmd"`         // Override run command
+	Args       []string      `yaml:"args" json:"args"`               // Arguments passed to the command
 	Port       int           `yaml:"port" json:"port"`               // Port if applicable
 	Enabled    bool          `yaml:"enabled" json:"enabled"`
 
@@ -57,7 +58,7 @@ type Project struct {
 	Name       string                   `yaml:"name" json:"name"`
 	Path       string                   `yaml:"path" json:"path"` // Absolute or relative path
 	Type       ProjectType              `yaml:"type" json:"type"`
-	Self       bool                     `yaml:"self,omitempty" json:"self,omitempty"` // Is this csd-devtrack itself?
+	Self       bool                     `yaml:"-" json:"self,omitempty"` // Computed: is this csd-devtrack itself?
 	Components map[ComponentType]*Component `yaml:"components" json:"components"`
 
 	// Git info (computed, not persisted)

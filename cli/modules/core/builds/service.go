@@ -95,6 +95,18 @@ func (s *Service) BuildComponent(ctx context.Context, projectID string, componen
 
 	// Create build
 	build := NewBuild(projectID, componentType)
+
+	// Set output handler to emit events in real-time
+	build.SetOutputHandler(func(eventType BuildEventType, message string) {
+		s.emitEvent(BuildEvent{
+			Type:      eventType,
+			BuildID:   build.ID,
+			ProjectID: projectID,
+			Component: string(componentType),
+			Message:   message,
+		})
+	})
+
 	s.storeBuild(build)
 
 	// Emit start event

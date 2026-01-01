@@ -80,7 +80,7 @@ var sidebarViews = []struct {
 	{"[D]ashboard", core.VMDashboard},
 	{"[P]rojects", core.VMProjects},
 	{"[B]uild", core.VMBuild},
-	{"Pr[o]cesses", core.VMProcesses},
+	{"Pr[O]cesses", core.VMProcesses},
 	{"[L]ogs", core.VMLogs},
 	{"[G]it", core.VMGit},
 	{"[C]onfig", core.VMConfig},
@@ -123,17 +123,8 @@ func (m *Model) renderSidebar() string {
 	items = append(items, title, separator)
 
 	for i, v := range sidebarViews {
-		// Selection indicator prefix
-		var prefix string
-		if i == m.sidebarIndex {
-			if m.focusArea == FocusSidebar {
-				prefix = "> "
-			} else {
-				prefix = "* "
-			}
-		} else {
-			prefix = "  "
-		}
+		// Selection indicator prefix (no chevron, use spaces)
+		prefix := "  "
 
 		// Apply consistent styling with same padding for all states
 		var item string
@@ -242,20 +233,21 @@ func (m *Model) renderFooter() string {
 	switch m.currentView {
 	case core.VMDashboard, core.VMProjects:
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("F5")+HelpDescStyle.Render(" build  "),
+			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
 			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
+			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
 		)
 	case core.VMBuild:
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("F5")+HelpDescStyle.Render(" build  "),
+			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
 			HelpKeyStyle.Render("C-b")+HelpDescStyle.Render(" all  "),
 		)
 	case core.VMProcesses:
 		shortcuts = append(shortcuts,
+			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
 			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
-			HelpKeyStyle.Render("C-r")+HelpDescStyle.Render(" restart  "),
 			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
 		)
 	case core.VMLogs:
@@ -267,10 +259,24 @@ func (m *Model) renderFooter() string {
 			HelpKeyStyle.Render("a")+HelpDescStyle.Render(" all  "),
 		)
 	case core.VMGit:
-		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("D")+HelpDescStyle.Render(" diff  "),
-			HelpKeyStyle.Render("H")+HelpDescStyle.Render(" history  "),
-		)
+		if m.gitShowDiff {
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" scroll  "),
+				HelpKeyStyle.Render("S-↑↓")+HelpDescStyle.Render(" page  "),
+				HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" back  "),
+			)
+		} else if m.focusArea == FocusDetail {
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" diff  "),
+				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" select  "),
+				HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" back  "),
+			)
+		} else {
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" files  "),
+				HelpKeyStyle.Render("Tab")+HelpDescStyle.Render(" switch  "),
+			)
+		}
 	case core.VMConfig:
 		// Config-specific shortcuts based on current tab
 		shortcuts = append(shortcuts,
@@ -543,7 +549,19 @@ func (m *Model) renderProcessesList(processes []core.ProcessVM, width, height in
 	)
 }
 
-// renderProjects renders the projects view
+// ProjectComponentRow represents a row in the projects view (one per component)
+type ProjectComponentRow struct {
+	ProjectName string
+	ProjectIdx  int
+	Component   core.ComponentVM
+	IsFirst     bool // First component of the project (shows project name)
+	GitBranch   string
+	GitDirty    bool
+	GitAhead    int
+	IsSelf      bool
+}
+
+// renderProjects renders the projects view with one line per component
 func (m *Model) renderProjects(width, height int) string {
 	vm := m.state.Projects
 	if vm == nil {
@@ -552,37 +570,127 @@ func (m *Model) renderProjects(width, height int) string {
 
 	title := PanelTitleStyle.Render("Projects")
 
-	// Table header
-	header := TableHeaderStyle.Render(
-		fmt.Sprintf("  %-20s %-12s %-8s %-20s", "Name", "Type", "Status", "Git"),
-	)
+	// Build flat list of component rows
+	var componentRows []ProjectComponentRow
+	for projIdx, p := range vm.Projects {
+		if len(p.Components) == 0 {
+			// Project with no components - show single row
+			componentRows = append(componentRows, ProjectComponentRow{
+				ProjectName: p.Name,
+				ProjectIdx:  projIdx,
+				IsFirst:     true,
+				GitBranch:   p.GitBranch,
+				GitDirty:    p.GitDirty,
+				GitAhead:    p.GitAhead,
+				IsSelf:      p.IsSelf,
+			})
+		} else {
+			for i, comp := range p.Components {
+				componentRows = append(componentRows, ProjectComponentRow{
+					ProjectName: p.Name,
+					ProjectIdx:  projIdx,
+					Component:   comp,
+					IsFirst:     i == 0,
+					GitBranch:   p.GitBranch,
+					GitDirty:    p.GitDirty,
+					GitAhead:    p.GitAhead,
+					IsSelf:      p.IsSelf,
+				})
+			}
+		}
+	}
 
-	// Table rows
+	// Calculate dynamic column widths
+	colProject := len("Project")
+	colComponent := len("Component")
+	colStatus := len("Status")
+	colPort := len("Port")
+
+	for _, r := range componentRows {
+		if len(r.ProjectName) > colProject {
+			colProject = len(r.ProjectName)
+		}
+		compLen := len(string(r.Component.Type))
+		if compLen > colComponent {
+			colComponent = compLen
+		}
+	}
+
+	// Reasonable limits
+	if colProject > 20 {
+		colProject = 20
+	}
+	if colComponent > 10 {
+		colComponent = 10
+	}
+
+	// Table header
+	header := TableHeaderStyle.Render(fmt.Sprintf("  %-*s   %-*s   %-*s   %-*s   %s",
+		colProject, "Project",
+		colComponent, "Component",
+		colStatus, "Status",
+		colPort, "Port",
+		"Git",
+	))
+
+	// Update maxMainItems for navigation
+	m.maxMainItems = len(componentRows)
+
+	// Table rows with scrolling
 	var rows []string
 	startIdx := m.mainScrollOffset
 	endIdx := startIdx + m.visibleMainRows
-	if endIdx > len(vm.Projects) {
-		endIdx = len(vm.Projects)
+	if endIdx > len(componentRows) {
+		endIdx = len(componentRows)
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		p := vm.Projects[i]
-		status := m.getProjectStatus(p)
-		statusStr := StatusIcon(status)
+		r := componentRows[i]
 
-		gitInfo := fmt.Sprintf("%s %s", IconBranch, truncate(p.GitBranch, 10))
-		if p.GitDirty {
-			gitInfo += GitDirtyStyle.Render(" *")
-		}
-		if p.GitAhead > 0 {
-			gitInfo += GitAheadStyle.Render(fmt.Sprintf(" ↑%d", p.GitAhead))
+		// Project name: show only on first row, with self indicator
+		projectDisplay := strings.Repeat(" ", colProject)
+		if r.IsFirst {
+			projectDisplay = fmt.Sprintf("%-*s", colProject, truncate(r.ProjectName, colProject))
+			if r.IsSelf {
+				projectDisplay = lipgloss.NewStyle().Foreground(ColorSecondary).Render("*") + projectDisplay[1:]
+			}
 		}
 
-		row := fmt.Sprintf("%-20s %-12s %s %-20s",
-			truncate(p.Name, 20),
-			truncate(string(p.Type), 12),
-			statusStr,
-			gitInfo,
+		// Component type
+		compDisplay := fmt.Sprintf("%-*s", colComponent, string(r.Component.Type))
+
+		// Status: running or stopped
+		var statusDisplay string
+		if r.Component.IsRunning {
+			statusDisplay = StatusRunning.Render(IconRunning) + " " + fmt.Sprintf("%-*s", colStatus-2, "running")
+		} else {
+			statusDisplay = StatusStopped.Render(IconStopped) + " " + fmt.Sprintf("%-*s", colStatus-2, "stopped")
+		}
+
+		// Port
+		portDisplay := fmt.Sprintf("%-*s", colPort, "")
+		if r.Component.Port > 0 {
+			portDisplay = fmt.Sprintf("%-*d", colPort, r.Component.Port)
+		}
+
+		// Git info: show only on first row
+		gitDisplay := ""
+		if r.IsFirst && r.GitBranch != "" {
+			gitDisplay = fmt.Sprintf("%s %s", IconBranch, truncate(r.GitBranch, 10))
+			if r.GitDirty {
+				gitDisplay += GitDirtyStyle.Render(" *")
+			}
+			if r.GitAhead > 0 {
+				gitDisplay += GitAheadStyle.Render(fmt.Sprintf(" ↑%d", r.GitAhead))
+			}
+		}
+
+		row := fmt.Sprintf("%s   %s   %s   %s   %s",
+			projectDisplay,
+			compDisplay,
+			statusDisplay,
+			portDisplay,
+			gitDisplay,
 		)
 
 		if i == m.mainIndex && m.focusArea == FocusMain {
@@ -596,9 +704,13 @@ func (m *Model) renderProjects(width, height int) string {
 	}
 
 	// Scroll indicator
-	if len(vm.Projects) > m.visibleMainRows {
-		scrollInfo := SubtitleStyle.Render(fmt.Sprintf("  [%d-%d of %d]", startIdx+1, endIdx, len(vm.Projects)))
+	if len(componentRows) > m.visibleMainRows {
+		scrollInfo := SubtitleStyle.Render(fmt.Sprintf("  [%d-%d of %d]", startIdx+1, endIdx, len(componentRows)))
 		rows = append(rows, scrollInfo)
+	}
+
+	if len(rows) == 0 {
+		rows = append(rows, SubtitleStyle.Render("  No projects"))
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -752,22 +864,88 @@ func (m *Model) renderProcesses(width, height int) string {
 
 	title := PanelTitleStyle.Render("Processes")
 
-	// Table header
-	header := TableHeaderStyle.Render(
-		fmt.Sprintf("  %-20s %-10s %-8s %-10s %-6s", "Project/Component", "State", "PID", "Uptime", "Restarts"),
-	)
+	// Calculate dynamic column widths based on content
+	colName := len("Project/Component") // minimum width
+	colState := len("State")
+	colPID := len("PID")
+	colUptime := len("Uptime")
+	colRestarts := len("Restarts")
+
+	for _, p := range vm.Processes {
+		nameLen := len(p.ProjectName) + 1 + len(string(p.Component)) // "name/component"
+		if nameLen > colName {
+			colName = nameLen
+		}
+		// State: icon (2 chars with space) + state text
+		stateLen := 2 + len(string(p.State))
+		if stateLen > colState {
+			colState = stateLen
+		}
+		pidLen := len(fmt.Sprintf("%d", p.PID))
+		if pidLen > colPID {
+			colPID = pidLen
+		}
+		uptimeLen := len(p.Uptime)
+		if uptimeLen > colUptime {
+			colUptime = uptimeLen
+		}
+	}
+
+	// Add padding
+	colName += 2
+	colState += 2
+	colPID += 2
+	colUptime += 2
+	colRestarts += 2
+
+	// Limit to available width (account for 4 separators of 3 spaces each)
+	sepWidth := 3 * 4
+	availableWidth := width - 10 - sepWidth // borders, padding, and separators
+	totalWidth := colName + colState + colPID + colUptime + colRestarts
+	if totalWidth > availableWidth {
+		// Reduce name column first
+		colName = availableWidth - colState - colPID - colUptime - colRestarts
+		if colName < 15 {
+			colName = 15
+		}
+	}
+
+	// Table header (with 2-space prefix for alignment with row prefix)
+	// State column needs +2 for the icon "● " prefix in rows
+	header := TableHeaderStyle.Render(fmt.Sprintf("  %-*s   %-*s   %*s   %-*s   %*s",
+		colName, "Project/Component",
+		colState+2, "State", // +2 for icon prefix
+		colPID, "PID",
+		colUptime, "Uptime",
+		colRestarts, "Restarts",
+	))
 
 	// Table rows
 	var rows []string
 	for i, p := range vm.Processes {
-		stateStr := StatusIcon(string(p.State))
+		// Build project/component name (plain text for proper alignment)
+		projectComp := fmt.Sprintf("%s/%s", p.ProjectName, p.Component)
 
-		row := fmt.Sprintf("%-20s %s %-8d %-10s %-6d",
-			fmt.Sprintf("%s/%s", truncate(p.ProjectName, 10), p.Component),
-			stateStr,
-			p.PID,
-			truncate(p.Uptime, 10),
-			p.Restarts,
+		// Pad to column width BEFORE adding styling
+		projectCompPadded := fmt.Sprintf("%-*s", colName, projectComp)
+		if p.IsSelf {
+			// Add star prefix with color
+			projectCompPadded = lipgloss.NewStyle().Foreground(ColorSecondary).Render("*") + projectCompPadded[1:]
+		}
+
+		// State: use text only, icon added with consistent width
+		stateText := string(p.State)
+		statePadded := fmt.Sprintf("%-*s", colState, stateText)
+		stateIcon := StatusIcon(stateText)
+		stateDisplay := stateIcon + " " + statePadded
+
+		// Format row with proper column widths
+		row := fmt.Sprintf("%s   %s   %*d   %-*s   %*d",
+			projectCompPadded,
+			stateDisplay,
+			colPID, p.PID,
+			colUptime, p.Uptime,
+			colRestarts, p.Restarts,
 		)
 
 		if i == m.mainIndex && m.focusArea == FocusMain {
@@ -958,6 +1136,11 @@ func (m *Model) renderGit(width, height int) string {
 		return m.renderLoading()
 	}
 
+	// If showing diff, render diff view
+	if m.gitShowDiff {
+		return m.renderGitDiff(width, height)
+	}
+
 	title := PanelTitleStyle.Render("Git Status")
 
 	// Projects list (left panel) - narrower to give more space to details
@@ -999,33 +1182,74 @@ func (m *Model) renderGit(width, height int) string {
 		projectRows = append(projectRows, SubtitleStyle.Render("  No git repositories"))
 	}
 
-	// Detail panel (right)
+	// Detail panel (right) - file list with selection
 	detailWidth := width - listWidth - 2
+	detailHeight := height - 6
 	var detailContent string
+
 	if m.mainIndex >= 0 && m.mainIndex < len(vm.Projects) {
 		p := vm.Projects[m.mainIndex]
+
+		// Build flat file list (also sets maxDetailItems)
+		m.buildGitFileList(&p)
+		m.visibleDetailRows = detailHeight - 4
+
 		detailLines := []string{
 			PanelTitleStyle.Render(p.ProjectName),
 			fmt.Sprintf("Branch: %s", GitBranchStyle.Render(p.Branch)),
 			"",
 		}
 
-		if len(p.Staged) > 0 {
-			detailLines = append(detailLines, StatusSuccess.Render(fmt.Sprintf("Staged (%d):", len(p.Staged))))
-			for _, f := range p.Staged[:min(3, len(p.Staged))] {
-				detailLines = append(detailLines, "  "+truncate(f, detailWidth-4))
+		if len(m.gitFiles) == 0 {
+			detailLines = append(detailLines, StatusSuccess.Render("✓ Working tree clean"))
+		} else {
+			// Calculate scroll offset
+			if m.detailIndex < m.detailScrollOffset {
+				m.detailScrollOffset = m.detailIndex
+			} else if m.detailIndex >= m.detailScrollOffset+m.visibleDetailRows {
+				m.detailScrollOffset = m.detailIndex - m.visibleDetailRows + 1
 			}
-		}
-		if len(p.Modified) > 0 {
-			detailLines = append(detailLines, StatusWarning.Render(fmt.Sprintf("Modified (%d):", len(p.Modified))))
-			for _, f := range p.Modified[:min(3, len(p.Modified))] {
-				detailLines = append(detailLines, "  "+truncate(f, detailWidth-4))
+
+			endIdx := m.detailScrollOffset + m.visibleDetailRows
+			if endIdx > len(m.gitFiles) {
+				endIdx = len(m.gitFiles)
 			}
-		}
-		if len(p.Untracked) > 0 {
-			detailLines = append(detailLines, SubtitleStyle.Render(fmt.Sprintf("Untracked (%d):", len(p.Untracked))))
-			for _, f := range p.Untracked[:min(3, len(p.Untracked))] {
-				detailLines = append(detailLines, "  "+truncate(f, detailWidth-4))
+
+			for i := m.detailScrollOffset; i < endIdx; i++ {
+				f := m.gitFiles[i]
+				var statusStyle lipgloss.Style
+				var prefix string
+				switch f.Status {
+				case "staged":
+					statusStyle = StatusSuccess
+					prefix = "A"
+				case "modified":
+					statusStyle = StatusWarning
+					prefix = "M"
+				case "deleted":
+					statusStyle = StatusError
+					prefix = "D"
+				case "untracked":
+					statusStyle = SubtitleStyle
+					prefix = "?"
+				}
+
+				row := fmt.Sprintf("%s %s", statusStyle.Render(prefix), truncate(f.Path, detailWidth-8))
+
+				if i == m.detailIndex && m.focusArea == FocusDetail {
+					row = TableRowSelectedStyle.Width(detailWidth - 6).Render(FocusIndicator + " " + row)
+				} else if i == m.detailIndex {
+					row = TableRowSelectedStyle.Width(detailWidth - 6).Render("  " + row)
+				} else {
+					row = "  " + row
+				}
+				detailLines = append(detailLines, row)
+			}
+
+			// Scroll indicator
+			if len(m.gitFiles) > m.visibleDetailRows {
+				scrollInfo := fmt.Sprintf(" [%d-%d/%d]", m.detailScrollOffset+1, endIdx, len(m.gitFiles))
+				detailLines = append(detailLines, SubtitleStyle.Render(scrollInfo))
 			}
 		}
 
@@ -1051,6 +1275,93 @@ func (m *Model) renderGit(width, height int) string {
 	detailPanel := detailStyle.Width(detailWidth).Height(height - 4).Render(detailContent)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel)
+}
+
+// buildGitFileList builds a flat list of all files from git status
+// Only rebuilds if the project or file count changed
+func (m *Model) buildGitFileList(p *core.GitStatusVM) {
+	// Calculate expected file count
+	expectedCount := len(p.Staged) + len(p.Modified) + len(p.Deleted) + len(p.Untracked)
+
+	// Only rebuild if project changed or file count changed
+	if m.gitFilesProjectID == p.ProjectID && len(m.gitFiles) == expectedCount {
+		// Still update maxDetailItems for navigation
+		m.maxDetailItems = len(m.gitFiles)
+		return
+	}
+
+	m.gitFiles = make([]GitFileEntry, 0, expectedCount)
+	m.gitFilesProjectID = p.ProjectID
+
+	for _, f := range p.Staged {
+		m.gitFiles = append(m.gitFiles, GitFileEntry{Path: f, Status: "staged"})
+	}
+	for _, f := range p.Modified {
+		m.gitFiles = append(m.gitFiles, GitFileEntry{Path: f, Status: "modified"})
+	}
+	for _, f := range p.Deleted {
+		m.gitFiles = append(m.gitFiles, GitFileEntry{Path: f, Status: "deleted"})
+	}
+	for _, f := range p.Untracked {
+		m.gitFiles = append(m.gitFiles, GitFileEntry{Path: f, Status: "untracked"})
+	}
+
+	// Update maxDetailItems for navigation
+	m.maxDetailItems = len(m.gitFiles)
+
+	// Reset detail index only if out of bounds
+	if m.detailIndex >= len(m.gitFiles) {
+		m.detailIndex = 0
+		m.detailScrollOffset = 0
+	}
+}
+
+// renderGitDiff renders the diff view
+func (m *Model) renderGitDiff(width, height int) string {
+	title := PanelTitleStyle.Render("Git Diff")
+	hint := SubtitleStyle.Render("Press Escape to go back")
+
+	contentHeight := height - 6
+	var lines []string
+
+	// Calculate scroll
+	m.visibleDetailRows = contentHeight - 2
+	if m.detailScrollOffset < 0 {
+		m.detailScrollOffset = 0
+	}
+	endIdx := m.detailScrollOffset + m.visibleDetailRows
+	if endIdx > len(m.gitDiffContent) {
+		endIdx = len(m.gitDiffContent)
+	}
+
+	for i := m.detailScrollOffset; i < endIdx; i++ {
+		line := m.gitDiffContent[i]
+		// Color diff lines
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff00")).Render(line)
+		} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render(line)
+		} else if strings.HasPrefix(line, "@@") {
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ffff")).Render(line)
+		} else if strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index ") {
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(line)
+		}
+		lines = append(lines, truncate(line, width-6))
+	}
+
+	// Scroll indicator
+	if len(m.gitDiffContent) > m.visibleDetailRows {
+		scrollInfo := fmt.Sprintf(" [%d-%d/%d lines]", m.detailScrollOffset+1, endIdx, len(m.gitDiffContent))
+		lines = append(lines, SubtitleStyle.Render(scrollInfo))
+	}
+
+	content := strings.Join(lines, "\n")
+
+	panel := FocusedBorderStyle.Width(width - 2).Height(height - 4).Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, hint, "", content),
+	)
+
+	return panel
 }
 
 // renderConfig renders the config view with tabs
@@ -1408,27 +1719,24 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		DialogTitleStyle.Render("Keyboard Shortcuts"),
 		"",
 		HelpKeyStyle.Render("Navigation"),
-		"  ↑/↓/←/→  Navigate within focused panel",
-		"  Tab      Switch focus between panels",
-		"  1-7      Jump to view",
-		"  Enter    Select/Activate",
-		"  PgUp/Dn  Page scroll",
-		"  Home/End Go to start/end",
+		"  ↑/↓       Navigate items",
+		"  Tab       Switch focus between panels",
+		"  D P B O   Dashboard, Projects, Build, PrOcesses",
+		"  L G C     Logs, Git, Config",
+		"  PgUp/Dn   Page scroll",
 		"",
-		HelpKeyStyle.Render("Actions"),
-		"  b        Build selected project",
-		"  B        Build all projects",
-		"  r        Run/Start project",
-		"  s        Stop project",
-		"  R        Restart project",
-		"  K        Kill project (force)",
-		"  L        View logs",
+		HelpKeyStyle.Render("Actions (Projects/Processes)"),
+		"  b         Build selected",
+		"  r         Run/Start",
+		"  s         Stop",
+		"  k         Kill (force)",
+		"  Ctrl+B    Build all",
 		"",
 		HelpKeyStyle.Render("Other"),
-		"  /        Filter",
-		"  Ctrl+R   Refresh",
-		"  ?        Toggle help",
-		"  q        Quit",
+		"  /         Filter",
+		"  Ctrl+R    Refresh",
+		"  ?         Toggle help",
+		"  q         Quit",
 		"",
 		SubtitleStyle.Render("Press any key to close"),
 	}

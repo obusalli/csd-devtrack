@@ -21,6 +21,7 @@ func InitContext() error {
 	configPath := config.GetGlobalPath()
 
 	// Create project repository
+	// Note: self project is auto-added to YAML by LoadGlobal() if detected
 	projectRepo := projects.NewRepository(configPath)
 	if err := projectRepo.Load(); err != nil {
 		return err
