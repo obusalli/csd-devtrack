@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -1131,29 +1132,22 @@ func (m *Model) renderConfigProjects(width, height int) string {
 			indicator = "> "
 		}
 
-		// Component badges
+		// Component badges - sort for consistent order
 		var compBadges []string
 		for compType := range proj.Components {
 			compBadges = append(compBadges, string(compType))
 		}
+		sort.Strings(compBadges)
 		compsText := ""
 		if len(compBadges) > 0 {
-			compsText = " [" + strings.Join(compBadges, ", ") + "]"
+			compsText = strings.Join(compBadges, ", ")
 		}
 
-		// Build the row content
-		rowContent := fmt.Sprintf("%s%-25s%s", indicator, truncate(proj.Name, 25), compsText)
+		// Build the row with fixed columns
+		row := fmt.Sprintf("%s%-20s │ %s", indicator, truncate(proj.Name, 20), compsText)
 
-		// Apply styling
-		var row string
 		if isSelected {
-			// Selected: uniform background
-			row = TableRowSelectedStyle.Width(width).Render(rowContent)
-		} else {
-			// Normal: just render with width
-			row = lipgloss.NewStyle().Width(width).Render(
-				fmt.Sprintf("%s%-25s%s", indicator, truncate(proj.Name, 25),
-					lipgloss.NewStyle().Foreground(ColorSecondary).Render(compsText)))
+			row = TableRowSelectedStyle.Render(row)
 		}
 		rows = append(rows, row)
 	}
