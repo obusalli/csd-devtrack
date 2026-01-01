@@ -238,15 +238,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.YPosition = headerHeight
 
 	case tea.KeyMsg:
-		// In Logs view, typing goes directly to search (no '/' needed)
-		if m.currentView == core.VMLogs && m.focusArea == FocusMain && !m.showDialog && !m.showHelp {
-			if m.handleLogsKeyInput(msg) {
-				// Key was handled by logs input
+		if m.logSearchActive {
+			// In search mode - handle typing
+			if m.handleLogsSearchInput(msg) {
+				return m, nil
+			}
+		} else if m.currentView == core.VMLogs && m.focusArea == FocusMain && !m.showDialog && !m.showHelp {
+			// In Logs view but not in search mode - handle shortcuts
+			if m.handleLogsShortcuts(msg) {
 				return m, nil
 			}
 		}
 
 		if m.logSearchActive {
+			// Legacy handler (shouldn't reach here now)
 			cmd := m.handleLogSearchInput(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
@@ -1000,27 +1005,16 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 	return nil
 }
 
-// handleLogsKeyInput handles direct typing in logs view search field
-// Returns true if the key was handled, false if it should be processed normally
-func (m *Model) handleLogsKeyInput(msg tea.KeyMsg) bool {
+// handleLogsShortcuts handles shortcuts in Logs view when NOT in search mode
+// Returns true if the key was handled
+func (m *Model) handleLogsShortcuts(msg tea.KeyMsg) bool {
 	key := msg.String()
 
-	// Navigation keys should not be captured
 	switch key {
-	case "up", "down", "pgup", "pgdown", "home", "end", "tab", "shift+tab",
-		"ctrl+c", "ctrl+r", "ctrl+b", "?", "q", "esc",
-		"D", "P", "B", "O", "L", "G", "C": // View navigation
-		return false
-	}
-
-	// '/' focuses on search field (already focused, just a noop to indicate ready)
-	if key == "/" {
-		// Already in search mode, just consume the key
+	case "/":
+		// Enter search mode
+		m.logSearchActive = true
 		return true
-	}
-
-	// Level filter shortcuts
-	switch key {
 	case "e":
 		m.toggleLogLevel("error")
 		return true
@@ -1038,22 +1032,35 @@ func (m *Model) handleLogsKeyInput(msg tea.KeyMsg) bool {
 		return true
 	}
 
-	// Shift+Backspace - clear all text
-	if key == "shift+backspace" {
+	return false
+}
+
+// handleLogsSearchInput handles typing in Logs search mode
+// Returns true if the key was handled
+func (m *Model) handleLogsSearchInput(msg tea.KeyMsg) bool {
+	key := msg.String()
+
+	switch key {
+	case "esc":
+		// Exit search mode (keep text)
+		m.logSearchActive = false
+		return true
+	case "enter":
+		// Exit search mode (keep text)
+		m.logSearchActive = false
+		return true
+	case "shift+backspace", "ctrl+u":
+		// Clear all text
 		m.logSearchText = ""
 		return true
-	}
-
-	// Backspace - delete last char
-	if key == "backspace" {
+	case "backspace":
+		// Delete last char
 		if len(m.logSearchText) > 0 {
 			m.logSearchText = m.logSearchText[:len(m.logSearchText)-1]
 		}
 		return true
-	}
-
-	// Shift+Delete - clear all (same as x)
-	if key == "shift+delete" || key == "delete" {
+	case "delete", "ctrl+k":
+		// Clear all text
 		m.logSearchText = ""
 		return true
 	}

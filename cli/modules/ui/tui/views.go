@@ -265,13 +265,22 @@ func (m *Model) renderFooter() string {
 				HelpKeyStyle.Render("C-c")+HelpDescStyle.Render(" cancel  "),
 			)
 		}
-		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("/ or type")+HelpDescStyle.Render(" search  "),
-			HelpKeyStyle.Render("x")+HelpDescStyle.Render(" clear  "),
-			HelpKeyStyle.Render("e")+HelpDescStyle.Render(" err  "),
-			HelpKeyStyle.Render("w")+HelpDescStyle.Render(" warn  "),
-			HelpKeyStyle.Render("a")+HelpDescStyle.Render(" all  "),
-		)
+		if m.logSearchActive {
+			// In search mode
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" exit search  "),
+				HelpKeyStyle.Render("Bksp")+HelpDescStyle.Render(" del char  "),
+			)
+		} else {
+			// Not in search mode
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("/")+HelpDescStyle.Render(" search  "),
+				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" clear  "),
+				HelpKeyStyle.Render("e")+HelpDescStyle.Render(" err  "),
+				HelpKeyStyle.Render("w")+HelpDescStyle.Render(" warn  "),
+				HelpKeyStyle.Render("a")+HelpDescStyle.Render(" all  "),
+			)
+		}
 	case core.VMGit:
 		if m.gitShowDiff {
 			shortcuts = append(shortcuts,
@@ -1753,10 +1762,10 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		"  Ctrl+C    Cancel current build",
 		"",
 		HelpKeyStyle.Render("Logs"),
-		"  / or type Start search (direct input)",
+		"  /         Enter search mode",
+		"  Esc       Exit search mode",
 		"  e w i a   Filter: error/warn/info/all",
-		"  x/Del     Clear search",
-		"  Bksp      Delete last char",
+		"  x         Clear search",
 		"",
 		HelpKeyStyle.Render("Git"),
 		"  Enter     Show files / Show diff",
