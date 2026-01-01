@@ -1106,7 +1106,7 @@ func (m *Model) renderLogs(width, height int) string {
 
 	// Display log lines
 	var logLines []string
-	maxLines := height - 10 // Account for 2 filter rows
+	maxLines := height - 12 // Account for 2 filter rows + status line + stats line
 	start := 0
 	if len(filteredLines) > maxLines {
 		start = len(filteredLines) - maxLines
@@ -1149,10 +1149,42 @@ func (m *Model) renderLogs(width, height int) string {
 		logLines = append(logLines, logLine)
 	}
 
+	// Running status line
+	var runningParts []string
+
+	// Check for running builds
+	if m.state.Builds != nil && m.state.Builds.IsBuilding && m.state.Builds.CurrentBuild != nil {
+		buildInfo := fmt.Sprintf("⚙ Building %s/%s",
+			m.state.Builds.CurrentBuild.ProjectID,
+			m.state.Builds.CurrentBuild.Component)
+		runningParts = append(runningParts, StatusBuilding.Render(buildInfo))
+	}
+
+	// Check for running processes
+	if m.state.Processes != nil {
+		runningCount := 0
+		for _, p := range m.state.Processes.Processes {
+			if p.State == "running" && !p.IsSelf {
+				runningCount++
+			}
+		}
+		if runningCount > 0 {
+			procInfo := fmt.Sprintf("▶ %d process(es) running", runningCount)
+			runningParts = append(runningParts, StatusRunning.Render(procInfo))
+		}
+	}
+
+	var statusLine string
+	if len(runningParts) > 0 {
+		statusLine = strings.Join(runningParts, "  ")
+	} else {
+		statusLine = SubtitleStyle.Render("○ No active builds or processes")
+	}
+
 	// Stats line
 	statsLine := SubtitleStyle.Render(fmt.Sprintf(
-		"Showing %d of %d lines │ Auto-scroll: %v",
-		len(filteredLines), len(vm.Lines), vm.AutoScroll))
+		"Showing %d of %d lines",
+		len(filteredLines), len(vm.Lines)))
 
 	if len(logLines) == 0 {
 		logLines = append(logLines, SubtitleStyle.Render("No logs matching filters"))
@@ -1168,7 +1200,7 @@ func (m *Model) renderLogs(width, height int) string {
 	}
 
 	return style.Width(width - 2).Height(height - 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, filterBar1, filterBar2, statsLine, "", content),
+		lipgloss.JoinVertical(lipgloss.Left, title, filterBar1, filterBar2, statusLine, statsLine, "", content),
 	)
 }
 
