@@ -1011,15 +1011,36 @@ func (m *Model) renderLogs(width, height int) string {
 	// Build source options from log lines
 	m.updateLogSourceOptions()
 
-	// Source filter (project/component)
+	// Source filter (project/component) with status
 	sourceLabel := SubtitleStyle.Render("Source:")
 	var sourceValue string
+	var sourceStatus string
 	if m.logSourceFilter == "" {
 		sourceValue = "ALL"
 	} else {
 		sourceValue = truncate(m.logSourceFilter, 15)
+		// Get status for this source
+		sourceStatus = m.getSourceStatus(m.logSourceFilter)
 	}
-	sourceBox := ButtonActiveStyle.Render(" " + sourceValue + " ◂▸")
+
+	var sourceBox string
+	if sourceStatus != "" {
+		// Color based on status
+		var statusStyle lipgloss.Style
+		switch sourceStatus {
+		case "running":
+			statusStyle = StatusRunning
+		case "building":
+			statusStyle = StatusBuilding
+		case "stopped":
+			statusStyle = StatusStopped
+		default:
+			statusStyle = SubtitleStyle
+		}
+		sourceBox = ButtonActiveStyle.Render(" "+sourceValue+" ") + statusStyle.Render(sourceStatus) + ButtonActiveStyle.Render(" ◂▸")
+	} else {
+		sourceBox = ButtonActiveStyle.Render(" " + sourceValue + " ◂▸")
+	}
 
 	// Type filter (build/process)
 	typeLabel := SubtitleStyle.Render("Type:")
@@ -1106,7 +1127,7 @@ func (m *Model) renderLogs(width, height int) string {
 
 	// Display log lines
 	var logLines []string
-	maxLines := height - 12 // Account for 2 filter rows + status line + stats line
+	maxLines := height - 10 // Account for 2 filter rows + stats line
 	start := 0
 	if len(filteredLines) > maxLines {
 		start = len(filteredLines) - maxLines
@@ -1149,38 +1170,6 @@ func (m *Model) renderLogs(width, height int) string {
 		logLines = append(logLines, logLine)
 	}
 
-	// Running status line
-	var runningParts []string
-
-	// Check for running builds
-	if m.state.Builds != nil && m.state.Builds.IsBuilding && m.state.Builds.CurrentBuild != nil {
-		buildInfo := fmt.Sprintf("⚙ Building %s/%s",
-			m.state.Builds.CurrentBuild.ProjectID,
-			m.state.Builds.CurrentBuild.Component)
-		runningParts = append(runningParts, StatusBuilding.Render(buildInfo))
-	}
-
-	// Check for running processes
-	if m.state.Processes != nil {
-		runningCount := 0
-		for _, p := range m.state.Processes.Processes {
-			if p.State == "running" && !p.IsSelf {
-				runningCount++
-			}
-		}
-		if runningCount > 0 {
-			procInfo := fmt.Sprintf("▶ %d process(es) running", runningCount)
-			runningParts = append(runningParts, StatusRunning.Render(procInfo))
-		}
-	}
-
-	var statusLine string
-	if len(runningParts) > 0 {
-		statusLine = strings.Join(runningParts, "  ")
-	} else {
-		statusLine = SubtitleStyle.Render("○ No active builds or processes")
-	}
-
 	// Stats line
 	statsLine := SubtitleStyle.Render(fmt.Sprintf(
 		"Showing %d of %d lines",
@@ -1200,7 +1189,7 @@ func (m *Model) renderLogs(width, height int) string {
 	}
 
 	return style.Width(width - 2).Height(height - 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, filterBar1, filterBar2, statusLine, statsLine, "", content),
+		lipgloss.JoinVertical(lipgloss.Left, title, filterBar1, filterBar2, statsLine, "", content),
 	)
 }
 

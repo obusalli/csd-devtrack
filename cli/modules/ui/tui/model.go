@@ -1124,6 +1124,34 @@ func (m *Model) cycleLogType() {
 	}
 }
 
+// getSourceStatus returns the status of a source (running/building/stopped)
+func (m *Model) getSourceStatus(source string) string {
+	// Check if currently building
+	if m.state.Builds != nil && m.state.Builds.IsBuilding && m.state.Builds.CurrentBuild != nil {
+		buildSource := m.state.Builds.CurrentBuild.ProjectID + "/" + string(m.state.Builds.CurrentBuild.Component)
+		if strings.HasPrefix(buildSource, source) || strings.HasPrefix(source, m.state.Builds.CurrentBuild.ProjectID) {
+			return "building"
+		}
+	}
+
+	// Check if running process
+	if m.state.Processes != nil {
+		for _, p := range m.state.Processes.Processes {
+			if p.IsSelf {
+				continue
+			}
+			procSource := p.ProjectID + "/" + string(p.Component)
+			if strings.HasPrefix(procSource, source) || strings.HasPrefix(source, p.ProjectID) {
+				if p.State == "running" {
+					return "running"
+				}
+			}
+		}
+	}
+
+	return "stopped"
+}
+
 // handleLogsSearchInput handles typing in Logs search mode
 // Returns true if the key was handled
 func (m *Model) handleLogsSearchInput(msg tea.KeyMsg) bool {
