@@ -1407,12 +1407,14 @@ func (m *Model) viewLogsForSelected() tea.Cmd {
 	m.currentView = core.VMLogs
 	m.sidebarIndex = 4 // Logs view index
 
-	// Set log filter to show only this component's logs
+	// Set source filter to show only this component's logs
 	if component != "" {
-		m.logSearchText = projectID + "/" + string(component)
+		m.logSourceFilter = projectID + "/" + string(component)
 	} else {
-		m.logSearchText = projectID
+		m.logSourceFilter = projectID
 	}
+	// Clear other filters for a fresh view
+	m.logSearchText = ""
 
 	return m.sendEvent(core.NewEvent(core.EventViewLogs).WithProject(projectID).WithComponent(component))
 }
