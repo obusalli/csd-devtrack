@@ -274,11 +274,12 @@ func (m *Model) renderFooter() string {
 		} else {
 			// Not in search mode
 			shortcuts = append(shortcuts,
-				HelpKeyStyle.Render("s/←→")+HelpDescStyle.Render(" source  "),
+				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" scroll  "),
+				HelpKeyStyle.Render("S-↑↓")+HelpDescStyle.Render(" page  "),
+				HelpKeyStyle.Render("End")+HelpDescStyle.Render(" bottom  "),
+				HelpKeyStyle.Render("s")+HelpDescStyle.Render(" source  "),
 				HelpKeyStyle.Render("t")+HelpDescStyle.Render(" type  "),
-				HelpKeyStyle.Render("e/w/a")+HelpDescStyle.Render(" level  "),
 				HelpKeyStyle.Render("/")+HelpDescStyle.Render(" search  "),
-				HelpKeyStyle.Render("c")+HelpDescStyle.Render(" clear all  "),
 			)
 		}
 	case core.VMGit:
@@ -1125,15 +1126,36 @@ func (m *Model) renderLogs(width, height int) string {
 		filteredLines = append(filteredLines, line)
 	}
 
-	// Display log lines
+	// Display log lines with scroll support
 	var logLines []string
 	maxLines := height - 10 // Account for 2 filter rows + stats line
-	start := 0
-	if len(filteredLines) > maxLines {
-		start = len(filteredLines) - maxLines
+	if maxLines < 1 {
+		maxLines = 1
 	}
 
-	for _, line := range filteredLines[start:] {
+	// Calculate scroll position
+	totalLines := len(filteredLines)
+
+	// Clamp scroll offset
+	maxOffset := totalLines - maxLines
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.logScrollOffset > maxOffset {
+		m.logScrollOffset = maxOffset
+	}
+
+	// Calculate start position (from the end, offset by scroll)
+	start := totalLines - maxLines - m.logScrollOffset
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxLines
+	if end > totalLines {
+		end = totalLines
+	}
+
+	for _, line := range filteredLines[start:end] {
 		timestamp := LogTimestampStyle.Render(line.TimeStr)
 		source := LogSourceStyle.Render(fmt.Sprintf("[%-12s]", truncate(line.Source, 12)))
 
@@ -1170,10 +1192,16 @@ func (m *Model) renderLogs(width, height int) string {
 		logLines = append(logLines, logLine)
 	}
 
-	// Stats line
+	// Stats line with scroll info
+	var scrollInfo string
+	if m.logScrollOffset > 0 {
+		scrollInfo = fmt.Sprintf(" │ ↑%d lines (End to resume)", m.logScrollOffset)
+	} else if m.logAutoScroll {
+		scrollInfo = " │ Auto-scroll"
+	}
 	statsLine := SubtitleStyle.Render(fmt.Sprintf(
-		"Showing %d of %d lines",
-		len(filteredLines), len(vm.Lines)))
+		"Lines %d-%d of %d%s",
+		start+1, end, totalLines, scrollInfo))
 
 	if len(logLines) == 0 {
 		logLines = append(logLines, SubtitleStyle.Render("No logs matching filters"))
@@ -1829,10 +1857,13 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		"  Ctrl+C    Cancel current build",
 		"",
 		HelpKeyStyle.Render("Logs"),
+		"  ↑/↓ j/k   Scroll up/down one line",
+		"  S-↑/↓     Page up/down",
+		"  Home/End  Go to top/bottom",
 		"  s/←→      Cycle source (project/component)",
 		"  t         Cycle type (all/build/run)",
 		"  e w i a   Filter level: error/warn/info/all",
-		"  /         Enter search mode, Esc to exit",
+		"  /         Search, Esc to exit",
 		"  c         Clear all filters",
 		"",
 		HelpKeyStyle.Render("Git"),

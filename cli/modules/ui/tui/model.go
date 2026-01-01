@@ -106,6 +106,8 @@ type Model struct {
 	logSearchText    string
 	logSearchActive  bool
 	logSourceOptions []string // Available sources for selection
+	logScrollOffset  int      // Scroll offset from bottom (0 = auto-scroll to bottom)
+	logAutoScroll    bool     // Auto-scroll to bottom on new logs
 
 	// Build profiles
 	currentBuildProfile string // "dev", "test", "prod"
@@ -173,6 +175,7 @@ func NewModel(presenter core.Presenter) *Model {
 		configMode:          "projects", // Start with projects view
 		browserPath:         homeDir,
 		viewStates:          make(map[core.ViewModelType]*ViewState),
+		logAutoScroll:       true, // Auto-scroll logs by default
 	}
 }
 
@@ -1047,6 +1050,47 @@ func (m *Model) handleLogsShortcuts(msg tea.KeyMsg) bool {
 		m.logTypeFilter = ""
 		m.logLevelFilter = ""
 		m.logSearchText = ""
+		return true
+
+	// Scroll controls
+	case "up", "k":
+		// Scroll up one line
+		m.logScrollOffset++
+		m.logAutoScroll = false
+		return true
+	case "down", "j":
+		// Scroll down one line
+		if m.logScrollOffset > 0 {
+			m.logScrollOffset--
+		}
+		if m.logScrollOffset == 0 {
+			m.logAutoScroll = true
+		}
+		return true
+	case "shift+up", "pgup":
+		// Page up
+		m.logScrollOffset += 10
+		m.logAutoScroll = false
+		return true
+	case "shift+down", "pgdown":
+		// Page down
+		m.logScrollOffset -= 10
+		if m.logScrollOffset < 0 {
+			m.logScrollOffset = 0
+		}
+		if m.logScrollOffset == 0 {
+			m.logAutoScroll = true
+		}
+		return true
+	case "home":
+		// Go to top
+		m.logScrollOffset = 999999 // Will be clamped in render
+		m.logAutoScroll = false
+		return true
+	case "end", "G":
+		// Go to bottom (resume auto-scroll)
+		m.logScrollOffset = 0
+		m.logAutoScroll = true
 		return true
 	}
 
