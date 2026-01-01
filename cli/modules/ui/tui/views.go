@@ -94,8 +94,9 @@ func getSidebarWidth() int {
 			maxLen = itemLen
 		}
 	}
-	// Add padding for borders (2 each side) and some margin
-	return maxLen + 6
+	// Add padding for borders (2 each side) + internal padding + margin
+	// Borders: 2, internal padding: 4, safety margin: 2
+	return maxLen + 10
 }
 
 // renderSidebar renders the left navigation sidebar
@@ -104,28 +105,39 @@ func (m *Model) renderSidebar() string {
 
 	var items []string
 	for i, v := range sidebarViews {
-		// Selection indicator
-		indicator := "  "
+		// Build the menu item text (without indicator)
+		menuText := fmt.Sprintf("%s %s", v.key, v.name)
+
+		// Selection indicator prefix (using fixed-width ASCII)
+		var prefix string
 		if i == m.sidebarIndex {
 			if m.focusArea == FocusSidebar {
-				indicator = FocusIndicator + " "
+				prefix = "> " // Active focus
 			} else {
-				indicator = "› "
+				prefix = "* " // Selected but not focused
 			}
+		} else {
+			prefix = "  " // Not selected
 		}
 
-		item := fmt.Sprintf("%s%s %s", indicator, v.key, v.name)
+		item := prefix + menuText
 
+		// Apply consistent styling with same padding for all states
+		itemWidth := width - 4
 		if m.currentView == v.vtype {
-			item = NavItemActiveStyle.Width(width - 4).Render(item)
+			// Current active view
+			item = NavItemActiveStyle.Width(itemWidth).Render(item)
 		} else if i == m.sidebarIndex && m.focusArea == FocusSidebar {
+			// Selected with focus (but not current view)
 			item = lipgloss.NewStyle().
-				Width(width - 4).
+				Padding(0, 2). // Same padding as NavItemStyle
+				Width(itemWidth).
 				Background(ColorBgAlt).
 				Foreground(ColorText).
 				Render(item)
 		} else {
-			item = NavItemStyle.Width(width - 4).Render(item)
+			// Normal item
+			item = NavItemStyle.Width(itemWidth).Render(item)
 		}
 		items = append(items, item)
 	}
