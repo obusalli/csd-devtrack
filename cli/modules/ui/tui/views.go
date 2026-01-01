@@ -960,12 +960,15 @@ func (m *Model) renderGit(width, height int) string {
 
 	title := PanelTitleStyle.Render("Git Status")
 
-	// Projects list (left panel)
-	listWidth := width * 2 / 3
+	// Projects list (left panel) - narrower to give more space to details
+	listWidth := width / 3
+	if listWidth < 35 {
+		listWidth = 35
+	}
 	var projectRows []string
 	for i, p := range vm.Projects {
 		status := GitStatusIcon(p.IsClean)
-		branchInfo := truncate(p.Branch, 12)
+		branchInfo := truncate(p.Branch, 10)
 
 		var syncInfo string
 		if p.Ahead > 0 {
@@ -975,9 +978,9 @@ func (m *Model) renderGit(width, height int) string {
 			syncInfo += GitBehindStyle.Render(fmt.Sprintf("↓%d", p.Behind))
 		}
 
-		row := fmt.Sprintf("%s %-18s %-12s %s",
+		row := fmt.Sprintf("%s %-12s %-10s %s",
 			status,
-			truncate(p.ProjectName, 18),
+			truncate(p.ProjectName, 12),
 			branchInfo,
 			syncInfo,
 		)
