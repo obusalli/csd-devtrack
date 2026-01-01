@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -464,6 +465,12 @@ func (p *AppPresenter) refreshProjects() error {
 	for i, proj := range allProjects {
 		p.state.Projects.Projects[i] = p.projectToVM(proj)
 	}
+
+	// Sort by project name for consistent ordering
+	sort.Slice(p.state.Projects.Projects, func(i, j int) bool {
+		return p.state.Projects.Projects[i].Name < p.state.Projects.Projects[j].Name
+	})
+
 	p.state.Projects.UpdatedAt = time.Now()
 	p.mu.Unlock()
 
@@ -479,6 +486,12 @@ func (p *AppPresenter) refreshProcesses() {
 	for i, proc := range allProcesses {
 		p.state.Processes.Processes[i] = p.processToVM(proc)
 	}
+
+	// Sort by project name for consistent ordering
+	sort.Slice(p.state.Processes.Processes, func(i, j int) bool {
+		return p.state.Processes.Processes[i].ProjectName < p.state.Processes.Processes[j].ProjectName
+	})
+
 	p.state.Processes.UpdatedAt = time.Now()
 	p.mu.Unlock()
 
@@ -510,6 +523,12 @@ func (p *AppPresenter) refreshGitStatus() {
 			Deleted:     status.Deleted,
 		})
 	}
+
+	// Sort by project name for consistent ordering
+	sort.Slice(p.state.Git.Projects, func(i, j int) bool {
+		return p.state.Git.Projects[i].ProjectName < p.state.Git.Projects[j].ProjectName
+	})
+
 	p.state.Git.UpdatedAt = time.Now()
 	p.mu.Unlock()
 
