@@ -5,14 +5,13 @@ import (
 	"os"
 	"strings"
 
+	"csd-devtrack/cli/modules"
 	"csd-devtrack/cli/modules/commands"
 	"csd-devtrack/cli/modules/platform/config"
 )
 
-const (
-	Version   = "0.1.0"
-	BuildDate = "development"
-)
+// BuildDate is set at build time via ldflags
+var BuildDate = "development"
 
 func main() {
 	// Parse global flags
@@ -100,12 +99,12 @@ func main() {
 }
 
 func printVersion() {
-	fmt.Printf("csd-devtrack version %s\n", Version)
+	fmt.Printf("%s version %s\n", modules.AppName, modules.AppVersion)
 	fmt.Printf("Build: %s\n", BuildDate)
 }
 
 func printHelp() {
-	fmt.Println("csd-devtrack - Multi-project development tool")
+	fmt.Printf("%s - %s\n", modules.AppName, modules.AppDescription)
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  csd-devtrack [flags] [command] [arguments]")

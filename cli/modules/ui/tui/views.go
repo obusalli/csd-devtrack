@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"csd-devtrack/cli/modules"
 	"csd-devtrack/cli/modules/ui/core"
 
 	"github.com/charmbracelet/lipgloss"
@@ -26,8 +27,8 @@ var (
 
 // renderHeader renders the top header bar
 func (m *Model) renderHeader() string {
-	title := TitleStyle.Render("CSD DevTrack")
-	version := SubtitleStyle.Render("v1.0.0")
+	title := TitleStyle.Render(modules.AppName)
+	version := SubtitleStyle.Render("v" + modules.AppVersion)
 
 	// Status indicators
 	var status string
@@ -89,15 +90,26 @@ var sidebarViews = []struct {
 func getSidebarWidth() int {
 	maxLen := 0
 	for _, v := range sidebarViews {
-		// Format: "> 1 Dashboard  [d]" = indicator(2) + key(1) + space(1) + name + spaces(2) + [shortcut](3)
-		itemLen := 4 + len(v.name) + 2 + 3
+		// Format: "> 1 Dashboard  [d]"
+		// Components:
+		//   prefix:   2 chars  "> "
+		//   key:      1 char   "1"
+		//   space:    1 char   " "
+		//   name:     N chars  "Dashboard" (max 9)
+		//   padding:  2 chars  "  "
+		//   shortcut: 3 chars  "[d]"
+		// Total visible: 2 + 1 + 1 + N + 2 + 3 = N + 9
+		itemLen := len(v.name) + 9
 		if itemLen > maxLen {
 			maxLen = itemLen
 		}
 	}
-	// Add padding for borders (2 each side) + internal padding + margin
-	// Borders: 2, internal padding: 4, safety margin: 2
-	return maxLen + 10
+	// Add generous padding:
+	//   borders: 2 chars
+	//   internal Padding(0,2): 4 chars
+	//   extra safety: 6 chars
+	// Total padding: 12
+	return maxLen + 12
 }
 
 // renderSidebar renders the left navigation sidebar
@@ -124,10 +136,15 @@ func (m *Model) renderSidebar() string {
 	for i, v := range sidebarViews {
 		// Build the menu item with shortcut hint
 		// Format: "1 Dashboard  [d]"
+		// Calculate available space for name (total - prefix - key - spaces - shortcut)
+		// itemWidth - 2(prefix) - 1(key) - 1(space) - 2(padding) - 3(shortcut) = itemWidth - 9
 		shortcutHint := SubtitleStyle.Render(fmt.Sprintf("[%s]", v.shortcut))
-		nameWidth := itemWidth - 8 // space for prefix, key, and shortcut
-		paddedName := fmt.Sprintf("%-*s", nameWidth, v.name)
-		menuText := fmt.Sprintf("%s %s %s", v.key, paddedName, shortcutHint)
+		availableForName := itemWidth - 9
+		if availableForName < len(v.name) {
+			availableForName = len(v.name) + 2
+		}
+		paddedName := fmt.Sprintf("%-*s", availableForName, v.name)
+		menuText := fmt.Sprintf("%s %s%s", v.key, paddedName, shortcutHint)
 
 		// Selection indicator prefix (using fixed-width ASCII)
 		var prefix string
