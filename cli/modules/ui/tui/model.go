@@ -238,6 +238,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.YPosition = headerHeight
 
 	case tea.KeyMsg:
+		// In Logs view, typing goes directly to search (no '/' needed)
+		if m.currentView == core.VMLogs && m.focusArea == FocusMain && !m.showDialog && !m.showHelp {
+			if m.handleLogsKeyInput(msg) {
+				// Key was handled by logs input
+				return m, nil
+			}
+		}
+
 		if m.logSearchActive {
 			cmd := m.handleLogSearchInput(msg)
 			if cmd != nil {
@@ -992,7 +1000,74 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 	return nil
 }
 
-// handleLogSearchInput handles typing in log search mode
+// handleLogsKeyInput handles direct typing in logs view search field
+// Returns true if the key was handled, false if it should be processed normally
+func (m *Model) handleLogsKeyInput(msg tea.KeyMsg) bool {
+	key := msg.String()
+
+	// Navigation keys should not be captured
+	switch key {
+	case "up", "down", "pgup", "pgdown", "home", "end", "tab", "shift+tab",
+		"ctrl+c", "ctrl+r", "ctrl+b", "?", "q", "esc",
+		"D", "P", "B", "O", "L", "G", "C": // View navigation
+		return false
+	}
+
+	// Level filter shortcuts
+	switch key {
+	case "e":
+		m.toggleLogLevel("error")
+		return true
+	case "w":
+		m.toggleLogLevel("warn")
+		return true
+	case "i":
+		m.toggleLogLevel("info")
+		return true
+	case "a":
+		m.logLevelFilter = "" // All
+		return true
+	case "x":
+		m.logSearchText = "" // Clear search
+		return true
+	}
+
+	// Shift+Backspace - clear all text
+	if key == "shift+backspace" {
+		m.logSearchText = ""
+		return true
+	}
+
+	// Backspace - delete last char
+	if key == "backspace" {
+		if len(m.logSearchText) > 0 {
+			m.logSearchText = m.logSearchText[:len(m.logSearchText)-1]
+		}
+		return true
+	}
+
+	// Shift+Delete - clear all (same as x)
+	if key == "shift+delete" || key == "delete" {
+		m.logSearchText = ""
+		return true
+	}
+
+	// Printable characters - add to search
+	if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
+		m.logSearchText += key
+		return true
+	}
+
+	// Space
+	if key == " " {
+		m.logSearchText += " "
+		return true
+	}
+
+	return false
+}
+
+// handleLogSearchInput handles typing in log search mode (legacy, for '/' activation)
 func (m *Model) handleLogSearchInput(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "enter":

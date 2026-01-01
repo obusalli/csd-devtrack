@@ -266,10 +266,10 @@ func (m *Model) renderFooter() string {
 			)
 		}
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("/")+HelpDescStyle.Render(" search  "),
+			HelpKeyStyle.Render("type")+HelpDescStyle.Render(" search  "),
+			HelpKeyStyle.Render("x")+HelpDescStyle.Render(" clear  "),
 			HelpKeyStyle.Render("e")+HelpDescStyle.Render(" err  "),
 			HelpKeyStyle.Render("w")+HelpDescStyle.Render(" warn  "),
-			HelpKeyStyle.Render("i")+HelpDescStyle.Render(" info  "),
 			HelpKeyStyle.Render("a")+HelpDescStyle.Render(" all  "),
 		)
 	case core.VMGit:
@@ -1012,15 +1012,16 @@ func (m *Model) renderLogs(width, height int) string {
 	}
 	levelBar := strings.Join(filterButtons, " ")
 
-	// Search box
+	// Search box - always editable when in focus
 	searchLabel := SubtitleStyle.Render("Search: ")
 	var searchBox string
-	if m.logSearchActive {
-		searchBox = InputFocusedStyle.Width(20).Render(m.logSearchText + "█")
+	if m.focusArea == FocusMain {
+		// Show cursor when focused
+		searchBox = InputFocusedStyle.Width(25).Render(m.logSearchText + "█")
 	} else if m.logSearchText != "" {
-		searchBox = InputStyle.Width(20).Render(m.logSearchText)
+		searchBox = InputStyle.Width(25).Render(m.logSearchText)
 	} else {
-		searchBox = InputStyle.Width(20).Render(SubtitleStyle.Render("/ to search"))
+		searchBox = InputStyle.Width(25).Render(SubtitleStyle.Render("type to search..."))
 	}
 
 	filterBar := lipgloss.JoinHorizontal(lipgloss.Center,
@@ -1752,9 +1753,10 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		"  Ctrl+C    Cancel current build",
 		"",
 		HelpKeyStyle.Render("Logs"),
-		"  /         Search logs",
+		"  <type>    Search logs (direct input)",
 		"  e w i a   Filter: error/warn/info/all",
-		"  x         Clear search",
+		"  x/Del     Clear search",
+		"  Bksp      Delete last char",
 		"",
 		HelpKeyStyle.Render("Git"),
 		"  Enter     Show files / Show diff",
