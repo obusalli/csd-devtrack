@@ -3,48 +3,14 @@ settings:
     auto_detect: true
     parallel_builds: 4
     log_buffer_size: 10000
+    log_level: ""
     web_enabled: true
     web_port: 9099
     websocket_port: 9098
-projects:
-    - id: csd-core
-      name: csd-core
-      path: /Users/bubu/data/devel/infra/csd-core
-      type: full-stack
-      components:
-        agent:
-            type: agent
-            path: agent/
-            entry_point: csd-core-agent.go
-            binary: csd-core-agent
-            build_cmd: ""
-            run_cmd: ""
-            port: 0
-            enabled: true
-        backend:
-            type: backend
-            path: backend/
-            entry_point: csd-cored.go
-            binary: csd-cored
-            build_cmd: ""
-            run_cmd: ""
-            port: 0
-            enabled: true
-        cli:
-            type: cli
-            path: cli/
-            entry_point: csd-corectl.go
-            binary: csd-corectl
-            build_cmd: ""
-            run_cmd: ""
-            port: 0
-            enabled: true
-        frontend:
-            type: frontend
-            path: frontend/
-            entry_point: ""
-            binary: ""
-            build_cmd: ""
-            run_cmd: ""
-            port: 5173
-            enabled: true
+    csd_core_enabled: false
+    csd_core_url: ""
+    csd_core_federation: false
+    theme: ""
+    refresh_rate: 0
+    show_timestamps: false
+projects: []

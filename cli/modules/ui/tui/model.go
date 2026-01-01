@@ -94,6 +94,9 @@ type Model struct {
 	browserEntries  []BrowserEntry // Directory entries (uses mainIndex for selection)
 	detectedProject *DetectedProjectInfo // Detected project in current dir
 
+	// Pending actions (for dialogs)
+	pendingRemovePath string // Path of project to remove (for confirmation dialog)
+
 	// Components
 	help     help.Model
 	spinner  spinner.Model
@@ -686,6 +689,17 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			if m.configMode == "browser" {
 				m.enterBrowserDirectory()
 				return nil
+			} else if m.configMode == "projects" {
+				// Navigate to project in browser
+				cfg := config.GetGlobal()
+				if cfg != nil && m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
+					proj := cfg.Projects[m.mainIndex]
+					m.browserPath = proj.Path
+					m.configMode = "browser"
+					m.mainIndex = 0
+					m.loadBrowserEntries()
+				}
+				return nil
 			}
 		case "backspace":
 			if m.configMode == "browser" && m.browserPath != "/" {
@@ -705,26 +719,25 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 		case "x", "X":
-			// Remove project from config
+			// Remove project from config - ask for confirmation
 			if m.configMode == "projects" {
 				cfg := config.GetGlobal()
 				if cfg != nil && m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
-					path := cfg.Projects[m.mainIndex].Path
-					if err := m.removeProjectFromConfig(path); err == nil {
-						if m.mainIndex >= len(cfg.Projects)-1 {
-							m.mainIndex = len(cfg.Projects) - 2
-							if m.mainIndex < 0 {
-								m.mainIndex = 0
-							}
-						}
-					}
+					proj := cfg.Projects[m.mainIndex]
+					m.pendingRemovePath = proj.Path
+					m.dialogType = "remove_project"
+					m.dialogMessage = "Remove '" + proj.Name + "' from config?"
+					m.dialogConfirm = false
+					m.showDialog = true
 				}
 				return nil
 			} else if m.configMode == "browser" && m.detectedProject != nil {
 				if m.isProjectInConfig(m.detectedProject.Path) {
-					if err := m.removeProjectFromConfig(m.detectedProject.Path); err == nil {
-						m.loadBrowserEntries() // Refresh
-					}
+					m.pendingRemovePath = m.detectedProject.Path
+					m.dialogType = "remove_project"
+					m.dialogMessage = "Remove '" + m.detectedProject.Name + "' from config?"
+					m.dialogConfirm = false
+					m.showDialog = true
 				}
 				return nil
 			}
@@ -782,6 +795,25 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 	switch m.dialogType {
 	case "kill":
 		return m.killSelected()
+	case "remove_project":
+		if m.pendingRemovePath != "" {
+			if err := m.removeProjectFromConfig(m.pendingRemovePath); err == nil {
+				// Adjust index if needed
+				cfg := config.GetGlobal()
+				if cfg != nil && m.mainIndex >= len(cfg.Projects) {
+					m.mainIndex = len(cfg.Projects) - 1
+					if m.mainIndex < 0 {
+						m.mainIndex = 0
+					}
+				}
+				// Refresh browser if in browser mode
+				if m.configMode == "browser" {
+					m.loadBrowserEntries()
+				}
+			}
+			m.pendingRemovePath = ""
+		}
+		return nil
 	}
 	return nil
 }
