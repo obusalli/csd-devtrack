@@ -40,6 +40,10 @@ type AppPresenter struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// Build cancellation
+	buildCtx    context.Context
+	buildCancel context.CancelFunc
+
 	// Self process tracking
 	startTime time.Time // When csd-devtrack started
 }
@@ -292,15 +296,31 @@ func (p *AppPresenter) handleRemoveProject(event *Event) error {
 }
 
 func (p *AppPresenter) handleStartBuild(event *Event) error {
+	// Cancel any previous build
+	if p.buildCancel != nil {
+		p.buildCancel()
+	}
+
+	// Create a new cancellable context for this build
+	p.buildCtx, p.buildCancel = context.WithCancel(p.ctx)
+
 	go func() {
 		var err error
+		buildCtx := p.buildCtx // Capture context
+
 		if event.Component != "" {
-			result := p.buildOrch.BuildComponent(p.ctx, event.ProjectID, event.Component)
+			result := p.buildOrch.BuildComponent(buildCtx, event.ProjectID, event.Component)
 			if result.Error != nil {
 				err = result.Error
 			}
 		} else {
-			_, err = p.buildOrch.BuildProject(p.ctx, event.ProjectID)
+			_, err = p.buildOrch.BuildProject(buildCtx, event.ProjectID)
+		}
+
+		// Check if cancelled
+		if buildCtx.Err() == context.Canceled {
+			p.notify(NotifyWarning, "Build Cancelled", fmt.Sprintf("%s build was cancelled", event.ProjectID))
+			return
 		}
 
 		if err != nil {
@@ -314,8 +334,24 @@ func (p *AppPresenter) handleStartBuild(event *Event) error {
 }
 
 func (p *AppPresenter) handleBuildAll(event *Event) error {
+	// Cancel any previous build
+	if p.buildCancel != nil {
+		p.buildCancel()
+	}
+
+	// Create a new cancellable context for this build
+	p.buildCtx, p.buildCancel = context.WithCancel(p.ctx)
+
 	go func() {
-		results, err := p.buildOrch.BuildAll(p.ctx)
+		buildCtx := p.buildCtx // Capture context
+		results, err := p.buildOrch.BuildAll(buildCtx)
+
+		// Check if cancelled
+		if buildCtx.Err() == context.Canceled {
+			p.notify(NotifyWarning, "Build Cancelled", "Build all was cancelled")
+			return
+		}
+
 		if err != nil {
 			p.notify(NotifyError, "Build Failed", err.Error())
 			return
@@ -335,7 +371,21 @@ func (p *AppPresenter) handleBuildAll(event *Event) error {
 }
 
 func (p *AppPresenter) handleCancelBuild(event *Event) error {
-	// TODO: Implement build cancellation
+	if p.buildCancel != nil {
+		p.buildCancel()
+		p.buildCancel = nil
+
+		// Update state to show build is cancelled
+		p.mu.Lock()
+		p.state.Builds.IsBuilding = false
+		if p.state.Builds.CurrentBuild != nil {
+			p.state.Builds.CurrentBuild.Status = builds.BuildStatusCanceled
+		}
+		p.mu.Unlock()
+
+		p.notifyStateUpdate(VMBuild, p.state.Builds)
+		p.notify(NotifyInfo, "Build Cancelled", "Build was cancelled by user")
+	}
 	return nil
 }
 

@@ -345,6 +345,10 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, m.keys.Quit):
 		return tea.Quit
 
+	// Cancel current build/process (Ctrl+C)
+	case key.Matches(msg, m.keys.Cancel):
+		return m.cancelCurrent()
+
 	// Help toggle
 	case key.Matches(msg, m.keys.Help):
 		m.showHelp = !m.showHelp
@@ -780,6 +784,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			m.dialogMessage = "Kill the selected process?"
 			m.showDialog = true
 			return nil
+		case "l":
+			return m.viewLogsForSelected()
 		}
 	}
 
@@ -1212,6 +1218,49 @@ func (m *Model) viewLogs() tea.Cmd {
 	return m.sendEvent(core.NewEvent(core.EventViewLogs).WithProject(projectID))
 }
 
+// viewLogsForSelected goes to logs view filtered by the selected component
+func (m *Model) viewLogsForSelected() tea.Cmd {
+	projectID := m.getSelectedProjectID()
+	if projectID == "" {
+		return nil
+	}
+	component := m.getSelectedComponent()
+
+	// Switch to Logs view
+	m.currentView = core.VMLogs
+	m.sidebarIndex = 4 // Logs view index
+
+	// Set log filter to show only this component's logs
+	if component != "" {
+		m.logSearchText = projectID + "/" + string(component)
+	} else {
+		m.logSearchText = projectID
+	}
+
+	return m.sendEvent(core.NewEvent(core.EventViewLogs).WithProject(projectID).WithComponent(component))
+}
+
+// cancelCurrent cancels the current build or stops the current process
+func (m *Model) cancelCurrent() tea.Cmd {
+	// If we're building, cancel the build
+	if m.state.Builds != nil && m.state.Builds.IsBuilding {
+		// Cancel the current build
+		return m.sendEvent(core.NewEvent(core.EventCancelBuild))
+	}
+
+	// If we have a selected running process, stop it
+	projectID := m.getSelectedProjectID()
+	if projectID != "" && !m.isSelectedProjectSelf() {
+		component := m.getSelectedComponent()
+		return m.sendEvent(core.NewEvent(core.EventStopProcess).WithProject(projectID).WithComponent(component))
+	}
+
+	// No action - just show a message
+	m.lastError = "Nothing to cancel"
+	m.lastErrorTime = time.Now()
+	return nil
+}
+
 func (m *Model) getSelectedProjectID() string {
 	switch m.currentView {
 	case core.VMProjects:
@@ -1257,26 +1306,33 @@ func (m *Model) getProjectForComponentRow(rowIndex int) *core.ProjectVM {
 	return nil
 }
 
-// getSelectedComponent returns the component type for the selected row in Projects view
+// getSelectedComponent returns the component type for the selected row
 func (m *Model) getSelectedComponent() projects.ComponentType {
-	if m.currentView != core.VMProjects || m.state.Projects == nil {
-		return ""
-	}
-	currentRow := 0
-	for i := range m.state.Projects.Projects {
-		p := &m.state.Projects.Projects[i]
-		if len(p.Components) == 0 {
-			if m.mainIndex == currentRow {
-				return "" // Project with no components
-			}
-			currentRow++
-		} else {
-			for _, comp := range p.Components {
+	switch m.currentView {
+	case core.VMProjects:
+		if m.state.Projects == nil {
+			return ""
+		}
+		currentRow := 0
+		for i := range m.state.Projects.Projects {
+			p := &m.state.Projects.Projects[i]
+			if len(p.Components) == 0 {
 				if m.mainIndex == currentRow {
-					return comp.Type
+					return "" // Project with no components
 				}
 				currentRow++
+			} else {
+				for _, comp := range p.Components {
+					if m.mainIndex == currentRow {
+						return comp.Type
+					}
+					currentRow++
+				}
 			}
+		}
+	case core.VMProcesses:
+		if m.state.Processes != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Processes.Processes) {
+			return m.state.Processes.Processes[m.mainIndex].Component
 		}
 	}
 	return ""

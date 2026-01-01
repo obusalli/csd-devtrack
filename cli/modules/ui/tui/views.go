@@ -237,20 +237,34 @@ func (m *Model) renderFooter() string {
 			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
 			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
+			HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
 		)
 	case core.VMBuild:
-		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
-			HelpKeyStyle.Render("C-b")+HelpDescStyle.Render(" all  "),
-		)
+		if m.state.Builds != nil && m.state.Builds.IsBuilding {
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("C-c")+HelpDescStyle.Render(" cancel  "),
+			)
+		} else {
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
+				HelpKeyStyle.Render("C-b")+HelpDescStyle.Render(" all  "),
+			)
+		}
 	case core.VMProcesses:
 		shortcuts = append(shortcuts,
 			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
 			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
 			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
+			HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
 		)
 	case core.VMLogs:
+		// Show cancel if a build is running
+		if m.state.Builds != nil && m.state.Builds.IsBuilding {
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("C-c")+HelpDescStyle.Render(" cancel  "),
+			)
+		}
 		shortcuts = append(shortcuts,
 			HelpKeyStyle.Render("/")+HelpDescStyle.Render(" search  "),
 			HelpKeyStyle.Render("e")+HelpDescStyle.Render(" err  "),
@@ -1718,30 +1732,48 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 	helpContent := []string{
 		DialogTitleStyle.Render("Keyboard Shortcuts"),
 		"",
-		HelpKeyStyle.Render("Navigation"),
+		HelpKeyStyle.Render("Global Navigation"),
 		"  ↑/↓       Navigate items",
 		"  Tab       Switch focus between panels",
 		"  D P B O   Dashboard, Projects, Build, PrOcesses",
 		"  L G C     Logs, Git, Config",
 		"  PgUp/Dn   Page scroll",
+		"  Esc       Back / Cancel",
 		"",
-		HelpKeyStyle.Render("Actions (Projects/Processes)"),
-		"  b         Build selected",
-		"  r         Run/Start",
-		"  s         Stop",
-		"  k         Kill (force)",
-		"  Ctrl+B    Build all",
+		HelpKeyStyle.Render("Actions (Projects/Processes/Dashboard)"),
+		"  b         Build selected component",
+		"  r         Run/Start component",
+		"  s         Stop component",
+		"  k         Kill (force stop)",
+		"  l         View logs for component",
+		"",
+		HelpKeyStyle.Render("Build"),
+		"  Ctrl+B    Build all projects",
+		"  Ctrl+C    Cancel current build",
+		"",
+		HelpKeyStyle.Render("Logs"),
+		"  /         Search logs",
+		"  e w i a   Filter: error/warn/info/all",
+		"  x         Clear search",
+		"",
+		HelpKeyStyle.Render("Git"),
+		"  Enter     Show files / Show diff",
+		"  Esc       Back to project list",
+		"",
+		HelpKeyStyle.Render("Config"),
+		"  ←→        Switch tabs",
+		"  a         Add project (in browser)",
+		"  x         Remove project",
 		"",
 		HelpKeyStyle.Render("Other"),
-		"  /         Filter",
-		"  Ctrl+R    Refresh",
-		"  ?         Toggle help",
+		"  Ctrl+R    Refresh data",
+		"  ?         Toggle this help",
 		"  q         Quit",
 		"",
 		SubtitleStyle.Render("Press any key to close"),
 	}
 
-	helpBox := DialogStyle.Width(50).Render(strings.Join(helpContent, "\n"))
+	helpBox := DialogStyle.Width(55).Render(strings.Join(helpContent, "\n"))
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, helpBox)
 }

@@ -43,6 +43,7 @@ type KeyMap struct {
 	Help   key.Binding
 	Quit   key.Binding
 	Filter key.Binding
+	Cancel key.Binding // Ctrl+C to cancel current build/process
 }
 
 // DefaultKeyMap returns the default key bindings
@@ -138,8 +139,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("k", "kill"),
 		),
 		Logs: key.NewBinding(
-			key.WithKeys("ctrl+l"),
-			key.WithHelp("C-l", "view logs"),
+			key.WithKeys("l"),
+			key.WithHelp("l", "view logs"),
 		),
 
 		// Git (in Git view only)
@@ -162,12 +163,16 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("?", "help"),
 		),
 		Quit: key.NewBinding(
-			key.WithKeys("q", "ctrl+c"),
+			key.WithKeys("q"),
 			key.WithHelp("q", "quit"),
 		),
 		Filter: key.NewBinding(
 			key.WithKeys("/"),
 			key.WithHelp("/", "filter"),
+		),
+		Cancel: key.NewBinding(
+			key.WithKeys("ctrl+c"),
+			key.WithHelp("C-c", "cancel build/process"),
 		),
 	}
 }
@@ -176,7 +181,7 @@ func DefaultKeyMap() KeyMap {
 func (k KeyMap) ShortHelp() []key.Binding {
 	return []key.Binding{
 		k.Up, k.Down, k.Enter, k.Tab,
-		k.Build, k.Run, k.Stop,
+		k.Build, k.Run, k.Stop, k.Cancel,
 		k.Help, k.Quit,
 	}
 }
@@ -193,6 +198,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		// Git
 		{k.GitStatus, k.GitDiff, k.GitLog},
 		// Other
-		{k.Filter, k.Help, k.Quit},
+		{k.Filter, k.Cancel, k.Help, k.Quit},
 	}
 }
