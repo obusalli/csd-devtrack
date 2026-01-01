@@ -1066,7 +1066,7 @@ func (m *Model) renderConfig(width, height int) string {
 		}
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	tabHint := SubtitleStyle.Render("  [n]/[N] switch tabs")
+	tabHint := SubtitleStyle.Render("  Shift+←/→ or n/N")
 	tabBar = lipgloss.JoinHorizontal(lipgloss.Center, tabBar, tabHint)
 
 	// Render content based on mode
