@@ -258,22 +258,6 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		m.cycleFocus(-1)
 		return nil
 
-	// View shortcuts (1-7)
-	case key.Matches(msg, m.keys.View1):
-		return m.selectView(0)
-	case key.Matches(msg, m.keys.View2):
-		return m.selectView(1)
-	case key.Matches(msg, m.keys.View3):
-		return m.selectView(2)
-	case key.Matches(msg, m.keys.View4):
-		return m.selectView(3)
-	case key.Matches(msg, m.keys.View5):
-		return m.selectView(4)
-	case key.Matches(msg, m.keys.View6):
-		return m.selectView(5)
-	case key.Matches(msg, m.keys.View7):
-		return m.selectView(6)
-
 	// Directional navigation
 	case key.Matches(msg, m.keys.Up):
 		m.navigateUp()

@@ -25,15 +25,6 @@ type KeyMap struct {
 	Delete  key.Binding
 	Refresh key.Binding
 
-	// Views (number keys)
-	View1 key.Binding // Dashboard
-	View2 key.Binding // Projects
-	View3 key.Binding // Build
-	View4 key.Binding // Processes
-	View5 key.Binding // Logs
-	View6 key.Binding // Git
-	View7 key.Binding // Config
-
 	// Project actions
 	Build    key.Binding
 	BuildAll key.Binding
@@ -121,36 +112,6 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("C-r", "refresh"),
 		),
 
-		// Views
-		View1: key.NewBinding(
-			key.WithKeys("1"),
-			key.WithHelp("1", "dashboard"),
-		),
-		View2: key.NewBinding(
-			key.WithKeys("2"),
-			key.WithHelp("2", "projects"),
-		),
-		View3: key.NewBinding(
-			key.WithKeys("3"),
-			key.WithHelp("3", "build"),
-		),
-		View4: key.NewBinding(
-			key.WithKeys("4"),
-			key.WithHelp("4", "processes"),
-		),
-		View5: key.NewBinding(
-			key.WithKeys("5"),
-			key.WithHelp("5", "logs"),
-		),
-		View6: key.NewBinding(
-			key.WithKeys("6"),
-			key.WithHelp("6", "git"),
-		),
-		View7: key.NewBinding(
-			key.WithKeys("7"),
-			key.WithHelp("7", "config"),
-		),
-
 		// Project actions
 		Build: key.NewBinding(
 			key.WithKeys("f5"),
@@ -225,8 +186,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		// Navigation
 		{k.Up, k.Down, k.Left, k.Right, k.PageUp, k.PageDown, k.Tab, k.ShiftTab},
-		// Views
-		{k.View1, k.View2, k.View3, k.View4, k.View5, k.View6, k.View7},
 		// Actions
 		{k.Enter, k.Space, k.Escape, k.Refresh},
 		// Project

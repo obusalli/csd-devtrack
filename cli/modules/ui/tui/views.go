@@ -72,17 +72,16 @@ func (m *Model) renderHeader() string {
 
 // sidebarViews defines the navigation menu items
 var sidebarViews = []struct {
-	key   string
 	name  string // Name with [X] shortcut highlighted
 	vtype core.ViewModelType
 }{
-	{"1", "[D]ashboard", core.VMDashboard},
-	{"2", "[P]rojects", core.VMProjects},
-	{"3", "[B]uild", core.VMBuild},
-	{"4", "Pr[o]cesses", core.VMProcesses},
-	{"5", "[L]ogs", core.VMLogs},
-	{"6", "[G]it", core.VMGit},
-	{"7", "[C]onfig", core.VMConfig},
+	{"[D]ashboard", core.VMDashboard},
+	{"[P]rojects", core.VMProjects},
+	{"[B]uild", core.VMBuild},
+	{"Pr[o]cesses", core.VMProcesses},
+	{"[L]ogs", core.VMLogs},
+	{"[G]it", core.VMGit},
+	{"[C]onfig", core.VMConfig},
 }
 
 // getSidebarWidth returns a fixed width that fits all menu items
@@ -137,8 +136,8 @@ func (m *Model) renderSidebar() string {
 		// Highlight the [X] shortcut in the name
 		displayName := highlightShortcut(v.name)
 
-		// Format: prefix + key + space + name
-		item := fmt.Sprintf("%s%s %s", prefix, v.key, displayName)
+		// Format: prefix + name
+		item := fmt.Sprintf("%s%s", prefix, displayName)
 
 		// Apply consistent styling with same padding for all states
 		if m.currentView == v.vtype {
