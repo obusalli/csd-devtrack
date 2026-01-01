@@ -1141,21 +1141,19 @@ func (m *Model) renderConfigProjects(width, height int) string {
 			compsText = " [" + strings.Join(compBadges, ", ") + "]"
 		}
 
-		// Build the row with proper styling
+		// Build the row content
+		rowContent := fmt.Sprintf("%s%-25s%s", indicator, truncate(proj.Name, 25), compsText)
+
+		// Apply styling
 		var row string
 		if isSelected {
-			// Selected: uniform background, no inline styling
-			row = TableRowSelectedStyle.Width(width).Render(
-				fmt.Sprintf("%s%-20s%s", indicator, proj.Name, compsText))
+			// Selected: uniform background
+			row = TableRowSelectedStyle.Width(width).Render(rowContent)
 		} else {
-			// Normal: project name + styled components
-			compsStyled := ""
-			if compsText != "" {
-				compsStyled = lipgloss.NewStyle().
-					Foreground(ColorSecondary).
-					Render(compsText)
-			}
-			row = fmt.Sprintf("%s%-20s%s", indicator, proj.Name, compsStyled)
+			// Normal: just render with width
+			row = lipgloss.NewStyle().Width(width).Render(
+				fmt.Sprintf("%s%-25s%s", indicator, truncate(proj.Name, 25),
+					lipgloss.NewStyle().Foreground(ColorSecondary).Render(compsText)))
 		}
 		rows = append(rows, row)
 	}

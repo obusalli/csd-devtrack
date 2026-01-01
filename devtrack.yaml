@@ -13,4 +13,109 @@ settings:
     theme: ""
     refresh_rate: 0
     show_timestamps: false
-projects: []
+projects:
+    - id: csd-core
+      name: csd-core
+      path: /Users/bubu/data/devel/infra/csd-core
+      type: full-stack
+      components:
+        agent:
+            type: agent
+            path: agent/
+            entry_point: csd-core-agent.go
+            binary: csd-core-agent
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
+        backend:
+            type: backend
+            path: backend/
+            entry_point: csd-cored.go
+            binary: csd-cored
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
+        cli:
+            type: cli
+            path: cli/
+            entry_point: csd-corectl.go
+            binary: csd-corectl
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
+        frontend:
+            type: frontend
+            path: frontend/
+            entry_point: ""
+            binary: ""
+            build_cmd: ""
+            run_cmd: ""
+            port: 5173
+            enabled: true
+    - id: csd-pilote
+      name: csd-pilote
+      path: /Users/bubu/data/devel/infra/csd-pilote
+      type: backend-only
+      components:
+        backend:
+            type: backend
+            path: backend/
+            entry_point: csd-piloted.go
+            binary: csd-piloted
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
+        cli:
+            type: cli
+            path: cli/
+            entry_point: csd-pilotectl.go
+            binary: csd-pilotectl
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
+        frontend:
+            type: frontend
+            path: frontend/
+            entry_point: ""
+            binary: ""
+            build_cmd: ""
+            run_cmd: ""
+            port: 5173
+            enabled: true
+    - id: csd-stocks
+      name: csd-stocks
+      path: /Users/bubu/data/devel/infra/csd-stocks
+      type: backend-only
+      components:
+        backend:
+            type: backend
+            path: backend/
+            entry_point: csd-stockd.go
+            binary: csd-stockd
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
+        cli:
+            type: cli
+            path: cli/
+            entry_point: csd-stockctl.go
+            binary: csd-stockctl
+            build_cmd: ""
+            run_cmd: ""
+            port: 0
+            enabled: true
+        frontend:
+            type: frontend
+            path: frontend/
+            entry_point: ""
+            binary: ""
+            build_cmd: ""
+            run_cmd: ""
+            port: 5173
+            enabled: true
