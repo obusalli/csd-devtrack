@@ -279,6 +279,7 @@ func (m *Model) renderFooter() string {
 		switch m.configMode {
 		case "projects":
 			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" browse  "),
 				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" remove  "),
 			)
 		case "browser":
@@ -287,6 +288,10 @@ func (m *Model) renderFooter() string {
 				HelpKeyStyle.Render("Bksp")+HelpDescStyle.Render(" back  "),
 				HelpKeyStyle.Render("a")+HelpDescStyle.Render(" add  "),
 				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" remove  "),
+			)
+		case "settings":
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" scroll  "),
 			)
 		}
 	}
