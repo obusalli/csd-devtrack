@@ -1124,11 +1124,11 @@ func (m *Model) renderConfigProjects(width, height int) string {
 
 	var rows []string
 	for i, proj := range cfg.Projects {
+		isSelected := i == m.mainIndex && m.focusArea == FocusMain
+
 		indicator := "  "
-		style := lipgloss.NewStyle()
-		if i == m.mainIndex && m.focusArea == FocusMain {
+		if isSelected {
 			indicator = "> "
-			style = TableRowSelectedStyle
 		}
 
 		// Component badges
@@ -1136,15 +1136,28 @@ func (m *Model) renderConfigProjects(width, height int) string {
 		for compType := range proj.Components {
 			compBadges = append(compBadges, string(compType))
 		}
-		comps := ""
+		compsText := ""
 		if len(compBadges) > 0 {
-			comps = lipgloss.NewStyle().
-				Foreground(ColorSecondary).
-				Render(" [" + strings.Join(compBadges, ",") + "]")
+			compsText = " [" + strings.Join(compBadges, ", ") + "]"
 		}
 
-		row := fmt.Sprintf("%s%s%s", indicator, proj.Name, comps)
-		rows = append(rows, style.Render(row))
+		// Build the row with proper styling
+		var row string
+		if isSelected {
+			// Selected: uniform background, no inline styling
+			row = TableRowSelectedStyle.Width(width).Render(
+				fmt.Sprintf("%s%-20s%s", indicator, proj.Name, compsText))
+		} else {
+			// Normal: project name + styled components
+			compsStyled := ""
+			if compsText != "" {
+				compsStyled = lipgloss.NewStyle().
+					Foreground(ColorSecondary).
+					Render(compsText)
+			}
+			row = fmt.Sprintf("%s%-20s%s", indicator, proj.Name, compsStyled)
+		}
+		rows = append(rows, row)
 	}
 
 	// Show selected project details
