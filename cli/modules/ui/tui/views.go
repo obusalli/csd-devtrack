@@ -71,44 +71,31 @@ func (m *Model) renderHeader() string {
 
 // sidebarViews defines the navigation menu items
 var sidebarViews = []struct {
-	key      string
-	name     string
-	icon     string
-	shortcut string // Additional shortcut key
-	vtype    core.ViewModelType
+	key   string
+	name  string // Name with [X] shortcut highlighted
+	vtype core.ViewModelType
 }{
-	{"1", "Dashboard", "◉", "d", core.VMDashboard},
-	{"2", "Projects", "◎", "p", core.VMProjects},
-	{"3", "Build", "⚙", "b", core.VMBuild},
-	{"4", "Processes", "▶", "o", core.VMProcesses},
-	{"5", "Logs", "☰", "l", core.VMLogs},
-	{"6", "Git", "⎇", "g", core.VMGit},
-	{"7", "Config", "⚙", "c", core.VMConfig},
+	{"1", "[D]ashboard", core.VMDashboard},
+	{"2", "[P]rojects", core.VMProjects},
+	{"3", "[B]uild", core.VMBuild},
+	{"4", "Pr[o]cesses", core.VMProcesses},
+	{"5", "[L]ogs", core.VMLogs},
+	{"6", "[G]it", core.VMGit},
+	{"7", "[C]onfig", core.VMConfig},
 }
 
-// getSidebarWidth calculates the optimal sidebar width based on menu items
+// getSidebarWidth returns a fixed width that fits all menu items
 func getSidebarWidth() int {
+	// Find longest name
 	maxLen := 0
 	for _, v := range sidebarViews {
-		// Format: "> 1 Dashboard  [d]"
-		// Components:
-		//   prefix:   2 chars  "> "
-		//   key:      1 char   "1"
-		//   space:    1 char   " "
-		//   name:     N chars  "Dashboard" (max 9)
-		//   padding:  2 chars  "  "
-		//   shortcut: 3 chars  "[d]"
-		// Total visible: 2 + 1 + 1 + N + 2 + 3 = N + 9
-		itemLen := len(v.name) + 9
-		if itemLen > maxLen {
-			maxLen = itemLen
+		// Name like "[D]ashboard" = 11 chars
+		if len(v.name) > maxLen {
+			maxLen = len(v.name)
 		}
 	}
-	// Add generous padding:
-	//   borders: 2 chars
-	//   internal Padding(0,2): 4 chars
-	//   extra safety: 6 chars
-	// Total padding: 12
+	// Format: "> 1 [D]ashboard" = prefix(2) + key(1) + space(1) + name
+	// + borders(2) + padding(4) + margin(2)
 	return maxLen + 12
 }
 
@@ -134,31 +121,23 @@ func (m *Model) renderSidebar() string {
 	items = append(items, title, separator)
 
 	for i, v := range sidebarViews {
-		// Build the menu item with shortcut hint
-		// Format: "1 Dashboard  [d]"
-		// Calculate available space for name (total - prefix - key - spaces - shortcut)
-		// itemWidth - 2(prefix) - 1(key) - 1(space) - 2(padding) - 3(shortcut) = itemWidth - 9
-		shortcutHint := SubtitleStyle.Render(fmt.Sprintf("[%s]", v.shortcut))
-		availableForName := itemWidth - 9
-		if availableForName < len(v.name) {
-			availableForName = len(v.name) + 2
-		}
-		paddedName := fmt.Sprintf("%-*s", availableForName, v.name)
-		menuText := fmt.Sprintf("%s %s%s", v.key, paddedName, shortcutHint)
-
-		// Selection indicator prefix (using fixed-width ASCII)
+		// Selection indicator prefix
 		var prefix string
 		if i == m.sidebarIndex {
 			if m.focusArea == FocusSidebar {
-				prefix = "> " // Active focus
+				prefix = "> "
 			} else {
-				prefix = "* " // Selected but not focused
+				prefix = "* "
 			}
 		} else {
-			prefix = "  " // Not selected
+			prefix = "  "
 		}
 
-		item := prefix + menuText
+		// Highlight the [X] shortcut in the name
+		displayName := highlightShortcut(v.name)
+
+		// Format: prefix + key + space + name
+		item := fmt.Sprintf("%s%s %s", prefix, v.key, displayName)
 
 		// Apply consistent styling with same padding for all states
 		if m.currentView == v.vtype {
@@ -1249,4 +1228,28 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// highlightShortcut highlights the [X] shortcut in a menu name
+// e.g., "[D]ashboard" -> styled "[D]" + "ashboard"
+func highlightShortcut(name string) string {
+	// Find [X] pattern
+	start := strings.Index(name, "[")
+	end := strings.Index(name, "]")
+
+	if start == -1 || end == -1 || end <= start {
+		return name
+	}
+
+	before := name[:start]
+	shortcut := name[start : end+1] // includes [ and ]
+	after := name[end+1:]
+
+	// Style the shortcut with accent color
+	styledShortcut := lipgloss.NewStyle().
+		Foreground(ColorSecondary).
+		Bold(true).
+		Render(shortcut)
+
+	return before + styledShortcut + after
 }
