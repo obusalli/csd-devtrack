@@ -709,6 +709,12 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				cfg := config.GetGlobal()
 				if cfg != nil && m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
 					proj := cfg.Projects[m.mainIndex]
+					// Can't remove self project
+					if proj.Self {
+						m.lastError = "Cannot remove csd-devtrack (self)"
+						m.lastErrorTime = time.Now()
+						return nil
+					}
 					m.pendingRemovePath = proj.Path
 					m.dialogType = "remove_project"
 					m.dialogMessage = "Remove '" + proj.Name + "' from config?"
@@ -718,6 +724,12 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			} else if m.configMode == "browser" && m.detectedProject != nil {
 				if m.isProjectInConfig(m.detectedProject.Path) {
+					// Check if it's the self project
+					if m.isSelfProject(m.detectedProject.Path) {
+						m.lastError = "Cannot remove csd-devtrack (self)"
+						m.lastErrorTime = time.Now()
+						return nil
+					}
 					m.pendingRemovePath = m.detectedProject.Path
 					m.dialogType = "remove_project"
 					m.dialogMessage = "Remove '" + m.detectedProject.Name + "' from config?"
@@ -1129,6 +1141,20 @@ func (m *Model) isProjectInConfig(path string) bool {
 	}
 	for _, p := range cfg.Projects {
 		if p.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// isSelfProject checks if a path is the self project (csd-devtrack)
+func (m *Model) isSelfProject(path string) bool {
+	cfg := config.GetGlobal()
+	if cfg == nil {
+		return false
+	}
+	for _, p := range cfg.Projects {
+		if p.Path == path && p.Self {
 			return true
 		}
 	}

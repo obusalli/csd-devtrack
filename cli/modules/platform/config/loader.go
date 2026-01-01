@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"csd-devtrack/cli/modules/core/projects"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -150,10 +152,50 @@ func LoadGlobal(configPath string) error {
 		return err
 	}
 
+	// Auto-add csd-devtrack as self project if in correct directory
+	ensureSelfProject(config, configPath)
+
 	globalConfig = config
 	globalConfigPath = configPath
 
 	return nil
+}
+
+// ensureSelfProject adds csd-devtrack itself to the project list if detected
+func ensureSelfProject(cfg *Config, configPath string) {
+	// Get the directory containing the config file
+	configDir := filepath.Dir(configPath)
+	if configDir == "" || configDir == "." {
+		configDir, _ = os.Getwd()
+	}
+
+	// Check if csd-devtrack is already in the config
+	for _, p := range cfg.Projects {
+		if p.Self {
+			return // Already has a self project
+		}
+	}
+
+	// Try to detect csd-devtrack project structure
+	detector := projects.NewDetector()
+	selfProject, err := detector.DetectProject(configDir)
+	if err != nil {
+		return // Not a valid project directory
+	}
+
+	// Verify it's actually csd-devtrack (has cli with csd-devtrack.go)
+	cliComp := selfProject.GetComponent(projects.ComponentCLI)
+	if cliComp == nil || cliComp.EntryPoint != "csd-devtrack.go" {
+		return // Not csd-devtrack
+	}
+
+	// Mark as self and add to config
+	selfProject.Self = true
+	selfProject.ID = "csd-devtrack"
+	selfProject.Name = "csd-devtrack"
+
+	// Insert at the beginning of the project list
+	cfg.Projects = append([]projects.Project{*selfProject}, cfg.Projects...)
 }
 
 // GetGlobal returns the global configuration
