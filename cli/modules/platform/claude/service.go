@@ -57,6 +57,7 @@ type persistentProcess struct {
 type Service struct {
 	mu              sync.RWMutex
 	sessions        map[string]*Session
+	customNames     map[string]string // sessionID -> custom name
 	dataDir         string
 	claudePath      string
 	isInstalled     bool
@@ -69,12 +70,14 @@ type Service struct {
 func NewService(dataDir string) *Service {
 	s := &Service{
 		sessions:        make(map[string]*Session),
+		customNames:     make(map[string]string),
 		dataDir:         dataDir,
 		activeProcs:     make(map[string]*exec.Cmd),
 		persistentProcs: make(map[string]*persistentProcess),
 		outputChans:     make(map[string]chan ClaudeOutput),
 	}
 	s.detectClaude()
+	s.loadCustomNames()
 	s.loadSessions()
 	return s
 }
@@ -132,6 +135,38 @@ func (s *Service) detectClaude() {
 func (s *Service) RefreshInstallStatus() bool {
 	s.detectClaude()
 	return s.IsInstalled()
+}
+
+// customNamesFile returns the path to the custom session names file
+func (s *Service) customNamesFile() string {
+	return filepath.Join(s.dataDir, "claude-session-names.json")
+}
+
+// loadCustomNames loads custom session names from local storage
+func (s *Service) loadCustomNames() {
+	data, err := os.ReadFile(s.customNamesFile())
+	if err != nil {
+		return // File doesn't exist yet
+	}
+
+	if err := json.Unmarshal(data, &s.customNames); err != nil {
+		s.customNames = make(map[string]string)
+	}
+}
+
+// saveCustomNames saves custom session names to local storage
+func (s *Service) saveCustomNames() error {
+	data, err := json.MarshalIndent(s.customNames, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(s.dataDir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(s.customNamesFile(), data, 0644)
 }
 
 // loadSessions loads sessions from Claude CLI's ~/.claude/projects/ directory
@@ -195,6 +230,10 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 		// Load session metadata from JSONL (workDir will be extracted from cwd field)
 		session := s.parseSessionFile(sessionID, sessionFile)
 		if session != nil {
+			// Apply custom name if one exists
+			if customName, ok := s.customNames[sessionID]; ok {
+				session.CustomName = customName
+			}
 			s.sessions[sessionID] = session
 		}
 	}
@@ -1020,7 +1059,7 @@ func (s *Service) ListSessionsForProject(projectID string) []*Session {
 	return sessions
 }
 
-// RenameSession renames a session (keeps project prefix)
+// RenameSession sets a custom name for a session (persisted locally)
 func (s *Service) RenameSession(sessionID, newName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1030,13 +1069,29 @@ func (s *Service) RenameSession(sessionID, newName string) error {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// Ensure name has project prefix
-	if !strings.HasPrefix(newName, sess.ProjectID+"-") {
-		newName = sess.ProjectID + "-" + newName
+	// Store the custom name (no prefix required for custom names)
+	sess.CustomName = newName
+	s.customNames[sessionID] = newName
+
+	// Save custom names to file
+	go s.saveCustomNames()
+	return nil
+}
+
+// ClearSessionCustomName removes the custom name for a session
+func (s *Service) ClearSessionCustomName(sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sess, ok := s.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	sess.Name = newName
-	go s.saveSessions()
+	sess.CustomName = ""
+	delete(s.customNames, sessionID)
+
+	go s.saveCustomNames()
 	return nil
 }
 

@@ -135,6 +135,7 @@ type Model struct {
 	claudeInstalled      bool            // Is Claude CLI installed
 	claudeMode           string          // "sessions", "chat", "settings"
 	claudeActiveSession  string          // Active session ID
+	claudeSessionLoading bool            // Loading session data
 	claudeInputText      string          // Current input text (deprecated, use claudeTextInput)
 	claudeInputActive    bool            // User is typing
 	claudeChatScroll     int             // Scroll offset for chat messages
@@ -658,15 +659,38 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 
 	// Page navigation
 	case key.Matches(msg, m.keys.PageUp):
+		// Claude chat: page up scrolls chat
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
+			m.claudeChatScroll += 10
+			return nil
+		}
 		m.pageUp()
 		return nil
 	case key.Matches(msg, m.keys.PageDown):
+		// Claude chat: page down scrolls chat
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
+			m.claudeChatScroll -= 10
+			if m.claudeChatScroll < 0 {
+				m.claudeChatScroll = 0
+			}
+			return nil
+		}
 		m.pageDown()
 		return nil
 	case key.Matches(msg, m.keys.Home):
+		// Claude chat: home goes to top
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
+			m.claudeChatScroll = 999999 // Will be clamped in render
+			return nil
+		}
 		m.goToStart()
 		return nil
 	case key.Matches(msg, m.keys.End):
+		// Claude chat: end goes to bottom (most recent)
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
+			m.claudeChatScroll = 0
+			return nil
+		}
 		m.goToEnd()
 		return nil
 
@@ -1350,26 +1374,27 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 
-		// Chat mode scroll controls (page/home/end - up/down handled in handleKeyPress)
+		// Chat mode vim-style scroll controls (ctrl+u/d, g/G)
+		// Note: pgup/pgdown/home/end/shift+up/shift+down handled in handleKeyPress
 		if m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
 			switch key {
-			case "pgup", "ctrl+u":
-				// Page up
+			case "ctrl+u":
+				// Half page up (vim style)
 				m.claudeChatScroll += 10
 				return nil
-			case "pgdown", "ctrl+d":
-				// Page down
+			case "ctrl+d":
+				// Half page down (vim style)
 				m.claudeChatScroll -= 10
 				if m.claudeChatScroll < 0 {
 					m.claudeChatScroll = 0
 				}
 				return nil
-			case "home", "g":
-				// Go to top
-				m.claudeChatScroll = 999999 // Will be clamped in render
+			case "g":
+				// Go to top (vim style)
+				m.claudeChatScroll = 999999
 				return nil
-			case "end", "G":
-				// Go to bottom (latest)
+			case "G":
+				// Go to bottom (vim style)
 				m.claudeChatScroll = 0
 				return nil
 			}
@@ -1529,10 +1554,12 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 
 	if item.IsProject {
 		// Project selected - create new session for this project
+		m.claudeSessionLoading = true
 		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(item.ProjectID))
 	}
 
 	// Session selected - switch to it
+	m.claudeSessionLoading = true
 	m.claudeActiveSession = item.SessionID
 
 	// Switch focus back to chat and activate input
@@ -1543,10 +1570,11 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 	// Reset scroll to show latest messages
 	m.claudeChatScroll = 0
 
-	// Send select event
+	// Send select event and trigger spinner
 	return tea.Batch(
 		m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(item.SessionID)),
 		m.claudeTextInput.Cursor.BlinkCmd(),
+		m.spinner.Tick,
 	)
 }
 

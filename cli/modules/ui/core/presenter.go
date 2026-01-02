@@ -1557,7 +1557,7 @@ func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
 	}
 	return &ClaudeSessionVM{
 		ID:           session.ID,
-		Name:         session.Name,
+		Name:         session.DisplayName(), // Use custom name if set
 		ProjectID:    session.ProjectID,
 		ProjectName:  session.ProjectName,
 		State:        string(session.State),

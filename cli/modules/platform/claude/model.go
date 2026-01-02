@@ -29,7 +29,8 @@ type Message struct {
 // Uses real Claude CLI session IDs (UUIDs) for compatibility
 type Session struct {
 	ID           string       `json:"id"`             // UUID matching Claude CLI session
-	Name         string       `json:"name"`           // User-friendly name (slug from Claude)
+	Name         string       `json:"name"`           // Display name (custom or from Claude slug)
+	CustomName   string       `json:"custom_name"`    // User-defined custom name (persisted locally)
 	ProjectID    string       `json:"project_id"`     // Associated project in csd-devtrack
 	ProjectName  string       `json:"project_name"`   // For display
 	WorkDir      string       `json:"work_dir"`       // Working directory for Claude
@@ -52,6 +53,14 @@ func GenerateSessionID() string {
 	return uuid.New().String()
 }
 
+// DisplayName returns the custom name if set, otherwise the default name
+func (s *Session) DisplayName() string {
+	if s.CustomName != "" {
+		return s.CustomName
+	}
+	return s.Name
+}
+
 // SessionSummary is a lightweight version for listing
 type SessionSummary struct {
 	ID           string       `json:"id"`
@@ -67,7 +76,7 @@ type SessionSummary struct {
 func (s *Session) ToSummary() SessionSummary {
 	return SessionSummary{
 		ID:           s.ID,
-		Name:         s.Name,
+		Name:         s.DisplayName(), // Use custom name if set
 		ProjectID:    s.ProjectID,
 		ProjectName:  s.ProjectName,
 		State:        s.State,
