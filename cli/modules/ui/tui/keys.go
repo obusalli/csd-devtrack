@@ -52,8 +52,8 @@ func DefaultKeyMap() KeyMap {
 	return KeyMap{
 		// Navigation
 		Up: key.NewBinding(
-			key.WithKeys("up"),
-			key.WithHelp("↑", "up"),
+			key.WithKeys("up", "k"),
+			key.WithHelp("↑/k", "up"),
 		),
 		Down: key.NewBinding(
 			key.WithKeys("down", "j"),

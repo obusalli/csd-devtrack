@@ -140,34 +140,37 @@ var baseSidebarViews = []sidebarView{
 	{"Pr[O]cesses", core.VMProcesses},
 	{"[L]ogs", core.VMLogs},
 	{"[G]it", core.VMGit},
-	{"[C]onfig", core.VMConfig},
 }
 
-// getSidebarViews returns the sidebar views, including Claude if installed
+// getSidebarViews returns the sidebar views, including Claude Code if installed
 func (m *Model) getSidebarViews() []sidebarView {
 	views := make([]sidebarView, len(baseSidebarViews))
 	copy(views, baseSidebarViews)
 
-	// Add Claude view if installed
+	// Add Claude Code view if installed (before Settings)
 	if m.state.Claude != nil && m.state.Claude.IsInstalled {
-		views = append(views, sidebarView{"[A]I Claude", core.VMClaude})
+		views = append(views, sidebarView{"[C]laude Code", core.VMClaude})
 	}
+
+	// Settings always last
+	views = append(views, sidebarView{"[S]ettings", core.VMConfig})
 
 	return views
 }
 
 // getSidebarWidth returns a fixed width that fits all menu items
 func getSidebarWidth() int {
-	// Find longest name (including potential Claude entry)
+	// Find longest name from base views
 	maxLen := 0
 	for _, v := range baseSidebarViews {
 		if len(v.name) > maxLen {
 			maxLen = len(v.name)
 		}
 	}
-	// Also account for Claude entry "[A]I Claude" = 11 chars
-	if len("[A]I Claude") > maxLen {
-		maxLen = len("[A]I Claude")
+	// Also account for dynamic entries
+	// "[C]laude Code" = 13 chars, "[S]ettings" = 10 chars
+	if len("[C]laude Code") > maxLen {
+		maxLen = len("[C]laude Code")
 	}
 	// Format: "> 1 [D]ashboard" = prefix(2) + key(1) + space(1) + name
 	// + borders(2) + padding(4) + margin(2)

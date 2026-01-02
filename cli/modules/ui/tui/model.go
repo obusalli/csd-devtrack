@@ -1070,13 +1070,13 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	case "G":
 		return m.selectViewByType(core.VMGit)
 	case "C":
-		return m.selectViewByType(core.VMConfig)
-	case "A":
-		// AI/Claude view (only if installed)
+		// Claude Code view (only if installed)
 		if m.state.Claude != nil && m.state.Claude.IsInstalled {
 			return m.selectViewByType(core.VMClaude)
 		}
 		return nil
+	case "S":
+		return m.selectViewByType(core.VMConfig)
 	}
 
 	// Projects/Processes view action keys (lowercase)
@@ -1107,16 +1107,6 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			return m.pauseResumeSelected()
 		case "l":
 			return m.viewLogsForSelected()
-		case "a":
-			// Open Claude with selected project filter
-			if m.state.Claude != nil && m.state.Claude.IsInstalled {
-				projectID := m.getSelectedProjectID()
-				if projectID != "" {
-					m.claudeFilterProject = projectID
-				}
-				return m.selectViewByType(core.VMClaude)
-			}
-			return nil
 		}
 	}
 
