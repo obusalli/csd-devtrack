@@ -174,10 +174,11 @@ func getSidebarWidth() int {
 	return maxLen + 12
 }
 
-// renderSidebar renders the left navigation sidebar
+// renderSidebar renders the left navigation sidebar with context panel below
 func (m *Model) renderSidebar() string {
 	width := getSidebarWidth()
 	itemWidth := width - 4
+	totalHeight := m.height - 6
 
 	// Title
 	titleStyle := lipgloss.NewStyle().
@@ -225,20 +226,277 @@ func (m *Model) renderSidebar() string {
 		items = append(items, item)
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, items...)
+	menuContent := lipgloss.JoinVertical(lipgloss.Left, items...)
 
-	// Apply focus style
-	var style lipgloss.Style
+	// Calculate menu height (title + separator + items + border)
+	menuHeight := 2 + len(sidebarViews) + 2 // title, separator, items, border top/bottom
+
+	// Apply focus style to menu
+	var menuStyle lipgloss.Style
 	if m.focusArea == FocusSidebar {
-		style = FocusedBorderStyle
+		menuStyle = FocusedBorderStyle
 	} else {
-		style = UnfocusedBorderStyle
+		menuStyle = UnfocusedBorderStyle
 	}
 
-	return style.
+	menuPanel := menuStyle.
 		Width(width).
-		Height(m.height - 6).
+		Render(menuContent)
+
+	// Context panel takes remaining space (separate panel with its own border)
+	contextHeight := totalHeight - menuHeight - GapVertical - 2 // 2 for context border
+	if contextHeight < 5 {
+		contextHeight = 5
+	}
+
+	contextPanel := m.renderContextPanel(width, contextHeight)
+
+	// Stack menu and context panels vertically
+	return lipgloss.JoinVertical(lipgloss.Left,
+		menuPanel,
+		contextPanel,
+	)
+}
+
+// renderContextPanel renders the context panel showing current project/git info
+func (m *Model) renderContextPanel(width, height int) string {
+	innerWidth := width - 4 // Account for border and padding
+	var lines []string
+
+	// Title (aligned with MENU)
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorSecondary).
+		Padding(0, 2).
+		Width(innerWidth)
+	lines = append(lines, titleStyle.Render("≡ CONTEXT"))
+
+	separator := lipgloss.NewStyle().
+		Foreground(ColorBorder).
+		Padding(0, 2).
+		Width(innerWidth).
+		Render(strings.Repeat("─", innerWidth-4))
+	lines = append(lines, separator)
+
+	// Section header style
+	sectionStyle := lipgloss.NewStyle().Foreground(ColorMuted).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(ColorMuted)
+
+	// Get active project context based on current view
+	activeProject := m.getActiveProjectContext()
+
+	if activeProject != nil {
+		// Project name (prominent)
+		projectStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true).Padding(0, 2)
+		lines = append(lines, projectStyle.Render(truncate(activeProject.Name, innerWidth-4)))
+
+		// ─── Git Status ───
+		lines = append(lines, "")
+		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Git Status ─"))
+
+		if activeProject.GitBranch != "" {
+			// Branch
+			branchLine := labelStyle.Render("  ⎇ ") + GitBranchStyle.Render(truncate(activeProject.GitBranch, innerWidth-6))
+			lines = append(lines, branchLine)
+
+			// Status: clean/dirty + sync
+			var statusIcon, statusText string
+			if activeProject.GitDirty {
+				statusIcon = GitDirtyStyle.Render("  ● ")
+				statusText = GitDirtyStyle.Render("modified")
+			} else {
+				statusIcon = StatusSuccess.Render("  ✓ ")
+				statusText = StatusSuccess.Render("clean")
+			}
+			syncText := ""
+			if activeProject.GitAhead > 0 {
+				syncText += " " + GitAheadStyle.Render(fmt.Sprintf("↑%d", activeProject.GitAhead))
+			}
+			if activeProject.GitBehind > 0 {
+				syncText += " " + GitBehindStyle.Render(fmt.Sprintf("↓%d", activeProject.GitBehind))
+			}
+			lines = append(lines, statusIcon+statusText+syncText)
+
+			// Recent files (up to 5) - same format as Git view
+			if m.state.Git != nil {
+				for _, g := range m.state.Git.Projects {
+					if g.ProjectID == activeProject.ID && !g.IsClean {
+						// Collect all files with their status (same order as Git view)
+						type fileEntry struct {
+							path   string
+							status string
+							prefix string
+						}
+						var files []fileEntry
+						for _, f := range g.Staged {
+							files = append(files, fileEntry{f, "staged", "A"})
+						}
+						for _, f := range g.Modified {
+							files = append(files, fileEntry{f, "modified", "M"})
+						}
+						for _, f := range g.Deleted {
+							files = append(files, fileEntry{f, "deleted", "D"})
+						}
+						for _, f := range g.Untracked {
+							files = append(files, fileEntry{f, "untracked", "?"})
+						}
+
+						// Show up to 5 files
+						maxFiles := 5
+						if len(files) < maxFiles {
+							maxFiles = len(files)
+						}
+						for i := 0; i < maxFiles; i++ {
+							f := files[i]
+							// Get just filename, not full path
+							name := f.path
+							if idx := strings.LastIndex(name, "/"); idx >= 0 {
+								name = name[idx+1:]
+							}
+							name = truncate(name, innerWidth-6)
+
+							var statusStyle lipgloss.Style
+							switch f.status {
+							case "staged":
+								statusStyle = StatusSuccess
+							case "modified":
+								statusStyle = StatusWarning
+							case "deleted":
+								statusStyle = StatusError
+							default:
+								statusStyle = SubtitleStyle
+							}
+							fileLine := fmt.Sprintf("  %s %s", statusStyle.Render(f.prefix), name)
+							lines = append(lines, fileLine)
+						}
+
+						// Show remaining count if any
+						remaining := len(files) - maxFiles
+						if remaining > 0 {
+							lines = append(lines, SubtitleStyle.Render(fmt.Sprintf("    +%d more", remaining)))
+						}
+						break
+					}
+				}
+			}
+		} else {
+			lines = append(lines, labelStyle.Padding(0, 2).Render("No git info"))
+		}
+
+		// ─── Processes ───
+		lines = append(lines, "")
+		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Processes ─"))
+
+		runningCount := 0
+		if m.state.Processes != nil {
+			for _, p := range m.state.Processes.Processes {
+				if p.ProjectID == activeProject.ID && p.State == "running" {
+					runningCount++
+				}
+			}
+		}
+		if runningCount > 0 {
+			lines = append(lines, StatusSuccess.Render(fmt.Sprintf("  ▶ %d running", runningCount)))
+		} else {
+			lines = append(lines, labelStyle.Render("  ○ none"))
+		}
+
+		// ─── Daemon ───
+		lines = append(lines, "")
+		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Daemon ─"))
+		if m.state.IsConnected {
+			lines = append(lines, StatusSuccess.Render("  ● connected"))
+		} else {
+			lines = append(lines, StatusError.Render("  ○ offline"))
+		}
+
+	} else {
+		// No active project
+		lines = append(lines, "")
+		noProjectStyle := lipgloss.NewStyle().Foreground(ColorMuted).Italic(true).Padding(0, 2)
+		lines = append(lines, noProjectStyle.Render("No project selected"))
+
+		// Still show daemon status
+		lines = append(lines, "")
+		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Daemon ─"))
+		if m.state.IsConnected {
+			lines = append(lines, StatusSuccess.Render("  ● connected"))
+		} else {
+			lines = append(lines, StatusError.Render("  ○ offline"))
+		}
+	}
+
+	// Join content
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+
+	// Apply border style (always unfocused since context is informational)
+	return UnfocusedBorderStyle.
+		Width(width).
+		Height(height).
 		Render(content)
+}
+
+// getActiveProjectContext returns the currently active/selected project based on view
+func (m *Model) getActiveProjectContext() *core.ProjectVM {
+	switch m.currentView {
+	case core.VMProjects:
+		// Use selected project from projects view
+		if m.state.Projects != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Projects.Projects) {
+			return &m.state.Projects.Projects[m.mainIndex]
+		}
+	case core.VMGit:
+		// Use selected project from git view
+		if m.state.Git != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Git.Projects) {
+			g := m.state.Git.Projects[m.mainIndex]
+			// Find corresponding ProjectVM
+			if m.state.Projects != nil {
+				for i := range m.state.Projects.Projects {
+					if m.state.Projects.Projects[i].ID == g.ProjectID {
+						return &m.state.Projects.Projects[i]
+					}
+				}
+			}
+			// Return a minimal project from git info
+			return &core.ProjectVM{
+				ID:        g.ProjectID,
+				Name:      g.ProjectName,
+				GitBranch: g.Branch,
+				GitDirty:  !g.IsClean,
+				GitAhead:  g.Ahead,
+				GitBehind: g.Behind,
+			}
+		}
+	case core.VMProcesses:
+		// Use project of selected process
+		if m.state.Processes != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Processes.Processes) {
+			proc := m.state.Processes.Processes[m.mainIndex]
+			if m.state.Projects != nil {
+				for i := range m.state.Projects.Projects {
+					if m.state.Projects.Projects[i].ID == proc.ProjectID {
+						return &m.state.Projects.Projects[i]
+					}
+				}
+			}
+		}
+	case core.VMClaude:
+		// Use project of current Claude session
+		if m.state.Claude != nil && m.state.Claude.ActiveSession != nil {
+			projectID := m.state.Claude.ActiveSession.ProjectID
+			if projectID != "" && m.state.Projects != nil {
+				for i := range m.state.Projects.Projects {
+					if m.state.Projects.Projects[i].ID == projectID {
+						return &m.state.Projects.Projects[i]
+					}
+				}
+			}
+		}
+	case core.VMDashboard, core.VMBuild, core.VMLogs, core.VMConfig:
+		// For these views, show first project or none
+		if m.state.Projects != nil && len(m.state.Projects.Projects) > 0 {
+			return &m.state.Projects.Projects[0]
+		}
+	}
+	return nil
 }
 
 // renderMainContent renders the main content area

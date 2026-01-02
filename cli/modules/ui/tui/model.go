@@ -141,7 +141,11 @@ type Model struct {
 	claudeSessionScroll  int             // Scroll offset for session list
 	claudeRenameActive   bool            // Renaming a session
 	claudeRenameText     string          // New name for session
-	claudeFilterProject  string          // Filter sessions by project ID
+	claudeFilterProject       string // Filter sessions by project ID
+	claudeProjectSelectActive bool   // Project selection mode for new session
+	claudeProjectSelectIndex  int    // Selected project index
+	claudeTreeItemCount       int    // Total items in the tree (projects + sessions)
+	claudeTreeItems           []claudeTreeItem // Flattened tree for navigation
 	claudeTextInput      textinput.Model // Optimized text input component
 	claudeLastEscTime    time.Time       // For double-ESC detection
 
@@ -582,9 +586,12 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			} else {
 				// Sessions (or Sidebar) -> Chat
 				m.focusArea = FocusMain
-				m.claudeInputActive = true
-				m.claudeTextInput.Focus()
-				return m.claudeTextInput.Cursor.BlinkCmd()
+				// Only activate input if a session is selected
+				if m.claudeActiveSession != "" {
+					m.claudeInputActive = true
+					m.claudeTextInput.Focus()
+					return m.claudeTextInput.Cursor.BlinkCmd()
+				}
 			}
 			return nil
 		}
@@ -607,24 +614,38 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	// Directional navigation
-	// Claude view sessions panel has its own up/down handling
+	// Claude view has special up/down handling for tree and chat scroll
 	case key.Matches(msg, m.keys.Up):
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-			// Navigate sessions
-			if m.mainIndex > 0 {
-				m.mainIndex--
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && !m.claudeInputActive {
+			if m.focusArea == FocusDetail {
+				// Sessions panel: navigate tree
+				if m.mainIndex > 0 {
+					m.mainIndex--
+				}
+				return nil
+			} else if m.focusArea == FocusMain {
+				// Chat panel: scroll up
+				m.claudeChatScroll++
+				return nil
 			}
-			return nil
 		}
 		m.navigateUp()
 		return nil
 	case key.Matches(msg, m.keys.Down):
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-			// Navigate sessions
-			if m.state.Claude != nil && m.mainIndex < len(m.state.Claude.Sessions)-1 {
-				m.mainIndex++
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && !m.claudeInputActive {
+			if m.focusArea == FocusDetail {
+				// Sessions panel: navigate tree
+				if m.mainIndex < m.claudeTreeItemCount-1 {
+					m.mainIndex++
+				}
+				return nil
+			} else if m.focusArea == FocusMain {
+				// Chat panel: scroll down
+				if m.claudeChatScroll > 0 {
+					m.claudeChatScroll--
+				}
+				return nil
 			}
-			return nil
 		}
 		m.navigateDown()
 		return nil
@@ -771,7 +792,8 @@ func (m *Model) navigateDown() {
 
 	switch m.focusArea {
 	case FocusSidebar:
-		if m.sidebarIndex < 6 { // 7 views (0-6)
+		maxIndex := len(m.getSidebarViews()) - 1
+		if m.sidebarIndex < maxIndex {
 			m.sidebarIndex++
 		}
 	case FocusMain:
@@ -879,7 +901,7 @@ func (m *Model) goToStart() {
 func (m *Model) goToEnd() {
 	switch m.focusArea {
 	case FocusSidebar:
-		m.sidebarIndex = 6
+		m.sidebarIndex = len(m.getSidebarViews()) - 1
 	case FocusMain:
 		m.mainIndex = m.maxMainItems - 1
 		if m.mainIndex < 0 {
@@ -1014,10 +1036,8 @@ func (m *Model) handleEnter() tea.Cmd {
 				}
 			}
 		case core.VMClaude:
-			// Claude view - depends on current tab
-			if m.claudeMode == ClaudeModeSession {
-				return m.openClaudeSession()
-			}
+			// Claude view: Enter in main panel is handled by text input
+			// Sessions panel Enter is handled in handleKeyPress
 		}
 	case FocusDetail:
 		// Detail panel Enter actions
@@ -1333,37 +1353,16 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 
-		// Sessions panel navigation (PRIORITY - check before chat scroll)
+		// Sessions panel: Enter to select (up/down handled in handleKeyPress)
 		if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
-			switch key {
-			case "up", "k":
-				if m.mainIndex > 0 {
-					m.mainIndex--
-				}
-				return nil
-			case "down", "j":
-				if m.state.Claude != nil && m.mainIndex < len(m.state.Claude.Sessions)-1 {
-					m.mainIndex++
-				}
-				return nil
-			case "enter":
+			if key == "enter" {
 				return m.switchToSelectedSession()
 			}
 		}
 
-		// Chat mode scroll controls (only when focus is on chat, not sessions)
+		// Chat mode scroll controls (page/home/end - up/down handled in handleKeyPress)
 		if m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
 			switch key {
-			case "up", "k":
-				// Scroll up
-				m.claudeChatScroll++
-				return nil
-			case "down", "j":
-				// Scroll down
-				if m.claudeChatScroll > 0 {
-					m.claudeChatScroll--
-				}
-				return nil
 			case "pgup", "ctrl+u":
 				// Page up
 				m.claudeChatScroll += 10
@@ -1423,16 +1422,20 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		case "x":
 			// Delete selected session (when focus is on sessions panel)
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-				if m.state.Claude != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
-					m.dialogType = "delete_claude_session"
-					m.dialogMessage = "Delete this session?"
-					m.showDialog = true
+				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+					item := m.claudeTreeItems[m.mainIndex]
+					// Only allow deleting sessions, not projects
+					if !item.IsProject && item.SessionID != "" {
+						m.dialogType = "delete_claude_session"
+						m.dialogMessage = "Delete this session?"
+						m.showDialog = true
+					}
 				}
 			}
 			return nil
 		case "i":
-			// Start input mode (in chat mode)
-			if m.claudeMode == ClaudeModeChat {
+			// Start input mode (in chat mode) - only if a session is selected
+			if m.claudeMode == ClaudeModeChat && m.claudeActiveSession != "" {
 				m.claudeInputActive = true
 				m.claudeTextInput.Focus()
 				return m.claudeTextInput.Cursor.BlinkCmd()
@@ -1479,18 +1482,27 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// createClaudeSession creates a new Claude session for the current/selected project
+// createClaudeSession creates a new Claude session for the selected project in tree
 func (m *Model) createClaudeSession() tea.Cmd {
-	projectID := m.claudeFilterProject
-	if projectID == "" {
-		projectID = m.getSelectedProjectID()
+	// If in tree and a project or session is selected, use that project
+	if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+		item := m.claudeTreeItems[m.mainIndex]
+		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(item.ProjectID))
 	}
-	if projectID == "" {
-		m.lastError = "No project selected"
-		m.lastErrorTime = time.Now()
-		return nil
+
+	// Fallback to filter project
+	if m.claudeFilterProject != "" {
+		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(m.claudeFilterProject))
 	}
-	return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(projectID))
+
+	// No project context - select first project if available
+	if m.state.Projects != nil && len(m.state.Projects.Projects) > 0 {
+		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(m.state.Projects.Projects[0].ID))
+	}
+
+	m.lastError = "No projects available"
+	m.lastErrorTime = time.Now()
+	return nil
 }
 
 // openClaudeSession opens the selected session in chat mode
@@ -1516,30 +1528,36 @@ func (m *Model) openClaudeSession() tea.Cmd {
 	return nil
 }
 
-// switchToSelectedSession switches to the session selected in the side panel
+// switchToSelectedSession switches to the session selected in the tree
+// If a project is selected, creates a new session for that project
 func (m *Model) switchToSelectedSession() tea.Cmd {
-	if m.state.Claude == nil || len(m.state.Claude.Sessions) == 0 {
+	if m.mainIndex < 0 || m.mainIndex >= len(m.claudeTreeItems) {
 		return nil
 	}
-	if m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
-		sess := m.state.Claude.Sessions[m.mainIndex]
-		m.claudeActiveSession = sess.ID
 
-		// Switch focus back to chat and activate input
-		m.focusArea = FocusMain
-		m.claudeInputActive = true
-		m.claudeTextInput.Focus()
+	item := m.claudeTreeItems[m.mainIndex]
 
-		// Reset scroll to show latest messages
-		m.claudeChatScroll = 0
-
-		// Send select event
-		return tea.Batch(
-			m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(sess.ID)),
-			m.claudeTextInput.Cursor.BlinkCmd(),
-		)
+	if item.IsProject {
+		// Project selected - create new session for this project
+		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(item.ProjectID))
 	}
-	return nil
+
+	// Session selected - switch to it
+	m.claudeActiveSession = item.SessionID
+
+	// Switch focus back to chat and activate input
+	m.focusArea = FocusMain
+	m.claudeInputActive = true
+	m.claudeTextInput.Focus()
+
+	// Reset scroll to show latest messages
+	m.claudeChatScroll = 0
+
+	// Send select event
+	return tea.Batch(
+		m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(item.SessionID)),
+		m.claudeTextInput.Cursor.BlinkCmd(),
+	)
 }
 
 // handleClaudeInput handles text input in Claude chat mode
@@ -1643,10 +1661,13 @@ func (m *Model) handleClaudeRenameInput(msg tea.KeyMsg) tea.Cmd {
 		newName := m.claudeRenameText
 		m.claudeRenameText = ""
 		m.claudeRenameActive = false
-		// Get selected session ID
+		// Get selected session ID from tree
 		var sessionID string
-		if m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
-			sessionID = m.state.Claude.Sessions[m.mainIndex].ID
+		if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+			item := m.claudeTreeItems[m.mainIndex]
+			if !item.IsProject {
+				sessionID = item.SessionID
+			}
 		}
 		if sessionID == "" {
 			return nil
@@ -1718,20 +1739,23 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 		return nil
 	case "delete_claude_session":
 		// Delete the selected Claude session
-		if m.state.Claude != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
-			sessionID := m.state.Claude.Sessions[m.mainIndex].ID
-			// Reset active session if deleting it
-			if m.claudeActiveSession == sessionID {
-				m.claudeActiveSession = ""
-			}
-			// Adjust index if needed
-			if m.mainIndex >= len(m.state.Claude.Sessions)-1 {
-				m.mainIndex = len(m.state.Claude.Sessions) - 2
-				if m.mainIndex < 0 {
-					m.mainIndex = 0
+		if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+			item := m.claudeTreeItems[m.mainIndex]
+			if !item.IsProject && item.SessionID != "" {
+				sessionID := item.SessionID
+				// Reset active session if deleting it
+				if m.claudeActiveSession == sessionID {
+					m.claudeActiveSession = ""
 				}
+				// Adjust index if needed (move to previous item)
+				if m.mainIndex >= m.claudeTreeItemCount-1 {
+					m.mainIndex = m.claudeTreeItemCount - 2
+					if m.mainIndex < 0 {
+						m.mainIndex = 0
+					}
+				}
+				return m.sendEvent(core.NewEvent(core.EventClaudeDeleteSession).WithValue(sessionID))
 			}
-			return m.sendEvent(core.NewEvent(core.EventClaudeDeleteSession).WithValue(sessionID))
 		}
 		return nil
 	}
