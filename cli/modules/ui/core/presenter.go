@@ -541,6 +541,9 @@ func (p *AppPresenter) handleFilter(event *Event) error {
 // ============================================
 
 func (p *AppPresenter) refreshProjects() error {
+	// Enrich projects with git info
+	p.gitService.EnrichAllProjects()
+
 	allProjects := p.projectService.ListProjects()
 
 	p.mu.Lock()

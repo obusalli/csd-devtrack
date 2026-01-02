@@ -736,11 +736,10 @@ func (m *Model) renderProjects(width, height int) string {
 		}
 	}
 
-	// Calculate dynamic column widths
+	// Calculate dynamic column widths based on content (like Processes view)
 	colProject := len("Project")
 	colComponent := len("Component")
-	colStatus := len("Status")
-	colPort := len("Port")
+	colStatus := len("running") // "running" or "stopped" - both are 7 chars
 
 	for _, r := range componentRows {
 		if len(r.ProjectName) > colProject {
@@ -752,20 +751,25 @@ func (m *Model) renderProjects(width, height int) string {
 		}
 	}
 
+	// Add padding
+	colProject += 2
+	colComponent += 2
+	colStatus += 2
+
 	// Reasonable limits
-	if colProject > 20 {
-		colProject = 20
+	if colProject > 22 {
+		colProject = 22
 	}
-	if colComponent > 10 {
-		colComponent = 10
+	if colComponent > 12 {
+		colComponent = 12
 	}
 
-	// Table header
-	header := TableHeaderStyle.Render(fmt.Sprintf("  %-*s   %-*s   %-*s   %-*s   %s",
+	// Table header (with 2-space prefix for alignment with row prefix)
+	// Status column: header shows colStatus+2 to account for icon "● " prefix in rows
+	header := TableHeaderStyle.Render(fmt.Sprintf("  %-*s   %-*s   %-*s   %s",
 		colProject, "Project",
 		colComponent, "Component",
-		colStatus, "Status",
-		colPort, "Port",
+		colStatus+2, "Status",
 		"Git",
 	))
 
@@ -784,30 +788,29 @@ func (m *Model) renderProjects(width, height int) string {
 		r := componentRows[i]
 
 		// Project name: show only on first row, with self indicator
-		projectDisplay := strings.Repeat(" ", colProject)
+		// Pad to column width BEFORE adding styling (like Processes view)
+		projectDisplay := fmt.Sprintf("%-*s", colProject, "")
 		if r.IsFirst {
-			projectDisplay = fmt.Sprintf("%-*s", colProject, truncate(r.ProjectName, colProject))
+			projectDisplay = fmt.Sprintf("%-*s", colProject, truncate(r.ProjectName, colProject-2))
 			if r.IsSelf {
+				// Add star prefix with color
 				projectDisplay = lipgloss.NewStyle().Foreground(ColorSecondary).Render("*") + projectDisplay[1:]
 			}
 		}
 
-		// Component type
+		// Component type - fixed width
 		compDisplay := fmt.Sprintf("%-*s", colComponent, string(r.Component.Type))
 
-		// Status: running or stopped
-		var statusDisplay string
+		// Status: use text only, icon added with consistent width (like Processes view)
+		var stateText string
 		if r.Component.IsRunning {
-			statusDisplay = StatusRunning.Render(IconRunning) + " " + fmt.Sprintf("%-*s", colStatus-2, "running")
+			stateText = "running"
 		} else {
-			statusDisplay = StatusStopped.Render(IconStopped) + " " + fmt.Sprintf("%-*s", colStatus-2, "stopped")
+			stateText = "stopped"
 		}
-
-		// Port
-		portDisplay := fmt.Sprintf("%-*s", colPort, "")
-		if r.Component.Port > 0 {
-			portDisplay = fmt.Sprintf("%-*d", colPort, r.Component.Port)
-		}
+		statePadded := fmt.Sprintf("%-*s", colStatus, stateText)
+		stateIcon := StatusIcon(stateText)
+		statusDisplay := stateIcon + " " + statePadded
 
 		// Git info: show only on first row
 		gitDisplay := ""
@@ -821,11 +824,10 @@ func (m *Model) renderProjects(width, height int) string {
 			}
 		}
 
-		row := fmt.Sprintf("%s   %s   %s   %s   %s",
+		row := fmt.Sprintf("%s   %s   %s   %s",
 			projectDisplay,
 			compDisplay,
 			statusDisplay,
-			portDisplay,
 			gitDisplay,
 		)
 

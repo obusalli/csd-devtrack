@@ -370,8 +370,8 @@ func (m Model) View() string {
 	main := m.renderMainContent()
 	footer := m.renderFooter()
 
-	// Combine sidebar and main
-	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, main)
+	// Combine sidebar and main with gap
+	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", main)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
