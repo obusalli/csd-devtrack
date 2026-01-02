@@ -151,12 +151,6 @@ func (m *Model) renderSidebar() string {
 		items = append(items, item)
 	}
 
-	// Scroll indicator at bottom if sidebar has focus
-	if m.focusArea == FocusSidebar && len(sidebarViews) > 0 {
-		scrollInfo := SubtitleStyle.Render(fmt.Sprintf("  %d/%d", m.sidebarIndex+1, len(sidebarViews)))
-		items = append(items, "", scrollInfo)
-	}
-
 	content := lipgloss.JoinVertical(lipgloss.Left, items...)
 
 	// Apply focus style
@@ -424,50 +418,55 @@ func (m *Model) renderDashboard(width, height int) string {
 		return m.renderLoading()
 	}
 
-	// Stats row (compact)
+	// Stats row (compact) - divide width by 4 for each box, accounting for gaps
+	numStats := 4
+	totalGaps := (numStats - 1) * GapHorizontal
+	statBoxWidth := (width - totalGaps) / numStats
+	gap := strings.Repeat(" ", GapHorizontal)
 	stats := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		m.renderStatBox("Projects", fmt.Sprintf("%d", vm.ProjectCount), ColorSecondary),
-		m.renderStatBox("Running", fmt.Sprintf("%d", vm.RunningCount), ColorSuccess),
-		m.renderStatBox("Building", fmt.Sprintf("%d", vm.BuildingCount), ColorWarning),
-		m.renderStatBox("Errors", fmt.Sprintf("%d", vm.ErrorCount), ColorError),
+		m.renderStatBox("Projects", fmt.Sprintf("%d", vm.ProjectCount), ColorSecondary, statBoxWidth),
+		gap,
+		m.renderStatBox("Running", fmt.Sprintf("%d", vm.RunningCount), ColorSuccess, statBoxWidth),
+		gap,
+		m.renderStatBox("Building", fmt.Sprintf("%d", vm.BuildingCount), ColorWarning, statBoxWidth),
+		gap,
+		m.renderStatBox("Errors", fmt.Sprintf("%d", vm.ErrorCount), ColorError, statBoxWidth),
 	)
 
 	// Calculate panel sizes
 	// Left: Projects + Processes + Git stacked (narrow, 1/3)
 	// Right: Logs (wide, 2/3)
-	hGap := 1 // Horizontal gap between left and right panes
 	panelHeight := height - 8
 	leftWidth := width / 3
 	if leftWidth < 30 {
 		leftWidth = 30
 	}
-	rightWidth := width - leftWidth - hGap
+	rightWidth := width - leftWidth - GapHorizontal
 
-	// Left: Projects (top) + Processes (middle) + Git (bottom)
-	// Each panel gets 1/3 of the height
+	// Left: 3 panels, distribute height with remainder to last panel
 	thirdHeight := panelHeight / 3
+	lastPanelHeight := panelHeight - (thirdHeight * 2)
 
 	projectsPanel := m.renderProjectsList(vm.Projects, leftWidth, thirdHeight, m.focusArea == FocusMain)
 	processesPanel := m.renderProcessesList(vm.RunningProcesses, leftWidth, thirdHeight, false)
-	gitPanel := m.renderMiniGit(vm.GitSummary, leftWidth, thirdHeight)
+	gitPanel := m.renderMiniGit(vm.GitSummary, leftWidth, lastPanelHeight)
 
-	// Stack left panels - they will naturally align since each has same width
+	// Stack left panels
 	leftPane := lipgloss.JoinVertical(lipgloss.Left, projectsPanel, processesPanel, gitPanel)
 
-	// Right: Logs - use 3x thirdHeight to match left pane total height
-	logsPanel := m.renderMiniLogs(rightWidth, thirdHeight*3)
+	// Right: Logs - use full panelHeight to align with left pane
+	logsPanel := m.renderMiniLogs(rightWidth-5, panelHeight)
 
 	// Combine with horizontal gap
 	panels := lipgloss.JoinHorizontal(lipgloss.Top,
 		leftPane,
-		strings.Repeat(" ", hGap),
+		gap,
 		logsPanel,
 	)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		stats,
-		"",
 		panels,
 	)
 }
@@ -527,9 +526,12 @@ func (m *Model) renderMiniGit(gitSummary []core.GitStatusVM, width, height int) 
 func (m *Model) renderMiniLogs(width, height int) string {
 	header := SubtitleStyle.Render("─ Run Logs ─")
 
+	// Inner width accounting for border (2 chars total)
+	innerWidth := width - 2
+
 	var lines []string
 	if m.state.Logs != nil && len(m.state.Logs.Lines) > 0 {
-		maxLines := height - 3
+		maxLines := height - 4 // header + border
 
 		// Filter to only show run logs (not build logs)
 		// Build logs have source like "build:project/component"
@@ -570,7 +572,7 @@ func (m *Model) renderMiniLogs(width, height int) string {
 				levelStyle = LogInfoStyle
 			}
 			sourceWidth := maxSourceLen + 2 // for brackets
-			msgWidth := width - sourceWidth - 2
+			msgWidth := innerWidth - sourceWidth - 2
 			if msgWidth < 20 {
 				msgWidth = 20
 			}
@@ -593,16 +595,22 @@ func (m *Model) renderMiniLogs(width, height int) string {
 }
 
 // renderStatBox renders a stat box
-func (m *Model) renderStatBox(label, value string, color lipgloss.Color) string {
+func (m *Model) renderStatBox(label, value string, color lipgloss.Color, boxWidth int) string {
+	// Account for border (2) and padding (4) and margin (2)
+	contentWidth := boxWidth - 8
+	if contentWidth < 5 {
+		contentWidth = 5
+	}
+
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(color).
 		Padding(0, 2).
-		Margin(0, 1).
+		Width(contentWidth).
 		Render(
 			lipgloss.JoinVertical(lipgloss.Center,
-				lipgloss.NewStyle().Foreground(color).Bold(true).Render(value),
-				SubtitleStyle.Render(label),
+				lipgloss.NewStyle().Foreground(color).Bold(true).Width(contentWidth).Align(lipgloss.Center).Render(value),
+				SubtitleStyle.Width(contentWidth).Align(lipgloss.Center).Render(label),
 			),
 		)
 }
@@ -624,7 +632,13 @@ func (m *Model) renderProjectsList(projects []core.ProjectVM, width, height int,
 			git = GitDirtyStyle.Render(" *")
 		}
 
-		row := fmt.Sprintf("%s %s%s", status, truncate(p.Name, width-10), git)
+		// Check if path exists
+		pathWarning := ""
+		if _, err := os.Stat(p.Path); os.IsNotExist(err) {
+			pathWarning = StatusError.Render(" " + IconWarning)
+		}
+
+		row := fmt.Sprintf("%s %s%s%s", status, truncate(p.Name, width-10), pathWarning, git)
 
 		if i == m.mainIndex && focused {
 			row = TableRowSelectedStyle.Width(width - 4).Render(FocusIndicator + " " + row)
@@ -697,6 +711,7 @@ func (m *Model) renderProcessesList(processes []core.ProcessVM, width, height in
 // ProjectComponentRow represents a row in the projects view (one per component)
 type ProjectComponentRow struct {
 	ProjectName string
+	ProjectPath string
 	ProjectIdx  int
 	Component   core.ComponentVM
 	IsFirst     bool // First component of the project (shows project name)
@@ -720,6 +735,7 @@ func (m *Model) renderProjects(width, height int) string {
 			// Project with no components - show single row
 			componentRows = append(componentRows, ProjectComponentRow{
 				ProjectName: p.Name,
+				ProjectPath: p.Path,
 				ProjectIdx:  projIdx,
 				IsFirst:     true,
 				GitBranch:   p.GitBranch,
@@ -731,6 +747,7 @@ func (m *Model) renderProjects(width, height int) string {
 			for i, comp := range p.Components {
 				componentRows = append(componentRows, ProjectComponentRow{
 					ProjectName: p.Name,
+					ProjectPath: p.Path,
 					ProjectIdx:  projIdx,
 					Component:   comp,
 					IsFirst:     i == 0,
@@ -803,6 +820,10 @@ func (m *Model) renderProjects(width, height int) string {
 				// Add star prefix with color
 				projectDisplay = lipgloss.NewStyle().Foreground(ColorSecondary).Render("*") + projectDisplay[1:]
 			}
+			// Check if path exists
+			if _, err := os.Stat(r.ProjectPath); os.IsNotExist(err) {
+				projectDisplay = projectDisplay + StatusError.Render(" "+IconWarning)
+			}
 		}
 
 		// Component type - fixed width
@@ -867,7 +888,7 @@ func (m *Model) renderProjects(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	mainPanel := style.Width(width - 2).Height(height - 2).Render(
+	mainPanel := style.Width(width - 3).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 
@@ -962,7 +983,7 @@ func (m *Model) renderBuild(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	return style.Width(width - 2).Height(height - 2).Render(
+	return style.Width(width - 3).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			profileBar,
 			"",
@@ -1111,7 +1132,7 @@ func (m *Model) renderProcesses(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	return style.Width(width - 2).Height(height - 2).Render(
+	return style.Width(width - 3).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 }
@@ -1332,7 +1353,7 @@ func (m *Model) renderLogs(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	return style.Width(width - 2).Height(height - 2).Render(
+	return style.Width(width - 3).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left, filterBar1, filterBar2, statsLine, "", content),
 	)
 }
@@ -1416,7 +1437,7 @@ func (m *Model) renderGit(width, height int) string {
 	}
 
 	// Detail panel (right) - file list with selection
-	detailWidth := width - listWidth - 2
+	detailWidth := width - listWidth - GapHorizontal
 	detailHeight := height - 6
 	var detailContent string
 
@@ -1505,9 +1526,10 @@ func (m *Model) renderGit(width, height int) string {
 	listPanel := listStyle.Width(listWidth).Height(height - 4).Render(
 		strings.Join(projectRows, "\n"),
 	)
-	detailPanel := detailStyle.Width(detailWidth).Height(height - 4).Render(detailContent)
+	detailPanel := detailStyle.Width(detailWidth - 5).Height(height - 4).Render(detailContent)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, detailPanel)
+	gap := strings.Repeat(" ", GapHorizontal)
+	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, gap, detailPanel)
 }
 
 // buildGitFileList builds a flat list of all files from git status
@@ -1589,7 +1611,7 @@ func (m *Model) renderGitDiff(width, height int) string {
 
 	content := strings.Join(lines, "\n")
 
-	panel := FocusedBorderStyle.Width(width - 2).Height(height - 4).Render(
+	panel := FocusedBorderStyle.Width(width - 7).Height(height - 4).Render(
 		lipgloss.JoinVertical(lipgloss.Left, hint, "", content),
 	)
 
@@ -1657,7 +1679,7 @@ func (m *Model) renderConfig(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	return style.Width(width - 2).Height(height - 2).Render(
+	return style.Width(width - 3).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			tabBar,
 			"",
@@ -1684,6 +1706,12 @@ func (m *Model) renderConfigProjects(width, height int) string {
 			indicator = "> "
 		}
 
+		// Check if path exists
+		pathWarning := ""
+		if _, err := os.Stat(proj.Path); os.IsNotExist(err) {
+			pathWarning = StatusError.Render(" " + IconWarning)
+		}
+
 		// Component badges - sort for consistent order
 		var compBadges []string
 		for compType := range proj.Components {
@@ -1696,10 +1724,10 @@ func (m *Model) renderConfigProjects(width, height int) string {
 		}
 
 		// Build the row with fixed columns
-		row := fmt.Sprintf("%s%-20s │ %s", indicator, truncate(proj.Name, 20), compsText)
+		row := fmt.Sprintf("%s%-20s%s │ %s", indicator, truncate(proj.Name, 20), pathWarning, compsText)
 
 		if isSelected {
-			row = TableRowSelectedStyle.Render(row)
+			row = TableRowSelectedStyle.Width(width - 6).Render(row)
 		}
 		rows = append(rows, row)
 	}
@@ -1708,6 +1736,13 @@ func (m *Model) renderConfigProjects(width, height int) string {
 	var details string
 	if m.mainIndex >= 0 && m.mainIndex < len(cfg.Projects) {
 		proj := cfg.Projects[m.mainIndex]
+
+		// Check if path exists
+		pathLine := fmt.Sprintf("Path: %s", proj.Path)
+		if _, err := os.Stat(proj.Path); os.IsNotExist(err) {
+			pathLine = StatusError.Render(fmt.Sprintf("%s Path: %s (not found)", IconWarning, proj.Path))
+		}
+
 		details = "\n" + lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorMuted).
@@ -1715,7 +1750,7 @@ func (m *Model) renderConfigProjects(width, height int) string {
 			Render(
 				lipgloss.JoinVertical(lipgloss.Left,
 					PanelTitleStyle.Render(proj.Name),
-					fmt.Sprintf("Path: %s", proj.Path),
+					pathLine,
 					fmt.Sprintf("Type: %s", proj.Type),
 					"",
 					"[Enter] View details  [x] Remove from config",
@@ -1814,7 +1849,7 @@ func (m *Model) renderConfigBrowser(width, height int) string {
 		}
 
 		row := fmt.Sprintf("%s%s %s%s", indicator, icon, entry.Name, suffix)
-		rows = append(rows, style.Render(row))
+		rows = append(rows, style.Width(width - 6).Render(row))
 	}
 
 	// Scroll indicator
@@ -1928,16 +1963,36 @@ func (m *Model) renderDialogOverlay(background string, width, height int) string
 		noStyle = ButtonActiveStyle
 	}
 
-	dialog := DialogStyle.Render(
+	// Calculate dialog width based on message length
+	dialogWidth := len(m.dialogMessage) + 6
+	if dialogWidth < 30 {
+		dialogWidth = 30
+	}
+
+	// Style for content inside dialog (inherits background)
+	contentStyle := lipgloss.NewStyle().
+		Background(ColorBgAlt).
+		Foreground(ColorText).
+		Width(dialogWidth).
+		Align(lipgloss.Center)
+
+	// Button separator with background
+	buttonSep := lipgloss.NewStyle().
+		Background(ColorBgAlt).
+		Render("  ")
+
+	dialog := DialogStyle.Width(dialogWidth + 4).Render(
 		lipgloss.JoinVertical(lipgloss.Center,
-			DialogTitleStyle.Render("Confirm"),
-			"",
-			m.dialogMessage,
-			"",
-			lipgloss.JoinHorizontal(lipgloss.Center,
-				yesStyle.Render(" Yes "),
-				"  ",
-				noStyle.Render(" No "),
+			contentStyle.Render(DialogTitleStyle.Render("Confirm")),
+			contentStyle.Render(""),
+			contentStyle.Render(m.dialogMessage),
+			contentStyle.Render(""),
+			contentStyle.Render(
+				lipgloss.JoinHorizontal(lipgloss.Center,
+					yesStyle.Render(" Yes "),
+					buttonSep,
+					noStyle.Render(" No "),
+				),
 			),
 		),
 	)
@@ -1947,6 +2002,11 @@ func (m *Model) renderDialogOverlay(background string, width, height int) string
 
 // renderHelpOverlay renders the help overlay in 2 columns
 func (m *Model) renderHelpOverlay(background string, width, height int) string {
+	// Style for content with background
+	bgStyle := lipgloss.NewStyle().
+		Background(ColorBgAlt).
+		Foreground(ColorText)
+
 	// Left column content
 	leftCol := []string{
 		HelpKeyStyle.Render("Navigation"),
@@ -2003,57 +2063,69 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 
 	// Column widths
 	colWidth := 54
+	totalWidth := colWidth*2 + 3 // 2 columns + separator
 
-	// Build left and right column strings
-	leftContent := lipgloss.NewStyle().Width(colWidth).Render(strings.Join(leftCol, "\n"))
-	rightContent := lipgloss.NewStyle().Width(colWidth).Render(strings.Join(rightCol, "\n"))
+	// Build left and right column strings with background
+	leftContent := bgStyle.Width(colWidth).Render(strings.Join(leftCol, "\n"))
+	rightContent := bgStyle.Width(colWidth).Render(strings.Join(rightCol, "\n"))
 
 	// Join columns horizontally with separator
 	columns := lipgloss.JoinHorizontal(lipgloss.Top,
 		leftContent,
-		lipgloss.NewStyle().Foreground(ColorBorder).Render(" │ "),
+		bgStyle.Foreground(ColorBorder).Render(" │ "),
 		rightContent,
 	)
 
-	// Footer
-	footer := []string{
-		"",
-		lipgloss.JoinHorizontal(lipgloss.Left,
-			HelpKeyStyle.Render("Ctrl+R"),
-			" Refresh  ",
-			HelpKeyStyle.Render("Ctrl+D"),
-			" Detach  ",
-			HelpKeyStyle.Render("?"),
-			" Help  ",
-			HelpKeyStyle.Render("q"),
-			" Quit",
-		),
-		"",
-		SubtitleStyle.Render("Press any key to close"),
-	}
-
-	helpContent := lipgloss.JoinVertical(lipgloss.Center,
-		DialogTitleStyle.Render("Keyboard Shortcuts"),
-		"",
-		columns,
-		strings.Join(footer, "\n"),
+	// Footer with background
+	footerLine := lipgloss.JoinHorizontal(lipgloss.Left,
+		HelpKeyStyle.Render("Ctrl+R"),
+		" Refresh  ",
+		HelpKeyStyle.Render("Ctrl+D"),
+		" Detach  ",
+		HelpKeyStyle.Render("?"),
+		" Help  ",
+		HelpKeyStyle.Render("q"),
+		" Quit",
 	)
 
-	helpBox := DialogStyle.Width(116).Render(helpContent)
+	footer := lipgloss.JoinVertical(lipgloss.Center,
+		bgStyle.Width(totalWidth).Render(""),
+		bgStyle.Width(totalWidth).Align(lipgloss.Center).Render(footerLine),
+		bgStyle.Width(totalWidth).Render(""),
+		bgStyle.Width(totalWidth).Align(lipgloss.Center).Render(SubtitleStyle.Render("Press any key to close")),
+	)
+
+	helpContent := lipgloss.JoinVertical(lipgloss.Center,
+		bgStyle.Width(totalWidth).Align(lipgloss.Center).Render(DialogTitleStyle.Render("Keyboard Shortcuts")),
+		bgStyle.Width(totalWidth).Render(""),
+		columns,
+		footer,
+	)
+
+	helpBox := DialogStyle.Width(totalWidth + 4).Render(helpContent)
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, helpBox)
 }
 
 // renderFilterOverlay renders the filter input overlay
 func (m *Model) renderFilterOverlay(background string, width, height int) string {
+	dialogWidth := 40
+
+	// Style for content with background
+	bgStyle := lipgloss.NewStyle().
+		Background(ColorBgAlt).
+		Foreground(ColorText).
+		Width(dialogWidth).
+		Align(lipgloss.Center)
+
 	input := InputFocusedStyle.Width(30).Render(m.filterText + "█")
-	filterBox := DialogStyle.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			DialogTitleStyle.Render("Filter"),
-			"",
-			input,
-			"",
-			SubtitleStyle.Render("Enter to apply, Esc to cancel"),
+	filterBox := DialogStyle.Width(dialogWidth + 4).Render(
+		lipgloss.JoinVertical(lipgloss.Center,
+			bgStyle.Render(DialogTitleStyle.Render("Filter")),
+			bgStyle.Render(""),
+			bgStyle.Render(input),
+			bgStyle.Render(""),
+			bgStyle.Render(SubtitleStyle.Render("Enter to apply, Esc to cancel")),
 		),
 	)
 

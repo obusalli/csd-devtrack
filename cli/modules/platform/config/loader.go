@@ -13,7 +13,7 @@ import (
 
 const (
 	// DefaultConfigFileName is the default config file name
-	DefaultConfigFileName = "devtrack.yaml"
+	DefaultConfigFileName = "csd-devtrack.yaml"
 )
 
 var (

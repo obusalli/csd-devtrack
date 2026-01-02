@@ -162,10 +162,24 @@ func NewModel(presenter core.Presenter) *Model {
 	h.Styles.ShortDesc = HelpDescStyle
 	h.Styles.ShortSeparator = HelpDescStyle
 
-	// Get initial browser path (home directory)
+	// Get initial browser path from config, or fall back to home directory
 	homeDir, _ := os.UserHomeDir()
 	if homeDir == "" {
 		homeDir, _ = os.Getwd()
+	}
+	browserPath := homeDir
+	if cfg := config.GetGlobal(); cfg != nil && cfg.Settings != nil && cfg.Settings.BrowserPath != "" {
+		path := cfg.Settings.BrowserPath
+		// Expand ~ to home directory
+		if strings.HasPrefix(path, "~/") {
+			path = filepath.Join(homeDir, path[2:])
+		} else if path == "~" {
+			path = homeDir
+		}
+		// Verify path exists and is accessible
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			browserPath = path
+		}
 	}
 
 	// Create initial state and populate from presenter
@@ -223,7 +237,7 @@ func NewModel(presenter core.Presenter) *Model {
 		visibleDetailRows:   5,
 		currentBuildProfile: "dev",   // Default to dev profile
 		configMode:          "projects", // Start with projects view
-		browserPath:         homeDir,
+		browserPath:         browserPath,
 		viewStates:          make(map[core.ViewModelType]*ViewState),
 		logAutoScroll:       true, // Auto-scroll logs by default
 	}
@@ -1876,17 +1890,9 @@ type tuiStateRestoreMsg struct {
 
 // loadBrowserEntries loads directory entries for the file browser
 func (m *Model) loadBrowserEntries() {
-	entries, err := os.ReadDir(m.browserPath)
-	if err != nil {
-		m.browserEntries = nil
-		return
-	}
-
 	m.browserEntries = make([]BrowserEntry, 0)
-	detector := projects.NewDetector()
-	cfg := config.GetGlobal()
 
-	// Add parent directory entry
+	// Always add parent directory entry first (so user can navigate back)
 	if m.browserPath != "/" {
 		m.browserEntries = append(m.browserEntries, BrowserEntry{
 			Name:  "..",
@@ -1894,6 +1900,15 @@ func (m *Model) loadBrowserEntries() {
 			Path:  filepath.Dir(m.browserPath),
 		})
 	}
+
+	entries, err := os.ReadDir(m.browserPath)
+	if err != nil {
+		// Can't read directory, but we still have ".." to go back
+		return
+	}
+
+	detector := projects.NewDetector()
+	cfg := config.GetGlobal()
 
 	// Process directory entries
 	for _, entry := range entries {
@@ -1914,9 +1929,13 @@ func (m *Model) loadBrowserEntries() {
 			Path:  fullPath,
 		}
 
-		// Check if this is a detectable project
-		if proj, err := detector.DetectProject(fullPath); err == nil && len(proj.Components) > 0 {
-			browserEntry.IsProject = true
+		// Check if we can read this directory (have permissions)
+		// before attempting project detection
+		if _, err := os.ReadDir(fullPath); err == nil {
+			// Check if this is a detectable project
+			if proj, err := detector.DetectProject(fullPath); err == nil && len(proj.Components) > 0 {
+				browserEntry.IsProject = true
+			}
 		}
 
 		// Check if already in config

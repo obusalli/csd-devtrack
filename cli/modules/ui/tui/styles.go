@@ -4,6 +4,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// Layout constants
+const (
+	GapHorizontal = 1 // Horizontal gap between panels/cards
+	GapVertical   = 1 // Vertical gap between sections
+)
+
 // Color palette
 var (
 	ColorPrimary   = lipgloss.Color("#7C3AED") // Purple

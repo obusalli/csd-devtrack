@@ -58,11 +58,10 @@ func (d *Detector) DetectProject(projectPath string) (*Project, error) {
 		components[ComponentFrontend] = comp
 	}
 
-	// If no standard structure, check for single Go binary (daemon type)
+	// A project must have at least one of the 4 standard components
+	// (agent/, cli/, backend/, frontend/)
 	if len(components) == 0 {
-		if comp := d.detectSingleGoBinary(absPath); comp != nil {
-			components[ComponentCLI] = comp
-		}
+		return nil, &ProjectError{Message: "no standard components found (agent/, cli/, backend/, frontend/)", Path: absPath}
 	}
 
 	// Determine project type
@@ -217,29 +216,6 @@ func (d *Detector) detectFrontendPort(compPath string) int {
 	}
 
 	return 3000 // Default fallback
-}
-
-// detectSingleGoBinary detects a project with a single Go binary at root
-func (d *Detector) detectSingleGoBinary(basePath string) *Component {
-	// Check for go.mod at root
-	goModPath := filepath.Join(basePath, "go.mod")
-	if _, err := os.Stat(goModPath); os.IsNotExist(err) {
-		return nil
-	}
-
-	// Find main Go file
-	entryPoint, binary := d.findGoEntryPoint(basePath)
-	if entryPoint == "" {
-		return nil
-	}
-
-	return &Component{
-		Type:       ComponentCLI,
-		Path:       "",
-		EntryPoint: entryPoint,
-		Binary:     binary,
-		Enabled:    true,
-	}
 }
 
 // determineProjectType determines the project type based on detected components

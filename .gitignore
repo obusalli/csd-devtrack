@@ -32,4 +32,4 @@ Thumbs.db
 *.bak
 
 # Config file (user-specific)
-devtrack.yaml
+cli/csd-devtrack.yaml

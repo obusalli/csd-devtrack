@@ -76,6 +76,9 @@ type Settings struct {
 	Theme          string `yaml:"theme" json:"theme"` // dark, light, auto
 	RefreshRate    int    `yaml:"refresh_rate" json:"refresh_rate"` // ms
 	ShowTimestamps bool   `yaml:"show_timestamps" json:"show_timestamps"`
+
+	// Browser settings
+	BrowserPath string `yaml:"browser_path,omitempty" json:"browser_path,omitempty"` // Default path for file browser (default: home directory)
 }
 
 // GetLoggerConfig returns the logger config, applying defaults and legacy field migration
