@@ -92,8 +92,39 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 	// Set up event handlers
 	p.setupEventHandlers()
 
-	// Initial data load
-	return p.Refresh()
+	// Initial data load (this includes slow git operations)
+	err := p.Refresh()
+
+	// Mark initialization as complete
+	p.mu.Lock()
+	p.state.Initializing = false
+	p.mu.Unlock()
+
+	// Broadcast state update to inform clients that initialization is complete
+	p.broadcastFullState()
+
+	return err
+}
+
+// broadcastFullState sends the current full state to all subscribers
+func (p *AppPresenter) broadcastFullState() {
+	p.mu.RLock()
+	callbacks := p.stateCallbacks
+	p.mu.RUnlock()
+
+	// Notify all view updates to refresh the entire UI
+	for _, viewType := range []ViewModelType{VMDashboard, VMProjects, VMBuild, VMProcesses, VMLogs, VMGit, VMConfig} {
+		vm, _ := p.GetViewModel(viewType)
+		if vm != nil {
+			update := StateUpdate{
+				ViewType:  viewType,
+				ViewModel: vm,
+			}
+			for _, cb := range callbacks {
+				cb(update)
+			}
+		}
+	}
 }
 
 // setupEventHandlers sets up internal event handlers

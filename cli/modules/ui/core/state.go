@@ -23,6 +23,7 @@ type AppState struct {
 
 	// Global state
 	IsConnected   bool
+	Initializing  bool      // True while presenter is initializing (slow git ops)
 	LastRefresh   time.Time
 	Notifications []*Notification
 }
@@ -30,14 +31,15 @@ type AppState struct {
 // NewAppState creates a new application state
 func NewAppState() *AppState {
 	return &AppState{
-		CurrentView: VMDashboard,
-		Dashboard:   &DashboardVM{BaseViewModel: BaseViewModel{VMType: VMDashboard}},
-		Projects:    &ProjectsVM{BaseViewModel: BaseViewModel{VMType: VMProjects}},
-		Builds:      &BuildsVM{BaseViewModel: BaseViewModel{VMType: VMBuild}},
-		Processes:   &ProcessesVM{BaseViewModel: BaseViewModel{VMType: VMProcesses}},
-		Logs:        &LogsVM{BaseViewModel: BaseViewModel{VMType: VMLogs}, AutoScroll: true, MaxLines: 1000},
-		Git:         &GitVM{BaseViewModel: BaseViewModel{VMType: VMGit}},
-		Config:      &ConfigVM{BaseViewModel: BaseViewModel{VMType: VMConfig}},
+		CurrentView:  VMDashboard,
+		Initializing: true, // Start as initializing until presenter completes
+		Dashboard:    &DashboardVM{BaseViewModel: BaseViewModel{VMType: VMDashboard}},
+		Projects:     &ProjectsVM{BaseViewModel: BaseViewModel{VMType: VMProjects}},
+		Builds:       &BuildsVM{BaseViewModel: BaseViewModel{VMType: VMBuild}},
+		Processes:    &ProcessesVM{BaseViewModel: BaseViewModel{VMType: VMProcesses}},
+		Logs:         &LogsVM{BaseViewModel: BaseViewModel{VMType: VMLogs}, AutoScroll: true, MaxLines: 1000},
+		Git:          &GitVM{BaseViewModel: BaseViewModel{VMType: VMGit}},
+		Config:       &ConfigVM{BaseViewModel: BaseViewModel{VMType: VMConfig}},
 		Notifications: make([]*Notification, 0),
 	}
 }

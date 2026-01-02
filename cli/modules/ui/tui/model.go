@@ -171,6 +171,11 @@ func NewModel(presenter core.Presenter) *Model {
 	// Create initial state and populate from presenter
 	state := core.NewAppState()
 	if presenter != nil {
+		// Sync global state flags (including Initializing)
+		if presenterState := presenter.GetState(); presenterState != nil {
+			state.Initializing = presenterState.Initializing
+		}
+
 		// Fetch initial state from presenter (already loaded)
 		if vm, err := presenter.GetViewModel(core.VMDashboard); err == nil {
 			if dashboard, ok := vm.(*core.DashboardVM); ok {
@@ -294,8 +299,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.handleLogsSearchInput(msg) {
 				return m, nil
 			}
-		} else if m.currentView == core.VMLogs && m.focusArea == FocusMain && !m.showDialog && !m.showHelp {
+		} else if m.currentView == core.VMLogs && !m.showDialog && !m.showHelp {
 			// In Logs view but not in search mode - handle shortcuts
+			// Allow shortcuts regardless of focus area (s/t/e/w/i are filter shortcuts)
 			if m.handleLogsShortcuts(msg) {
 				return m, nil
 			}
@@ -365,6 +371,11 @@ func (m Model) View() string {
 		return "\n  Initializing..."
 	}
 
+	// Show spinner while daemon is initializing (slow git operations)
+	if m.state.Initializing {
+		return m.renderInitializingView()
+	}
+
 	header := m.renderHeader()
 	sidebar := m.renderSidebar()
 	main := m.renderMainContent()
@@ -374,6 +385,49 @@ func (m Model) View() string {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", main)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+}
+
+// renderInitializingView renders a full-screen loading view with spinner
+func (m Model) renderInitializingView() string {
+	// Header
+	header := m.renderHeader()
+
+	// Centered spinner with message
+	spinnerStyle := lipgloss.NewStyle().
+		Foreground(ColorPrimary).
+		Bold(true)
+
+	messageStyle := lipgloss.NewStyle().
+		Foreground(ColorMuted)
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		"",
+		"",
+		spinnerStyle.Render(m.spinner.View()+" Initializing..."),
+		"",
+		messageStyle.Render("Loading projects and git status"),
+		"",
+	)
+
+	// Center in available space
+	contentHeight := m.height - 6
+	contentWidth := m.width - 4
+
+	centered := lipgloss.Place(
+		contentWidth,
+		contentHeight,
+		lipgloss.Center,
+		lipgloss.Center,
+		content,
+	)
+
+	// Simple footer
+	footer := lipgloss.NewStyle().
+		Width(m.width).
+		Background(ColorBgAlt).
+		Render(" Please wait...")
+
+	return lipgloss.JoinVertical(lipgloss.Left, header, centered, footer)
 }
 
 // handleKeyPress processes keyboard input
@@ -1136,8 +1190,14 @@ func (m *Model) handleLogsShortcuts(msg tea.KeyMsg) bool {
 		m.logLevelFilter = ""
 		m.logSearchText = ""
 		return true
+	}
 
-	// Scroll controls
+	// Scroll controls - only when focus is on Main panel
+	if m.focusArea != FocusMain {
+		return false
+	}
+
+	switch key {
 	case "up", "k":
 		// Scroll up one line
 		m.logScrollOffset++
@@ -1393,6 +1453,15 @@ func (m *Model) sendEvent(event *core.Event) tea.Cmd {
 // handleStateUpdate handles state updates from presenter
 func (m *Model) handleStateUpdate(update core.StateUpdate) {
 	m.state.UpdateViewModel(update.ViewModel)
+
+	// Sync global state flags from presenter
+	if presenterState := m.presenter.GetState(); presenterState != nil {
+		m.state.Initializing = presenterState.Initializing
+	}
+
+	// Always update log source options (logs can come from any view update)
+	m.updateLogSourceOptions()
+
 	// Update max items counts
 	m.updateItemCounts()
 }
