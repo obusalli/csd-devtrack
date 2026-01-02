@@ -214,6 +214,7 @@ type ClaudeSessionVM struct {
 	Name         string `json:"name"`
 	ProjectID    string `json:"project_id"`
 	ProjectName  string `json:"project_name"`
+	WorkDir      string `json:"work_dir"`       // Working directory for Claude
 	State        string `json:"state"` // idle, running, waiting, error
 	MessageCount int    `json:"message_count"`
 	LastActive   string `json:"last_active"`

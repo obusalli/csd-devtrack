@@ -67,6 +67,7 @@ type SessionSummary struct {
 	Name         string       `json:"name"`
 	ProjectID    string       `json:"project_id"`
 	ProjectName  string       `json:"project_name"`
+	WorkDir      string       `json:"work_dir"`
 	State        SessionState `json:"state"`
 	MessageCount int          `json:"message_count"`
 	LastActiveAt time.Time    `json:"last_active_at"`
@@ -79,6 +80,7 @@ func (s *Session) ToSummary() SessionSummary {
 		Name:         s.DisplayName(), // Use custom name if set
 		ProjectID:    s.ProjectID,
 		ProjectName:  s.ProjectName,
+		WorkDir:      s.WorkDir,
 		State:        s.State,
 		MessageCount: len(s.Messages),
 		LastActiveAt: s.LastActiveAt,

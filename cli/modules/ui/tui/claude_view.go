@@ -49,15 +49,16 @@ func (m *Model) renderClaude(width, height int) string {
 	tabHeight := 3
 	contentHeight := height - tabHeight - 2
 
-	// Split: 70% chat, 30% sessions
-	sessionsWidth := width * 3 / 10
-	if sessionsWidth < 25 {
-		sessionsWidth = 25
-	}
-	chatWidth := width - sessionsWidth - GapHorizontal - 2
+	// Calculate sessions panel width using TreeMenu
+	sessionsWidth := m.sessionsTreeMenu.CalcWidth()
+	chatWidth := width - sessionsWidth - GapHorizontal
+
+	// Configure and render TreeMenu
+	m.sessionsTreeMenu.SetSize(sessionsWidth, contentHeight)
+	m.sessionsTreeMenu.SetFocused(m.focusArea == FocusDetail)
 
 	chatPanel := m.renderClaudeChatPanel(chatWidth, contentHeight)
-	sessionsPanel := m.renderSessionsSidePanel(sessionsWidth, contentHeight)
+	sessionsPanel := m.sessionsTreeMenu.Render()
 
 	content := lipgloss.JoinHorizontal(lipgloss.Top,
 		chatPanel,
@@ -152,7 +153,14 @@ func (m *Model) renderClaudeTabs(width int) string {
 
 // renderClaudeChatPanel renders the main chat area (messages + input)
 func (m *Model) renderClaudeChatPanel(width, height int) string {
-	// Layout: chat messages (main area) + input at bottom
+	// If in terminal mode and terminal exists, render terminal
+	if m.terminalMode && m.claudeActiveSession != "" {
+		if t := m.terminalManager.Get(m.claudeActiveSession); t != nil {
+			return m.renderTerminalPanel(t, width, height)
+		}
+	}
+
+	// Legacy: chat messages (main area) + input at bottom
 	inputHeight := 4
 	messagesHeight := height - inputHeight - 2
 
@@ -160,6 +168,199 @@ func (m *Model) renderClaudeChatPanel(width, height int) string {
 	inputPanel := m.renderChatInput(width, inputHeight)
 
 	return lipgloss.JoinVertical(lipgloss.Left, messagesPanel, inputPanel)
+}
+
+// renderTerminalPanel renders the embedded terminal
+func (m *Model) renderTerminalPanel(t TerminalInterface, width, height int) string {
+	// Inner dimensions (inside border)
+	innerWidth := width - 2  // border left/right
+	innerHeight := height - 2 // border top/bottom
+
+	// Terminal dimensions (minus header line)
+	termWidth := innerWidth - 2   // small padding
+	termHeight := innerHeight - 1 // header line
+
+	if termWidth < 20 {
+		termWidth = 20
+	}
+	if termHeight < 5 {
+		termHeight = 5
+	}
+
+	// Update terminal size
+	t.SetSize(termWidth, termHeight)
+
+	// Header with hints
+	hintStyle := lipgloss.NewStyle().Foreground(ColorMuted)
+	header := hintStyle.Render(fmt.Sprintf("[ESC ESC: exit | PgUp/PgDn: scroll | %dx%d]", t.Width(), t.Height()))
+
+	// Get terminal content and split into lines
+	content := t.View()
+	contentLines := strings.Split(content, "\n")
+
+	// Truncate to exact height
+	if len(contentLines) > termHeight {
+		contentLines = contentLines[:termHeight]
+	}
+
+	// Truncate each line to exact width and pad
+	for i, line := range contentLines {
+		contentLines[i] = truncateANSI(line, termWidth)
+	}
+
+	// Pad to exact height
+	for len(contentLines) < termHeight {
+		contentLines = append(contentLines, "")
+	}
+
+	// Build inner content with exact dimensions
+	innerContent := header + "\n" + strings.Join(contentLines, "\n")
+
+	// Apply border style
+	var style lipgloss.Style
+	if m.terminalMode {
+		style = FocusedBorderStyle.Copy()
+	} else {
+		style = UnfocusedBorderStyle.Copy()
+	}
+
+	return style.
+		Width(width).
+		Height(height).
+		Render(innerContent)
+}
+
+// truncateANSI truncates a string with ANSI codes to a visible width
+func truncateANSI(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+
+	var result strings.Builder
+	visibleLen := 0
+	i := 0
+	runes := []rune(s)
+
+	for i < len(runes) {
+		r := runes[i]
+
+		// Check for ANSI escape sequence
+		if r == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			// Start of CSI sequence - copy until we hit a letter
+			result.WriteRune(r)
+			i++
+			for i < len(runes) {
+				r = runes[i]
+				result.WriteRune(r)
+				i++
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+					break
+				}
+			}
+			continue
+		}
+
+		// Check for OSC sequence (ESC ])
+		if r == '\x1b' && i+1 < len(runes) && runes[i+1] == ']' {
+			// Skip OSC sequence until BEL or ST
+			result.WriteRune(r)
+			i++
+			for i < len(runes) {
+				r = runes[i]
+				result.WriteRune(r)
+				i++
+				if r == '\x07' || r == '\\' {
+					break
+				}
+			}
+			continue
+		}
+
+		// Single ESC character followed by something else
+		if r == '\x1b' {
+			result.WriteRune(r)
+			i++
+			continue
+		}
+
+		// Regular visible character
+		if visibleLen >= maxWidth {
+			break
+		}
+		result.WriteRune(r)
+		visibleLen++
+		i++
+	}
+
+	return result.String()
+}
+
+// calcSessionsPanelWidth calculates the width needed for the sessions panel
+// based on the longest session/project name
+func (m *Model) calcSessionsPanelWidth() int {
+	const minWidth = 38
+	const maxWidth = 65
+	// padding: cursor(2) + active(2) + icon(2) + spacing(2) + terminal icon(3) + borders(5) + margin(3) + unicode(5) = 24
+	// Unicode emojis (📂, ▶, ○, ⚡) take 2 visual columns each
+	const padding = 24
+
+	maxLen := 0
+
+	// Build session map for name lookup
+	sessionMap := make(map[string]string) // sessionID -> display name
+	if m.state.Claude != nil {
+		for _, sess := range m.state.Claude.Sessions {
+			// Apply same transformation as in render
+			displayName := sess.Name
+			if idx := strings.Index(displayName, "-"); idx > 0 && strings.HasPrefix(displayName, sess.ProjectID) {
+				displayName = displayName[idx+1:]
+			}
+			sessionMap[sess.ID] = displayName
+		}
+	}
+
+	// Count sessions per project for width calculation
+	projectSessionCount := make(map[string]int)
+	for _, item := range m.claudeTreeItems {
+		if !item.IsProject {
+			projectSessionCount[item.ProjectID]++
+		}
+	}
+
+	// Check project names (including session count suffix)
+	if m.state.Projects != nil {
+		for _, proj := range m.state.Projects.Projects {
+			nameLen := len(proj.Name)
+			if count := projectSessionCount[proj.ID]; count > 0 {
+				nameLen += len(fmt.Sprintf(" (%d)", count))
+			}
+			if nameLen > maxLen {
+				maxLen = nameLen
+			}
+		}
+	}
+
+	// Check session names from tree items
+	for _, item := range m.claudeTreeItems {
+		if !item.IsProject {
+			name := sessionMap[item.SessionID]
+			if name == "" {
+				name = item.SessionID
+			}
+			if len(name) > maxLen {
+				maxLen = len(name)
+			}
+		}
+	}
+
+	width := maxLen + padding
+	if width < minWidth {
+		width = minWidth
+	}
+	if width > maxWidth {
+		width = maxWidth
+	}
+	return width
 }
 
 // renderSessionsSidePanel renders the sessions panel as a tree: Projects > Sessions
@@ -171,7 +372,7 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 	var items []string
 
 	// Header
-	items = append(items, headerStyle.Render("Sessions")+" "+lipgloss.NewStyle().Foreground(ColorMuted).Render("[n:new]"))
+	items = append(items, headerStyle.Render("Sessions"))
 	items = append(items, lipgloss.NewStyle().
 		Foreground(ColorBorder).
 		Render(strings.Repeat("─", width-4)))
@@ -222,9 +423,14 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 					projIcon = "📂"
 				}
 
-				projLine := fmt.Sprintf("%s %s", projIcon, truncate(projName, width-10))
+				countSuffix := ""
 				if sessCount > 0 {
-					projLine += lipgloss.NewStyle().Foreground(ColorMuted).Render(fmt.Sprintf(" (%d)", sessCount))
+					countSuffix = fmt.Sprintf(" (%d)", sessCount)
+				}
+
+				projLine := fmt.Sprintf("%s %s", projIcon, projName)
+				if countSuffix != "" {
+					projLine += lipgloss.NewStyle().Foreground(ColorMuted).Render(countSuffix)
 				}
 
 				var projStyle lipgloss.Style
@@ -262,13 +468,17 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 					}
 				}
 
-				// Persistent/watching indicator
-				persistIcon := ""
-				if hasDetails && sess.IsPersistent {
-					persistIcon = "⚡"
-				}
-				if hasDetails && sess.IsWatching {
-					persistIcon = "👁"
+				// Terminal indicator (check from terminalManager)
+				terminalIcon := ""
+				if m.terminalManager != nil {
+					if t := m.terminalManager.Get(item.SessionID); t != nil {
+						switch t.State() {
+						case TerminalRunning:
+							terminalIcon = " ⚡" // Running (persistent process)
+						case TerminalWaiting:
+							terminalIcon = " ⏳" // Waiting for input
+						}
+					}
 				}
 
 				// Navigation cursor prefix (like menu)
@@ -278,9 +488,9 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 				}
 
 				// Active session indicator
-				activePrefix := " "
+				activePrefix := "  "
 				if isActiveSession {
-					activePrefix = "▶"
+					activePrefix = "▶ "
 				}
 
 				// Session name
@@ -291,14 +501,14 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 						sessName = sessName[idx+1:]
 					}
 				}
-				sessName = truncate(sessName, width-14)
+				// No truncation needed - panel width adapts to content
 
-				line := fmt.Sprintf("%s%s%s%s %s",
+				line := fmt.Sprintf("%s%s%s  %s%s",
 					cursorPrefix,
 					activePrefix,
-					persistIcon,
 					lipgloss.NewStyle().Foreground(stateColor).Render(stateIcon),
 					sessName,
+					lipgloss.NewStyle().Foreground(ColorWarning).Render(terminalIcon),
 				)
 
 				var lineStyle lipgloss.Style
@@ -336,10 +546,21 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 	// Spacer
 	items = append(items, "")
 
-	// Hints
+	// Hints - context-aware based on selected item
 	hintStyle := lipgloss.NewStyle().Foreground(ColorMuted)
-	items = append(items, hintStyle.Render("↑↓:nav Enter:select"))
-	items = append(items, hintStyle.Render("n:new x:del w:watch"))
+
+	// Check if current selection is a project or session
+	if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+		item := m.claudeTreeItems[m.mainIndex]
+		if item.IsProject {
+			items = append(items, hintStyle.Render("↑↓:nav n:new"))
+		} else {
+			items = append(items, hintStyle.Render("↑↓:nav Enter:select"))
+			items = append(items, hintStyle.Render("r:rename x:del"))
+		}
+	} else {
+		items = append(items, hintStyle.Render("↑↓:nav"))
+	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, items...)
 
@@ -786,25 +1007,45 @@ func (m *Model) renderChatMessages(width, height int) string {
 		visibleContent = strings.Join(lines[startLine:endLine], "\n")
 	}
 
-	// Add scroll indicator if needed
-	if totalLines > visibleLines {
-		scrollInfo := ""
-		if startLine > 0 {
-			scrollInfo = "↑ more "
+	// Add status line: thinking indicator (left) + scroll info (right)
+	isProcessing := m.state.Claude != nil && m.state.Claude.IsProcessing
+	hasScrollUp := startLine > 0
+	hasScrollDown := endLine < totalLines
+
+	if isProcessing || hasScrollUp || hasScrollDown {
+		// Build left side: thinking indicator
+		leftPart := ""
+		if isProcessing {
+			leftPart = m.spinner.View() + " Claude is thinking..."
 		}
-		if endLine < totalLines {
-			if scrollInfo != "" {
-				scrollInfo += "| "
+
+		// Build right side: scroll indicators
+		rightPart := ""
+		if hasScrollUp {
+			rightPart = "↑ more "
+		}
+		if hasScrollDown {
+			if rightPart != "" {
+				rightPart += "| "
 			}
-			scrollInfo += "↓ more"
+			rightPart += "↓ more"
 		}
-		if scrollInfo != "" {
-			visibleContent += "\n" + lipgloss.NewStyle().
-				Foreground(ColorMuted).
-				Align(lipgloss.Right).
-				Width(width-4).
-				Render(scrollInfo)
+
+		// Combine on same line
+		lineWidth := width - 4
+		leftStyled := lipgloss.NewStyle().Foreground(ColorWarning).Render(leftPart)
+		rightStyled := lipgloss.NewStyle().Foreground(ColorMuted).Render(rightPart)
+
+		// Calculate padding between left and right
+		leftLen := lipgloss.Width(leftStyled)
+		rightLen := lipgloss.Width(rightStyled)
+		padding := lineWidth - leftLen - rightLen
+		if padding < 1 {
+			padding = 1
 		}
+
+		statusLine := leftStyled + strings.Repeat(" ", padding) + rightStyled
+		visibleContent += "\n" + statusLine
 	}
 
 	var style lipgloss.Style

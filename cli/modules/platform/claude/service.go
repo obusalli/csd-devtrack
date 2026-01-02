@@ -43,17 +43,104 @@ func isValidUUID(s string) bool {
 }
 
 // formatToolUseForDisplay formats a tool use block for display (Claude CLI style)
+// Uses dynamic extraction of common parameters to work with any tool
 func formatToolUseForDisplay(toolName string, input map[string]interface{}) string {
+	var sb strings.Builder
+
+	// Map tool names to display names (like Claude CLI does)
+	displayName := toolName
+	switch toolName {
+	case "Edit":
+		displayName = "Update"
+	case "Grep":
+		displayName = "Search"
+	}
+
+	// Extract common parameters dynamically
+	identifier := extractToolIdentifier(toolName, input)
+
+	// Format header: ● ToolName(identifier)
+	if identifier != "" {
+		sb.WriteString(fmt.Sprintf("● %s(%s)\n", displayName, identifier))
+	} else {
+		sb.WriteString(fmt.Sprintf("● %s\n", displayName))
+	}
+
+	// Add details based on tool type
+	sb.WriteString(formatToolDetails(toolName, input))
+
+	return sb.String()
+}
+
+// extractToolIdentifier extracts a meaningful identifier from tool input
+func extractToolIdentifier(toolName string, input map[string]interface{}) string {
+	// Priority order for identifier extraction
+	identifierKeys := []string{
+		"file_path", "path", "filePath", "notebook_path", // File operations
+		"pattern",                          // Search operations
+		"command", "description",           // Bash
+		"query",                            // Web search
+		"url",                              // Web fetch
+		"operation",                        // LSP
+		"skill",                            // Skill
+		"task_id", "shell_id", "session_id", // IDs
+	}
+
+	for _, key := range identifierKeys {
+		if val, ok := input[key].(string); ok && val != "" {
+			// For file paths, show relative path (remove common prefixes)
+			if strings.Contains(key, "path") || key == "path" {
+				val = shortenPath(val)
+			}
+			// For description in Bash, use it directly
+			if key == "description" {
+				return val
+			}
+			// Truncate long values
+			if len(val) > 60 {
+				val = val[:60] + "..."
+			}
+			return val
+		}
+	}
+
+	return ""
+}
+
+// shortenPath removes common prefixes to show a relative-like path
+func shortenPath(path string) string {
+	// Remove absolute path prefix to show relative path
+	// Common patterns: /home/user/..., /data/..., etc.
+
+	// Try to find a reasonable starting point
+	parts := strings.Split(path, "/")
+
+	// If path has many components, try to find a good starting point
+	// Look for common project markers
+	markers := []string{"src", "lib", "pkg", "cmd", "modules", "internal", "api", "cli"}
+	for i, part := range parts {
+		for _, marker := range markers {
+			if part == marker && i > 0 {
+				// Return from one level before the marker
+				return strings.Join(parts[i-1:], "/")
+			}
+		}
+	}
+
+	// If no marker found, just show last 3 components or full path if short
+	if len(parts) > 3 {
+		return strings.Join(parts[len(parts)-3:], "/")
+	}
+
+	return path
+}
+
+// formatToolDetails generates the details line(s) for a tool
+func formatToolDetails(toolName string, input map[string]interface{}) string {
 	var sb strings.Builder
 
 	switch toolName {
 	case "Read":
-		filePath, _ := input["file_path"].(string)
-		if filePath == "" {
-			filePath, _ = input["path"].(string)
-		}
-		fileName := filepath.Base(filePath)
-		sb.WriteString(fmt.Sprintf("● Read(%s)\n", fileName))
 		if limit, ok := input["limit"].(float64); ok {
 			sb.WriteString(fmt.Sprintf("  ⎿  Read %d lines\n", int(limit)))
 		} else {
@@ -62,11 +149,8 @@ func formatToolUseForDisplay(toolName string, input map[string]interface{}) stri
 
 	case "Edit":
 		filePath, _ := input["file_path"].(string)
-		fileName := filepath.Base(filePath)
 		oldStr, _ := input["old_string"].(string)
 		newStr, _ := input["new_string"].(string)
-
-		sb.WriteString(fmt.Sprintf("● Update(%s)\n", fileName))
 
 		// Count lines changed
 		oldLines := strings.Count(oldStr, "\n") + 1
@@ -91,52 +175,222 @@ func formatToolUseForDisplay(toolName string, input map[string]interface{}) stri
 			sb.WriteString("  ⎿  Modified\n")
 		}
 
-		// Format diff with markers
-		sb.WriteString(formatDiffWithMarkers(oldStr, newStr, 2))
+		// Format diff with markers and actual line numbers from file
+		sb.WriteString(formatDiffWithMarkersAndPath(oldStr, newStr, 2, filePath))
 
 	case "Write":
-		filePath, _ := input["file_path"].(string)
-		fileName := filepath.Base(filePath)
 		contentStr, _ := input["content"].(string)
 		lines := strings.Count(contentStr, "\n") + 1
-		sb.WriteString(fmt.Sprintf("● Write(%s)\n", fileName))
 		sb.WriteString(fmt.Sprintf("  ⎿  Wrote %d lines\n", lines))
 
 	case "Bash":
-		cmd, _ := input["command"].(string)
-		desc, _ := input["description"].(string)
-		if desc != "" {
-			sb.WriteString(fmt.Sprintf("● Bash(%s)\n", desc))
-		} else {
-			cmdDisplay := cmd
-			if len(cmdDisplay) > 50 {
-				cmdDisplay = cmdDisplay[:50] + "..."
-			}
-			sb.WriteString(fmt.Sprintf("● Bash(%s)\n", cmdDisplay))
-		}
 		sb.WriteString("  ⎿  Executed\n")
 
-	case "Glob", "Grep":
-		pattern, _ := input["pattern"].(string)
-		if len(pattern) > 40 {
-			pattern = pattern[:40] + "..."
+	case "Glob":
+		sb.WriteString("  ⎿  File search\n")
+
+	case "Grep":
+		// Show search details
+		path, _ := input["path"].(string)
+		outputMode, _ := input["output_mode"].(string)
+		if path != "" {
+			sb.WriteString(fmt.Sprintf("  ⎿  in %s\n", shortenPath(path)))
+		} else if outputMode == "content" {
+			sb.WriteString("  ⎿  Content search\n")
+		} else {
+			sb.WriteString("  ⎿  File search\n")
 		}
-		sb.WriteString(fmt.Sprintf("● %s(%s)\n", toolName, pattern))
-		sb.WriteString("  ⎿  Searched\n")
+
+	case "TodoWrite":
+		formatTodoWriteDetails(&sb, input)
+
+	case "Task":
+		if subType, ok := input["subagent_type"].(string); ok && subType != "" {
+			sb.WriteString(fmt.Sprintf("  ⎿  Subagent: %s\n", subType))
+		}
+
+	case "WebSearch":
+		sb.WriteString("  ⎿  Searching web\n")
+
+	case "WebFetch":
+		sb.WriteString("  ⎿  Fetching URL\n")
+
+	case "LSP":
+		if op, ok := input["operation"].(string); ok {
+			sb.WriteString(fmt.Sprintf("  ⎿  %s\n", op))
+		}
+
+	case "AskUserQuestion":
+		if questions, ok := input["questions"].([]interface{}); ok && len(questions) > 0 {
+			if q, ok := questions[0].(map[string]interface{}); ok {
+				if question, ok := q["question"].(string); ok {
+					if len(question) > 60 {
+						question = question[:60] + "..."
+					}
+					sb.WriteString(fmt.Sprintf("  ⎿  %s\n", question))
+				}
+			}
+		}
+
+	case "NotebookEdit":
+		editMode, _ := input["edit_mode"].(string)
+		if editMode == "" {
+			editMode = "replace"
+		}
+		sb.WriteString(fmt.Sprintf("  ⎿  %s cell\n", editMode))
 
 	default:
-		sb.WriteString(fmt.Sprintf("● %s\n", toolName))
+		// Dynamic detail extraction for unknown tools
+		sb.WriteString(formatDynamicDetails(input))
 	}
 
 	return sb.String()
 }
 
+// formatTodoWriteDetails formats the TodoWrite tool details
+func formatTodoWriteDetails(sb *strings.Builder, input map[string]interface{}) {
+	todos, _ := input["todos"].([]interface{})
+	if len(todos) == 0 {
+		sb.WriteString("  ⎿  Updated todos\n")
+		return
+	}
+
+	// Count by status
+	pending, inProgress, completed := 0, 0, 0
+	for _, t := range todos {
+		if todo, ok := t.(map[string]interface{}); ok {
+			status, _ := todo["status"].(string)
+			switch status {
+			case "pending":
+				pending++
+			case "in_progress":
+				inProgress++
+			case "completed":
+				completed++
+			}
+		}
+	}
+	sb.WriteString(fmt.Sprintf("  ⎿  %d items (✓%d ●%d ○%d)\n", len(todos), completed, inProgress, pending))
+
+	// Show items
+	for _, t := range todos {
+		if todo, ok := t.(map[string]interface{}); ok {
+			content, _ := todo["content"].(string)
+			status, _ := todo["status"].(string)
+			icon := "○"
+			switch status {
+			case "completed":
+				icon = "✓"
+			case "in_progress":
+				icon = "●"
+			}
+			if len(content) > 60 {
+				content = content[:60] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("     %s %s\n", icon, content))
+		}
+	}
+}
+
+// formatDynamicDetails extracts details from unknown tool inputs dynamically
+func formatDynamicDetails(input map[string]interface{}) string {
+	if len(input) == 0 {
+		return ""
+	}
+
+	// Look for meaningful values to display
+	var details []string
+
+	// Check for common result indicators
+	for _, key := range []string{"content", "text", "message", "result", "output"} {
+		if val, ok := input[key].(string); ok && val != "" {
+			preview := val
+			if len(preview) > 50 {
+				preview = preview[:50] + "..."
+			}
+			details = append(details, preview)
+			break
+		}
+	}
+
+	// Check for boolean flags
+	for key, val := range input {
+		if b, ok := val.(bool); ok && b {
+			details = append(details, key)
+		}
+	}
+
+	// Check for numeric values
+	for key, val := range input {
+		if n, ok := val.(float64); ok && n > 0 {
+			details = append(details, fmt.Sprintf("%s: %v", key, n))
+			if len(details) >= 2 {
+				break
+			}
+		}
+	}
+
+	if len(details) > 0 {
+		return fmt.Sprintf("  ⎿  %s\n", strings.Join(details, ", "))
+	}
+
+	return "  ⎿  Executed\n"
+}
+
+// findLineNumber searches for oldStr in a file and returns the starting line number
+// Returns 0 if not found or file can't be read
+func findLineNumber(filePath, oldStr string) int {
+	if filePath == "" || oldStr == "" {
+		return 0
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0
+	}
+
+	fileContent := string(content)
+	idx := strings.Index(fileContent, oldStr)
+	if idx == -1 {
+		// Try with normalized line endings
+		normalizedContent := strings.ReplaceAll(fileContent, "\r\n", "\n")
+		normalizedOld := strings.ReplaceAll(oldStr, "\r\n", "\n")
+		idx = strings.Index(normalizedContent, normalizedOld)
+		if idx == -1 {
+			return 0
+		}
+		fileContent = normalizedContent
+	}
+
+	// Count newlines before the match to get line number
+	lineNum := 1
+	for i := 0; i < idx; i++ {
+		if fileContent[i] == '\n' {
+			lineNum++
+		}
+	}
+
+	return lineNum
+}
+
 // formatDiffWithMarkers creates a diff with {{-...}} and {{+...}} markers
+// filePath is optional - if provided, will try to find actual line numbers
 func formatDiffWithMarkers(oldStr, newStr string, contextLines int) string {
+	return formatDiffWithMarkersAndPath(oldStr, newStr, contextLines, "")
+}
+
+// formatDiffWithMarkersAndPath creates a diff with actual line numbers from the file
+func formatDiffWithMarkersAndPath(oldStr, newStr string, contextLines int, filePath string) string {
 	var sb strings.Builder
 
 	oldLines := strings.Split(oldStr, "\n")
 	newLines := strings.Split(newStr, "\n")
+
+	// Try to find actual line number in file
+	baseLineNum := findLineNumber(filePath, oldStr)
+	if baseLineNum == 0 {
+		baseLineNum = 1 // Fallback to 1 if not found
+	}
 
 	// Find common prefix
 	commonPrefix := 0
@@ -160,7 +414,7 @@ func formatDiffWithMarkers(oldStr, newStr string, contextLines int) string {
 		startContext = 0
 	}
 
-	lineNum := startContext + 1
+	lineNum := baseLineNum + startContext
 	for i := startContext; i < commonPrefix && i < len(oldLines); i++ {
 		sb.WriteString(fmt.Sprintf("      %3d   %s\n", lineNum, oldLines[i]))
 		lineNum++
@@ -173,21 +427,22 @@ func formatDiffWithMarkers(oldStr, newStr string, contextLines int) string {
 		lineNum++
 	}
 
-	// Added lines
-	lineNum = commonPrefix + 1
+	// Added lines (use same line number as removed for replacement)
+	addedLineNum := baseLineNum + commonPrefix
 	addedEnd := len(newLines) - commonSuffix
 	for i := commonPrefix; i < addedEnd; i++ {
-		sb.WriteString(fmt.Sprintf("{{+   %3d + %s}}\n", lineNum, newLines[i]))
+		sb.WriteString(fmt.Sprintf("{{+   %3d + %s}}\n", addedLineNum, newLines[i]))
 		lineNum++
 	}
 
-	// Context after
+	// Context after (calculate line number based on new content position)
 	if commonSuffix > 0 && commonSuffix <= contextLines {
-		contextStart := len(newLines) - commonSuffix
-		lineNum = contextStart + 1
-		for i := contextStart; i < len(newLines); i++ {
-			sb.WriteString(fmt.Sprintf("      %3d   %s\n", lineNum, newLines[i]))
-			lineNum++
+		// After the changes, line numbers continue from where the new content ends
+		contextStartIdx := len(newLines) - commonSuffix
+		afterLineNum := baseLineNum + contextStartIdx
+		for i := contextStartIdx; i < len(newLines); i++ {
+			sb.WriteString(fmt.Sprintf("      %3d   %s\n", afterLineNum, newLines[i]))
+			afterLineNum++
 		}
 	}
 
@@ -517,6 +772,17 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 	}
 
 	// Set working directory and extract project info
+	// If workDir not found in JSONL, derive from file path
+	if workDir == "" {
+		// filePath is like ~/.claude/projects/-data-devel-infra-csd-devtrack/session.jsonl
+		// Extract project dir name and convert back to path
+		dir := filepath.Dir(filePath)
+		projectDirName := filepath.Base(dir)
+		if strings.HasPrefix(projectDirName, "-") {
+			// Convert -data-devel-infra-csd-devtrack to /data/devel/infra/csd-devtrack
+			workDir = strings.ReplaceAll(projectDirName, "-", "/")
+		}
+	}
 	session.WorkDir = workDir
 	if workDir != "" {
 		// Extract project name from last path segment
@@ -1589,7 +1855,8 @@ func (s *Service) checkSessionFileUpdates(w *sessionWatcher) {
 	}
 
 	// Check if file has grown
-	if info.Size() <= w.lastOffset {
+	currentSize := info.Size()
+	if currentSize <= w.lastOffset {
 		return
 	}
 
@@ -1604,17 +1871,25 @@ func (s *Service) checkSessionFileUpdates(w *sessionWatcher) {
 		return
 	}
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	// Read the new content
+	newContent := make([]byte, currentSize-w.lastOffset)
+	n, err := io.ReadFull(file, newContent)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return
+	}
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
+	// Update offset to current file size
+	w.lastOffset = currentSize
+
+	// Parse lines from the new content
+	lines := strings.Split(string(newContent[:n]), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
 
-		update := s.parseSessionLine(w.sessionID, line)
+		update := s.parseSessionLine(w.sessionID, []byte(line))
 		if update != nil {
 			select {
 			case w.outputCh <- *update:
@@ -1623,10 +1898,6 @@ func (s *Service) checkSessionFileUpdates(w *sessionWatcher) {
 			}
 		}
 	}
-
-	// Update offset
-	newPos, _ := file.Seek(0, 1) // Get current position
-	w.lastOffset = newPos
 }
 
 // parseSessionLine parses a single JSONL line into a SessionUpdate

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,6 +150,12 @@ type Model struct {
 	claudeTreeItems           []claudeTreeItem // Flattened tree for navigation
 	claudeTextInput      textinput.Model // Optimized text input component
 	claudeLastEscTime    time.Time       // For double-ESC detection
+	sessionsTreeMenu     *TreeMenu       // Tree menu for sessions panel
+
+	// Terminal mode (embedded Claude terminal)
+	terminalManager      *TerminalManager // Manages terminal sessions
+	terminalMode         bool             // True when in terminal mode (keys go to terminal)
+	terminalRefreshTick  <-chan time.Time // Ticker for terminal refresh
 
 	// Components
 	help     help.Model
@@ -262,6 +269,22 @@ func NewModel(presenter core.Presenter) *Model {
 	ti.CharLimit = 4096
 	ti.Width = 80
 
+	// Get Claude path for terminal manager
+	claudePath := "claude" // Default
+	if state.Claude != nil && state.Claude.ClaudePath != "" {
+		claudePath = state.Claude.ClaudePath
+	}
+	// Try to find full path if just "claude"
+	if claudePath == "claude" {
+		if fullPath, err := exec.LookPath("claude"); err == nil {
+			claudePath = fullPath
+		}
+	}
+
+	// Create sessions tree menu
+	sessionsMenu := NewTreeMenu(nil)
+	sessionsMenu.SetTitle("Sessions")
+
 	return &Model{
 		presenter:           presenter,
 		state:               state,
@@ -281,6 +304,8 @@ func NewModel(presenter core.Presenter) *Model {
 		viewStates:          make(map[core.ViewModelType]*ViewState),
 		logAutoScroll:       true, // Auto-scroll logs by default
 		metricsCollector:    metricsCollector,
+		terminalManager:     NewTerminalManager(claudePath),
+		sessionsTreeMenu:    sessionsMenu,
 	}
 }
 
@@ -355,8 +380,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.claudeTextInput.Width = inputWidth
 
+		// Resize active terminal if any
+		if m.claudeActiveSession != "" {
+			if t := m.terminalManager.Get(m.claudeActiveSession); t != nil {
+				// Terminal width: main panel minus borders
+				termWidth := m.width - sidebarWidth - 6
+				termHeight := m.height - headerHeight - footerHeight - 2
+				if termWidth > 20 && termHeight > 5 {
+					t.SetSize(termWidth, termHeight)
+				}
+			}
+		}
+
+	case terminalRefreshMsg:
+		// Terminal output refresh - just re-render
+		return m, m.scheduleTerminalRefresh()
+
 	case tea.KeyMsg:
+		// Terminal mode - forward all keys to terminal
+		if m.terminalMode && m.claudeActiveSession != "" {
+			if t := m.terminalManager.Get(m.claudeActiveSession); t != nil {
+				keyStr := msg.String()
+				consumed, exitTerminal := t.HandleKey(keyStr)
+				if exitTerminal {
+					// ESC ESC detected - exit terminal mode
+					m.terminalMode = false
+					return m, nil
+				}
+				if consumed {
+					return m, nil
+				}
+			}
+		}
+
 		// Claude input handling (chat or rename)
+		// Debug
+		if msg.String() == "esc" {
+			if f, _ := os.OpenFile("/tmp/esc_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); f != nil {
+				f.WriteString(fmt.Sprintf("ESC pressed: claudeInputActive=%v terminalMode=%v\n", m.claudeInputActive, m.terminalMode))
+				f.Close()
+			}
+		}
 		if m.claudeInputActive {
 			cmd := m.handleClaudeInput(msg)
 			if cmd != nil {
@@ -1299,7 +1363,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	// Claude view specific keys
 	if m.currentView == core.VMClaude {
 		// PRIORITY: Handle interactive responses first (when Claude is waiting for input)
-		if m.claudeMode == ClaudeModeChat && m.state.Claude != nil && m.state.Claude.WaitingForInput {
+		// Only handle y/n for interactive when NOT in the sessions panel
+		if m.claudeMode == ClaudeModeChat && m.state.Claude != nil && m.state.Claude.WaitingForInput && m.focusArea != FocusDetail {
 			switch key {
 			case "y", "Y":
 				// Approve permission/plan, then return to input mode
@@ -1429,9 +1494,14 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			m.focusArea = FocusMain
 			return nil
 		case "n":
-			// New session (always available in chat mode)
-			if m.claudeMode == ClaudeModeChat {
-				return m.createClaudeSession()
+			// New session - only when focused on sessions panel and on a project
+			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+					item := m.claudeTreeItems[m.mainIndex]
+					if item.IsProject {
+						return m.createClaudeSession()
+					}
+				}
 			}
 			return nil
 		case "x":
@@ -1444,6 +1514,19 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 						m.dialogType = "delete_claude_session"
 						m.dialogMessage = "Delete this session?"
 						m.showDialog = true
+					}
+				}
+			}
+			return nil
+		case "r":
+			// Rename selected session (when focus is on sessions panel)
+			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+					item := m.claudeTreeItems[m.mainIndex]
+					// Only allow renaming sessions, not projects
+					if !item.IsProject && item.SessionID != "" {
+						m.claudeRenameActive = true
+						m.claudeRenameText = ""
 					}
 				}
 			}
@@ -1540,15 +1623,18 @@ func (m *Model) openClaudeSession() tea.Cmd {
 		sess := m.state.Claude.Sessions[m.mainIndex]
 		m.claudeActiveSession = sess.ID
 		m.claudeMode = ClaudeModeChat
+		m.claudeSessionLoading = true
+		m.claudeChatScroll = 0
 
 		// Automatically activate input mode when opening a session
 		m.claudeInputActive = true
 		m.claudeTextInput.Focus()
 
-		// Send select event and start cursor blink
+		// Send select event, start cursor blink, and trigger spinner
 		return tea.Batch(
 			m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(sess.ID)),
 			m.claudeTextInput.Cursor.BlinkCmd(),
+			m.spinner.Tick,
 		)
 	}
 	return nil
@@ -1569,24 +1655,54 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(item.ProjectID))
 	}
 
-	// Session selected - switch to it
-	m.claudeSessionLoading = true
+	// Session selected - switch to it and start terminal
 	m.claudeActiveSession = item.SessionID
+	m.claudeMode = ClaudeModeChat
 
-	// Switch focus back to chat and activate input
+	// Switch focus to terminal
 	m.focusArea = FocusMain
-	m.claudeInputActive = true
-	m.claudeTextInput.Focus()
 
-	// Reset scroll to show latest messages
-	m.claudeChatScroll = 0
+	// Get or create terminal for this session
+	workDir := ""
+	if m.state.Claude != nil {
+		for _, sess := range m.state.Claude.Sessions {
+			if sess.ID == item.SessionID {
+				workDir = sess.WorkDir
+				break
+			}
+		}
+	}
+	if workDir == "" {
+		// Default to current dir
+		workDir, _ = os.Getwd()
+	}
 
-	// Send select event and trigger spinner
-	return tea.Batch(
-		m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(item.SessionID)),
-		m.claudeTextInput.Cursor.BlinkCmd(),
-		m.spinner.Tick,
-	)
+	t := m.terminalManager.GetOrCreate(item.SessionID, workDir)
+
+	// Set terminal size
+	headerHeight := 3
+	footerHeight := 3
+	sidebarWidth := getSidebarWidth()
+	termWidth := m.width - sidebarWidth - 6
+	termHeight := m.height - headerHeight - footerHeight - 2
+	if termWidth > 20 && termHeight > 5 {
+		t.SetSize(termWidth, termHeight)
+	}
+
+	// Start Claude if not already running
+	if !t.IsRunning() {
+		if err := t.Start(item.SessionID); err != nil {
+			m.lastError = "Failed to start Claude: " + err.Error()
+			m.lastErrorTime = time.Now()
+			return nil
+		}
+	}
+
+	// Enter terminal mode
+	m.terminalMode = true
+
+	// Start terminal refresh loop
+	return m.scheduleTerminalRefresh()
 }
 
 // handleClaudeInput handles text input in Claude chat mode
@@ -1611,7 +1727,13 @@ func (m *Model) handleClaudeInput(msg tea.KeyMsg) tea.Cmd {
 		if now.Sub(m.claudeLastEscTime) < 500*time.Millisecond {
 			m.claudeInputActive = false
 			m.claudeTextInput.Blur()
+			m.focusArea = FocusDetail // Switch to sessions panel
 			m.claudeLastEscTime = time.Time{} // Reset
+			// Debug
+			if f, _ := os.OpenFile("/tmp/esc_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); f != nil {
+				f.WriteString(fmt.Sprintf("double-ESC: focusArea=%d (FocusDetail=%d)\n", m.focusArea, FocusDetail))
+				f.Close()
+			}
 			return nil
 		}
 		m.claudeLastEscTime = now
@@ -2110,8 +2232,8 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 	// Update Claude tree for navigation (must persist across Update calls)
 	m.updateClaudeTree()
 
-	// Clear session loading state when Claude data is received
-	if m.claudeSessionLoading && m.state.Claude != nil {
+	// Clear session loading state when the requested session data is received
+	if m.claudeSessionLoading && m.state.Claude != nil && m.state.Claude.ActiveSessionID == m.claudeActiveSession {
 		m.claudeSessionLoading = false
 	}
 
@@ -2182,14 +2304,19 @@ func (m *Model) updateClaudeTree() {
 		}
 	}
 
-	// Sort sessions within each project by last active time (newest first)
+	// Sort projects alphabetically by name
+	sort.Slice(projectOrder, func(i, j int) bool {
+		return strings.ToLower(projectMap[projectOrder[i]].Name) < strings.ToLower(projectMap[projectOrder[j]].Name)
+	})
+
+	// Sort sessions within each project alphabetically by name
 	for _, node := range projectMap {
 		sort.Slice(node.Sessions, func(i, j int) bool {
-			return node.Sessions[i].LastActive > node.Sessions[j].LastActive
+			return strings.ToLower(node.Sessions[i].Name) < strings.ToLower(node.Sessions[j].Name)
 		})
 	}
 
-	// Build flattened tree for navigation
+	// Build flattened tree for navigation (legacy)
 	m.claudeTreeItems = nil
 	for _, projID := range projectOrder {
 		node := projectMap[projID]
@@ -2210,6 +2337,59 @@ func (m *Model) updateClaudeTree() {
 		}
 	}
 	m.claudeTreeItemCount = len(m.claudeTreeItems)
+
+	// Build TreeMenu items
+	var treeItems []TreeMenuItem
+	for _, projID := range projectOrder {
+		node := projectMap[projID]
+
+		// Build session children for this project
+		var sessionItems []TreeMenuItem
+		for _, sess := range node.Sessions {
+			// Get display name (remove project prefix if present)
+			displayName := sess.Name
+			if idx := strings.Index(displayName, "-"); idx > 0 && strings.HasPrefix(displayName, sess.ProjectID) {
+				displayName = displayName[idx+1:]
+			}
+
+			// Get state icon
+			icon := "○"
+			switch sess.State {
+			case "running":
+				icon = "●"
+			case "waiting":
+				icon = "◐"
+			case "error":
+				icon = "✗"
+			}
+
+			sessionItems = append(sessionItems, TreeMenuItem{
+				ID:    sess.ID,
+				Label: displayName,
+				Icon:  icon,
+				Data:  sess, // Store the full session data
+			})
+		}
+
+		// Add project with its sessions as children
+		projIcon := "📁"
+		if len(sessionItems) > 0 {
+			projIcon = "📂"
+		}
+
+		treeItems = append(treeItems, TreeMenuItem{
+			ID:       node.ID,
+			Label:    node.Name,
+			Icon:     projIcon,
+			Children: sessionItems,
+			Count:    len(sessionItems),
+		})
+	}
+
+	// Update the TreeMenu
+	if m.sessionsTreeMenu != nil {
+		m.sessionsTreeMenu.SetItems(treeItems)
+	}
 }
 
 // updateItemCounts updates the max item counts for navigation
@@ -2637,6 +2817,19 @@ type claudeRefreshMsg struct{}
 func claudeRefreshCmd() tea.Cmd {
 	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
 		return claudeRefreshMsg{}
+	})
+}
+
+// terminalRefreshMsg triggers UI refresh for terminal output
+type terminalRefreshMsg struct{}
+
+// scheduleTerminalRefresh schedules a terminal output refresh (30ms for smooth display)
+func (m *Model) scheduleTerminalRefresh() tea.Cmd {
+	if !m.terminalMode {
+		return nil
+	}
+	return tea.Tick(time.Millisecond*30, func(t time.Time) tea.Msg {
+		return terminalRefreshMsg{}
 	})
 }
 

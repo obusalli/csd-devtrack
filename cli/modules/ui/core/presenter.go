@@ -1065,6 +1065,15 @@ func (p *AppPresenter) handleClaudeSelectSession(event *Event) error {
 		return err
 	}
 
+	// Stop watching previous session if different
+	p.mu.RLock()
+	previousSessionID := p.state.Claude.ActiveSessionID
+	p.mu.RUnlock()
+
+	if previousSessionID != "" && previousSessionID != sessionID {
+		p.claudeService.StopWatchSession(previousSessionID)
+	}
+
 	// Start persistent process for faster responses
 	// Uses stream-json bidirectional mode to keep Claude running
 	go func() {
@@ -1079,6 +1088,9 @@ func (p *AppPresenter) handleClaudeSelectSession(event *Event) error {
 	p.state.Claude.ActiveSession = p.sessionToVM(session)
 	p.state.Claude.Messages = p.messagesToVM(session.Messages)
 	p.mu.Unlock()
+
+	// Automatically start watching for external updates
+	go p.startAutoWatch(sessionID)
 
 	p.notifyStateUpdate(VMClaude, p.state.Claude)
 	return nil
@@ -1484,26 +1496,17 @@ func (p *AppPresenter) handleClaudeWatchSession(event *Event) error {
 		return fmt.Errorf("session ID required")
 	}
 
-	// Toggle watching
+	// Toggle watching (manual override)
 	if p.claudeService.IsWatching(sessionID) {
 		p.claudeService.StopWatchSession(sessionID)
-		p.notify(NotifyInfo, "Watch Stopped", "No longer watching session")
+		p.notify(NotifyInfo, "Auto-refresh disabled", "Manual mode")
 		p.refreshClaude()
 		return nil
 	}
 
-	// Start watching
-	updateCh, err := p.claudeService.WatchSession(sessionID)
-	if err != nil {
-		p.notify(NotifyError, "Watch Failed", err.Error())
-		return err
-	}
-
-	p.notify(NotifySuccess, "Watching Session", "Monitoring for external updates...")
-
-	// Start goroutine to handle updates
-	go p.handleWatchUpdates(sessionID, updateCh)
-
+	// Restart watching
+	p.startAutoWatch(sessionID)
+	p.notify(NotifySuccess, "Auto-refresh enabled", "Watching for updates...")
 	p.refreshClaude()
 	return nil
 }
@@ -1523,26 +1526,73 @@ func (p *AppPresenter) handleClaudeStopWatch(event *Event) error {
 	return nil
 }
 
+// startAutoWatch automatically starts watching a session for external updates
+func (p *AppPresenter) startAutoWatch(sessionID string) {
+	// Don't watch if already watching this session
+	if p.claudeService.IsWatching(sessionID) {
+		return
+	}
+
+	// Start watching for file changes
+	updateCh, err := p.claudeService.WatchSession(sessionID)
+	if err != nil {
+		// Silently ignore - session might not have a file yet
+		return
+	}
+
+	// Handle updates in background
+	go p.handleWatchUpdates(sessionID, updateCh)
+}
+
+// loadSessionMessages loads messages from a session into the UI state
+func (p *AppPresenter) loadSessionMessages(sessionID string) {
+	session, err := p.claudeService.GetSession(sessionID)
+	if err != nil {
+		return
+	}
+
+	p.mu.Lock()
+	p.state.Claude.ActiveSession = p.sessionToVM(session)
+	p.state.Claude.Messages = p.messagesToVM(session.Messages)
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+}
+
 // handleWatchUpdates processes updates from a watched session
 func (p *AppPresenter) handleWatchUpdates(sessionID string, updateCh chan claude.SessionUpdate) {
 	for update := range updateCh {
+		// Skip empty content updates (except for end signals)
+		if update.Content == "" && update.Type != "end" {
+			continue
+		}
+
+		// Use Type as Role if Role is empty (common in JSONL)
+		role := update.Role
+		if role == "" {
+			role = update.Type
+		}
+
 		// Create a message from the update
 		msg := ClaudeMessageVM{
 			ID:        fmt.Sprintf("watch-%d", time.Now().UnixNano()),
-			Role:      update.Role,
+			Role:      role,
 			Content:   update.Content,
 			Timestamp: update.Timestamp,
 			TimeStr:   update.Timestamp.Format("060102 - 15:04:05"),
 		}
 
 		p.mu.Lock()
-		// Add message to the active session if it matches
+		// Add message if this is the active session being watched
 		if p.state.Claude.ActiveSessionID == sessionID {
-			p.state.Claude.Messages = append(p.state.Claude.Messages, msg)
+			// Don't add empty messages
+			if msg.Content != "" {
+				p.state.Claude.Messages = append(p.state.Claude.Messages, msg)
+			}
 
 			// Update session state based on update type
-			if update.Type == "assistant" {
-				p.state.Claude.IsProcessing = true
+			if update.Type == "assistant" || update.Type == "user" {
+				p.state.Claude.IsProcessing = update.Type == "assistant"
 			} else if update.Type == "end" {
 				p.state.Claude.IsProcessing = false
 			}
@@ -1584,6 +1634,7 @@ func (p *AppPresenter) refreshClaude() {
 			Name:         s.Name,
 			ProjectID:    s.ProjectID,
 			ProjectName:  s.ProjectName,
+			WorkDir:      s.WorkDir,
 			State:        string(s.State),
 			MessageCount: s.MessageCount,
 			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
@@ -1636,6 +1687,7 @@ func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
 		Name:         session.DisplayName(), // Use custom name if set
 		ProjectID:    session.ProjectID,
 		ProjectName:  session.ProjectName,
+		WorkDir:      session.WorkDir,
 		State:        string(session.State),
 		MessageCount: len(session.Messages),
 		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
