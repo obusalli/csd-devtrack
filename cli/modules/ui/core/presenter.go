@@ -267,6 +267,10 @@ func (p *AppPresenter) HandleEvent(event *Event) error {
 		return p.handleClaudeApprovePlan(event)
 	case EventClaudeRejectPlan:
 		return p.handleClaudeRejectPlan(event)
+	case EventClaudeWatchSession:
+		return p.handleClaudeWatchSession(event)
+	case EventClaudeStopWatch:
+		return p.handleClaudeStopWatch(event)
 
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
@@ -1471,6 +1475,84 @@ func (p *AppPresenter) handleClaudeRejectPlan(event *Event) error {
 	return nil
 }
 
+func (p *AppPresenter) handleClaudeWatchSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Claude.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	// Toggle watching
+	if p.claudeService.IsWatching(sessionID) {
+		p.claudeService.StopWatchSession(sessionID)
+		p.notify(NotifyInfo, "Watch Stopped", "No longer watching session")
+		p.refreshClaude()
+		return nil
+	}
+
+	// Start watching
+	updateCh, err := p.claudeService.WatchSession(sessionID)
+	if err != nil {
+		p.notify(NotifyError, "Watch Failed", err.Error())
+		return err
+	}
+
+	p.notify(NotifySuccess, "Watching Session", "Monitoring for external updates...")
+
+	// Start goroutine to handle updates
+	go p.handleWatchUpdates(sessionID, updateCh)
+
+	p.refreshClaude()
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeStopWatch(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Claude.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	p.claudeService.StopWatchSession(sessionID)
+	p.notify(NotifyInfo, "Watch Stopped", "No longer watching session")
+	p.refreshClaude()
+	return nil
+}
+
+// handleWatchUpdates processes updates from a watched session
+func (p *AppPresenter) handleWatchUpdates(sessionID string, updateCh chan claude.SessionUpdate) {
+	for update := range updateCh {
+		// Create a message from the update
+		msg := ClaudeMessageVM{
+			ID:        fmt.Sprintf("watch-%d", time.Now().UnixNano()),
+			Role:      update.Role,
+			Content:   update.Content,
+			Timestamp: update.Timestamp,
+			TimeStr:   update.Timestamp.Format("060102 - 15:04:05"),
+		}
+
+		p.mu.Lock()
+		// Add message to the active session if it matches
+		if p.state.Claude.ActiveSessionID == sessionID {
+			p.state.Claude.Messages = append(p.state.Claude.Messages, msg)
+
+			// Update session state based on update type
+			if update.Type == "assistant" {
+				p.state.Claude.IsProcessing = true
+			} else if update.Type == "end" {
+				p.state.Claude.IsProcessing = false
+			}
+		}
+		p.mu.Unlock()
+
+		p.notifyStateUpdate(VMClaude, p.state.Claude)
+	}
+}
+
 // ============================================
 // Claude refresh and converters
 // ============================================
@@ -1507,6 +1589,7 @@ func (p *AppPresenter) refreshClaude() {
 			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
 			IsActive:     s.ID == p.state.Claude.ActiveSessionID,
 			IsPersistent: persistentSessions[s.ID],
+			IsWatching:   p.claudeService.IsWatching(s.ID),
 		}
 	}
 

@@ -262,10 +262,13 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 					}
 				}
 
-				// Persistent indicator
+				// Persistent/watching indicator
 				persistIcon := ""
 				if hasDetails && sess.IsPersistent {
 					persistIcon = "⚡"
+				}
+				if hasDetails && sess.IsWatching {
+					persistIcon = "👁"
 				}
 
 				// Navigation cursor prefix (like menu)
@@ -336,7 +339,7 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 	// Hints
 	hintStyle := lipgloss.NewStyle().Foreground(ColorMuted)
 	items = append(items, hintStyle.Render("↑↓:nav Enter:select"))
-	items = append(items, hintStyle.Render("n:new x:delete"))
+	items = append(items, hintStyle.Render("n:new x:del w:watch"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, items...)
 
@@ -894,20 +897,20 @@ func (m *Model) renderChatMessage(msg core.ClaudeMessageVM, width int) []string 
 func (m *Model) styleDiffLine(line string, defaultStyle lipgloss.Style, lineWidth int) string {
 	// Check for diff markers
 	if strings.HasPrefix(line, "{{-") && strings.HasSuffix(line, "}}") {
-		// Removed line - red background, full width
+		// Removed line - red background (R:122 G:18 B:0 = #7A1200), full width
 		content := line[3 : len(line)-2]
 		return lipgloss.NewStyle().
-			Background(lipgloss.Color("#5c1a1a")).
-			Foreground(lipgloss.Color("#ff9999")).
+			Background(lipgloss.Color("#7A1200")).
+			Foreground(lipgloss.Color("#ffcccc")).
 			Width(lineWidth).
 			Render(content)
 	}
 	if strings.HasPrefix(line, "{{+") && strings.HasSuffix(line, "}}") {
-		// Added line - blue background, full width
+		// Added line - blue background (R:16 G:83 B:126 = #10537E), full width
 		content := line[3 : len(line)-2]
 		return lipgloss.NewStyle().
-			Background(lipgloss.Color("#1a2d5c")).
-			Foreground(lipgloss.Color("#99ccff")).
+			Background(lipgloss.Color("#10537E")).
+			Foreground(lipgloss.Color("#cce5ff")).
 			Width(lineWidth).
 			Render(content)
 	}

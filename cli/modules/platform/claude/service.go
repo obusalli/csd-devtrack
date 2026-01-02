@@ -205,6 +205,26 @@ type persistentProcess struct {
 	mu       sync.Mutex
 }
 
+// sessionWatcher watches a session file for changes
+type sessionWatcher struct {
+	sessionID  string
+	filePath   string
+	lastOffset int64
+	cancel     context.CancelFunc
+	outputCh   chan SessionUpdate
+}
+
+// SessionUpdate represents an update from watching a session
+type SessionUpdate struct {
+	SessionID string
+	Type      string // "user", "assistant", "tool_use", "tool_result", "end"
+	Content   string
+	Role      string
+	ToolName  string
+	ToolInput map[string]interface{}
+	Timestamp time.Time
+}
+
 // Service manages Claude Code integration
 type Service struct {
 	mu              sync.RWMutex
@@ -216,6 +236,7 @@ type Service struct {
 	activeProcs     map[string]*exec.Cmd
 	persistentProcs map[string]*persistentProcess // Persistent processes per session
 	outputChans     map[string]chan ClaudeOutput
+	watchers        map[string]*sessionWatcher // File watchers for external sessions
 }
 
 // NewService creates a new Claude service
@@ -227,6 +248,7 @@ func NewService(dataDir string) *Service {
 		activeProcs:     make(map[string]*exec.Cmd),
 		persistentProcs: make(map[string]*persistentProcess),
 		outputChans:     make(map[string]chan ClaudeOutput),
+		watchers:        make(map[string]*sessionWatcher),
 	}
 	s.detectClaude()
 	s.loadCustomNames()
@@ -1478,10 +1500,224 @@ func (s *Service) ClearSessionHistory(sessionID string) error {
 	return nil
 }
 
+// WatchSession starts watching a session file for real-time updates
+// Useful for following sessions running outside of csd-devtrack
+func (s *Service) WatchSession(sessionID string) (chan SessionUpdate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if already watching
+	if w, exists := s.watchers[sessionID]; exists {
+		return w.outputCh, nil
+	}
+
+	// Find session file
+	sess, ok := s.sessions[sessionID]
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	if sess.SessionFile == "" {
+		return nil, fmt.Errorf("session has no file: %s", sessionID)
+	}
+
+	// Get current file size as starting offset
+	info, err := os.Stat(sess.SessionFile)
+	if err != nil {
+		return nil, fmt.Errorf("cannot stat session file: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	outputCh := make(chan SessionUpdate, 100)
+
+	watcher := &sessionWatcher{
+		sessionID:  sessionID,
+		filePath:   sess.SessionFile,
+		lastOffset: info.Size(),
+		cancel:     cancel,
+		outputCh:   outputCh,
+	}
+
+	s.watchers[sessionID] = watcher
+
+	// Start watching goroutine
+	go s.watchSessionFile(ctx, watcher)
+
+	return outputCh, nil
+}
+
+// StopWatchSession stops watching a session
+func (s *Service) StopWatchSession(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if w, exists := s.watchers[sessionID]; exists {
+		w.cancel()
+		close(w.outputCh)
+		delete(s.watchers, sessionID)
+	}
+}
+
+// IsWatching returns true if a session is being watched
+func (s *Service) IsWatching(sessionID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, exists := s.watchers[sessionID]
+	return exists
+}
+
+// watchSessionFile polls the session file for new content
+func (s *Service) watchSessionFile(ctx context.Context, w *sessionWatcher) {
+	ticker := time.NewTicker(500 * time.Millisecond) // Poll every 500ms
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.checkSessionFileUpdates(w)
+		}
+	}
+}
+
+// checkSessionFileUpdates reads new lines from the session file
+func (s *Service) checkSessionFileUpdates(w *sessionWatcher) {
+	info, err := os.Stat(w.filePath)
+	if err != nil {
+		return
+	}
+
+	// Check if file has grown
+	if info.Size() <= w.lastOffset {
+		return
+	}
+
+	// Open and seek to last position
+	file, err := os.Open(w.filePath)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	if _, err := file.Seek(w.lastOffset, 0); err != nil {
+		return
+	}
+
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		update := s.parseSessionLine(w.sessionID, line)
+		if update != nil {
+			select {
+			case w.outputCh <- *update:
+			default:
+				// Channel full, skip
+			}
+		}
+	}
+
+	// Update offset
+	newPos, _ := file.Seek(0, 1) // Get current position
+	w.lastOffset = newPos
+}
+
+// parseSessionLine parses a single JSONL line into a SessionUpdate
+func (s *Service) parseSessionLine(sessionID string, line []byte) *SessionUpdate {
+	var entry map[string]interface{}
+	if err := json.Unmarshal(line, &entry); err != nil {
+		return nil
+	}
+
+	entryType, _ := entry["type"].(string)
+
+	var timestamp time.Time
+	if ts, ok := entry["timestamp"].(string); ok {
+		timestamp, _ = time.Parse(time.RFC3339, ts)
+	}
+
+	switch entryType {
+	case "user", "assistant":
+		// Parse message content
+		msg, ok := entry["message"].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+
+		role, _ := msg["role"].(string)
+		var contentBuilder strings.Builder
+
+		if contents, ok := msg["content"].([]interface{}); ok {
+			for _, item := range contents {
+				block, ok := item.(map[string]interface{})
+				if !ok {
+					continue
+				}
+
+				blockType, _ := block["type"].(string)
+				switch blockType {
+				case "text":
+					if text, ok := block["text"].(string); ok {
+						contentBuilder.WriteString(text)
+					}
+				case "tool_use":
+					toolName, _ := block["name"].(string)
+					input, _ := block["input"].(map[string]interface{})
+					contentBuilder.WriteString("\n")
+					contentBuilder.WriteString(formatToolUseForDisplay(toolName, input))
+				case "tool_result":
+					// Tool result
+					if content, ok := block["content"].(string); ok {
+						contentBuilder.WriteString("\n  ⎿  ")
+						if len(content) > 100 {
+							contentBuilder.WriteString(content[:100] + "...")
+						} else {
+							contentBuilder.WriteString(content)
+						}
+						contentBuilder.WriteString("\n")
+					}
+				}
+			}
+		}
+
+		return &SessionUpdate{
+			SessionID: sessionID,
+			Type:      entryType,
+			Role:      role,
+			Content:   contentBuilder.String(),
+			Timestamp: timestamp,
+		}
+
+	case "result":
+		// End of turn
+		return &SessionUpdate{
+			SessionID: sessionID,
+			Type:      "end",
+			Timestamp: timestamp,
+		}
+	}
+
+	return nil
+}
+
 // Shutdown cleans up all resources
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Stop all watchers
+	for id, w := range s.watchers {
+		w.cancel()
+		close(w.outputCh)
+		delete(s.watchers, id)
+	}
 
 	// Stop all active one-shot processes
 	for id, cmd := range s.activeProcs {

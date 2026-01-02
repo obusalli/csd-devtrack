@@ -56,6 +56,8 @@ const (
 	EventClaudeApprovePermission EventType = "claude_approve_permission"
 	EventClaudeDenyPermission    EventType = "claude_deny_permission"
 	EventClaudeAnswerQuestion    EventType = "claude_answer_question"
+	EventClaudeWatchSession      EventType = "claude_watch_session"
+	EventClaudeStopWatch         EventType = "claude_stop_watch"
 
 	// UI state events
 	EventFilter          EventType = "filter"

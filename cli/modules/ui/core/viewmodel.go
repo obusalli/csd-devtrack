@@ -219,6 +219,7 @@ type ClaudeSessionVM struct {
 	LastActive   string `json:"last_active"`
 	IsActive     bool   `json:"is_active"`      // Currently selected session
 	IsPersistent bool   `json:"is_persistent"`  // Has active persistent process (fast mode)
+	IsWatching   bool   `json:"is_watching"`    // Watching external session for updates
 }
 
 // ClaudeMessageVM represents a message for display

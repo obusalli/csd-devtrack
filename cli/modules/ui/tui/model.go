@@ -1456,6 +1456,17 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				return m.claudeTextInput.Cursor.BlinkCmd()
 			}
 			return nil
+		case "w":
+			// Toggle watching the selected session for external updates
+			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
+					item := m.claudeTreeItems[m.mainIndex]
+					if !item.IsProject && item.SessionID != "" {
+						return m.sendEvent(core.NewEvent(core.EventClaudeWatchSession).WithData("session_id", item.SessionID))
+					}
+				}
+			}
+			return nil
 		case "tab":
 			// Toggle focus between chat and sessions panel
 			if m.claudeMode == ClaudeModeChat {
