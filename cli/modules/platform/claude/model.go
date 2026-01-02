@@ -35,6 +35,9 @@ type Session struct {
 	CreatedAt    time.Time    `json:"created_at"`
 	LastActiveAt time.Time    `json:"last_active_at"`
 	Error        string       `json:"error,omitempty"`
+
+	// Interactive state
+	Interactive *InteractiveState `json:"interactive,omitempty"`
 }
 
 // SessionSummary is a lightweight version for listing
@@ -63,8 +66,33 @@ func (s *Session) ToSummary() SessionSummary {
 
 // ClaudeOutput represents output from Claude CLI
 type ClaudeOutput struct {
-	Type    string `json:"type"`    // "text", "tool_use", "result", "error"
+	Type    string `json:"type"`    // "text", "tool_use", "tool_result", "thinking", "permission_request", "permission_denied", "question", "plan", "error", "end"
 	Content string `json:"content"`
-	Tool    string `json:"tool,omitempty"`
-	IsEnd   bool   `json:"is_end"`
+	Tool    string `json:"tool,omitempty"`     // Tool name for tool_use
+	ToolID  string `json:"tool_id,omitempty"`  // Tool use ID for matching results
+	IsEnd   bool   `json:"is_end"`             // True when turn is complete
+
+	// Interactive fields
+	WaitingForInput bool              `json:"waiting_for_input,omitempty"` // Claude is waiting for user response
+	InputType       string            `json:"input_type,omitempty"`        // "permission", "question", "plan"
+	Options         []string          `json:"options,omitempty"`           // Available options for questions
+	FilePath        string            `json:"file_path,omitempty"`         // File path for permission requests
+	PlanItems       []PlanItem        `json:"plan_items,omitempty"`        // Plan items for plan mode
+}
+
+// PlanItem represents an item in Claude's plan
+type PlanItem struct {
+	Content string `json:"content"`
+	Status  string `json:"status"` // "pending", "in_progress", "completed"
+}
+
+// InteractiveState tracks the current interactive state
+type InteractiveState struct {
+	Type        string   `json:"type"`         // "none", "permission", "question", "plan"
+	ToolName    string   `json:"tool_name"`    // Tool requesting permission
+	ToolID      string   `json:"tool_id"`      // Tool use ID to respond to
+	FilePath    string   `json:"file_path"`    // File for permission
+	Question    string   `json:"question"`     // Question text
+	Options     []string `json:"options"`      // Options for question
+	PlanContent string   `json:"plan_content"` // Plan content awaiting approval
 }

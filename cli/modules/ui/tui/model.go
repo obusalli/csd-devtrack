@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -131,16 +132,18 @@ type Model struct {
 	gitFilesProjectID string   // Project ID for which gitFiles was built
 
 	// Claude view state
-	claudeInstalled      bool     // Is Claude CLI installed
-	claudeMode           string   // "sessions", "chat", "settings"
-	claudeActiveSession  string   // Active session ID
-	claudeInputText      string   // Current input text
-	claudeInputActive    bool     // User is typing
-	claudeChatScroll     int      // Scroll offset for chat messages
-	claudeSessionScroll  int      // Scroll offset for session list
-	claudeRenameActive   bool     // Renaming a session
-	claudeRenameText     string   // New name for session
-	claudeFilterProject  string   // Filter sessions by project ID
+	claudeInstalled      bool            // Is Claude CLI installed
+	claudeMode           string          // "sessions", "chat", "settings"
+	claudeActiveSession  string          // Active session ID
+	claudeInputText      string          // Current input text (deprecated, use claudeTextInput)
+	claudeInputActive    bool            // User is typing
+	claudeChatScroll     int             // Scroll offset for chat messages
+	claudeSessionScroll  int             // Scroll offset for session list
+	claudeRenameActive   bool            // Renaming a session
+	claudeRenameText     string          // New name for session
+	claudeFilterProject  string          // Filter sessions by project ID
+	claudeTextInput      textinput.Model // Optimized text input component
+	claudeLastEscTime    time.Time       // For double-ESC detection
 
 	// Components
 	help     help.Model
@@ -248,6 +251,12 @@ func NewModel(presenter core.Presenter) *Model {
 	metricsCollector := system.NewMetricsCollector(2 * time.Second)
 	metricsCollector.Start()
 
+	// Create text input for Claude chat
+	ti := textinput.New()
+	ti.Placeholder = "Type a message..."
+	ti.CharLimit = 4096
+	ti.Width = 80
+
 	return &Model{
 		presenter:           presenter,
 		state:               state,
@@ -257,6 +266,7 @@ func NewModel(presenter core.Presenter) *Model {
 		sidebarIndex:        0,
 		help:                h,
 		spinner:             s,
+		claudeTextInput:     ti,
 		notifications:       make([]*core.Notification, 0),
 		visibleMainRows:     10,
 		visibleDetailRows:   5,
@@ -333,6 +343,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport = viewport.New(m.width-sidebarWidth-4, m.height-headerHeight-footerHeight)
 		m.viewport.YPosition = headerHeight
 
+		// Update textinput width for Claude chat
+		inputWidth := m.width - sidebarWidth - 10
+		if inputWidth < 40 {
+			inputWidth = 40
+		}
+		m.claudeTextInput.Width = inputWidth
+
 	case tea.KeyMsg:
 		// Claude input handling (chat or rename)
 		if m.claudeInputActive {
@@ -395,6 +412,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case stateUpdateMsg:
 		m.handleStateUpdate(msg.update)
+		// Force spinner tick when git is loading in background
+		if m.state.GitLoading {
+			cmds = append(cmds, m.spinner.Tick)
+		}
+		// Force spinner tick and schedule next refresh when Claude is processing
+		if m.state.Claude != nil && m.state.Claude.IsProcessing {
+			cmds = append(cmds, m.spinner.Tick, claudeRefreshCmd())
+		}
+
+	case claudeRefreshMsg:
+		// Periodic refresh during Claude processing for responsive streaming
+		if m.state.Claude != nil && m.state.Claude.IsProcessing {
+			cmds = append(cmds, m.spinner.Tick, claudeRefreshCmd())
+		}
 
 	case notificationMsg:
 		m.handleNotification(msg.notification)
@@ -540,18 +571,61 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	// Focus navigation (Tab/Shift+Tab)
+	// Special handling for Claude view: Tab toggles Chat <-> Sessions, Shift+Tab for Sidebar
 	case key.Matches(msg, m.keys.Tab):
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat {
+			// Claude view: Tab toggles between Chat and Sessions (fast switching)
+			if m.focusArea == FocusMain {
+				// Chat -> Sessions
+				m.focusArea = FocusDetail
+				m.claudeInputActive = false
+			} else {
+				// Sessions (or Sidebar) -> Chat
+				m.focusArea = FocusMain
+				m.claudeInputActive = true
+				m.claudeTextInput.Focus()
+				return m.claudeTextInput.Cursor.BlinkCmd()
+			}
+			return nil
+		}
 		m.cycleFocus(1)
 		return nil
 	case key.Matches(msg, m.keys.ShiftTab):
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat {
+			// Claude view: Shift+Tab goes to Sidebar (or back from it)
+			if m.focusArea == FocusSidebar {
+				// Sidebar -> Sessions
+				m.focusArea = FocusDetail
+			} else {
+				// Chat/Sessions -> Sidebar
+				m.focusArea = FocusSidebar
+				m.claudeInputActive = false
+			}
+			return nil
+		}
 		m.cycleFocus(-1)
 		return nil
 
 	// Directional navigation
+	// Claude view sessions panel has its own up/down handling
 	case key.Matches(msg, m.keys.Up):
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+			// Navigate sessions
+			if m.mainIndex > 0 {
+				m.mainIndex--
+			}
+			return nil
+		}
 		m.navigateUp()
 		return nil
 	case key.Matches(msg, m.keys.Down):
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+			// Navigate sessions
+			if m.state.Claude != nil && m.mainIndex < len(m.state.Claude.Sessions)-1 {
+				m.mainIndex++
+			}
+			return nil
+		}
 		m.navigateDown()
 		return nil
 	case key.Matches(msg, m.keys.Left):
@@ -577,6 +651,10 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 
 	// Enter - select/activate
 	case key.Matches(msg, m.keys.Enter):
+		// Claude sessions panel: switch to selected session
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+			return m.switchToSelectedSession()
+		}
 		return m.handleEnter()
 
 	// Refresh
@@ -884,7 +962,11 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 	// Initialize Claude view
 	if m.currentView == core.VMClaude {
 		if m.claudeMode == "" {
-			m.claudeMode = ClaudeModeSession
+			m.claudeMode = ClaudeModeChat
+		}
+		// Default focus to sessions panel so user can select/create a session
+		if m.claudeActiveSession == "" {
+			m.focusArea = FocusDetail
 		}
 	}
 
@@ -1182,86 +1264,199 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 
 	// Claude view specific keys
 	if m.currentView == core.VMClaude {
+		// PRIORITY: Handle interactive responses first (when Claude is waiting for input)
+		if m.claudeMode == ClaudeModeChat && m.state.Claude != nil && m.state.Claude.WaitingForInput {
+			switch key {
+			case "y", "Y":
+				// Approve permission/plan, then return to input mode
+				var cmd tea.Cmd
+				if m.state.Claude.Interactive != nil {
+					switch m.state.Claude.Interactive.Type {
+					case "permission":
+						cmd = m.sendEvent(core.NewEvent(core.EventClaudeApprovePermission).
+							WithData("session_id", m.claudeActiveSession))
+					case "plan":
+						cmd = m.sendEvent(core.NewEvent(core.EventClaudeApprovePlan).
+							WithData("session_id", m.claudeActiveSession))
+					}
+				}
+				if m.state.Claude.PlanPending {
+					cmd = m.sendEvent(core.NewEvent(core.EventClaudeApprovePlan).
+						WithData("session_id", m.claudeActiveSession))
+				}
+				// Return to input mode after response
+				m.claudeInputActive = true
+				m.claudeTextInput.Focus()
+				return tea.Batch(cmd, m.claudeTextInput.Cursor.BlinkCmd(), claudeRefreshCmd())
+			case "n", "N":
+				// Deny permission/plan, then return to input mode
+				var cmd tea.Cmd
+				if m.state.Claude.Interactive != nil {
+					switch m.state.Claude.Interactive.Type {
+					case "permission":
+						cmd = m.sendEvent(core.NewEvent(core.EventClaudeDenyPermission).
+							WithData("session_id", m.claudeActiveSession))
+					case "plan":
+						cmd = m.sendEvent(core.NewEvent(core.EventClaudeRejectPlan).
+							WithData("session_id", m.claudeActiveSession))
+					}
+				}
+				if m.state.Claude.PlanPending {
+					cmd = m.sendEvent(core.NewEvent(core.EventClaudeRejectPlan).
+						WithData("session_id", m.claudeActiveSession))
+				}
+				// Return to input mode after response
+				m.claudeInputActive = true
+				m.claudeTextInput.Focus()
+				return tea.Batch(cmd, m.claudeTextInput.Cursor.BlinkCmd(), claudeRefreshCmd())
+			case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+				// Select option when Claude asks a question with options
+				if m.state.Claude.Interactive != nil && m.state.Claude.Interactive.Type == "question" {
+					optIdx := int(key[0] - '1')
+					if optIdx >= 0 && optIdx < len(m.state.Claude.Interactive.Options) {
+						answer := m.state.Claude.Interactive.Options[optIdx]
+						cmd := m.sendEvent(core.NewEvent(core.EventClaudeAnswerQuestion).
+							WithData("session_id", m.claudeActiveSession).
+							WithData("answer", answer))
+						// Return to input mode after answering
+						m.claudeInputActive = true
+						m.claudeTextInput.Focus()
+						return tea.Batch(cmd, m.claudeTextInput.Cursor.BlinkCmd(), claudeRefreshCmd())
+					}
+				}
+				return nil
+			case "i":
+				// Start input mode to type custom answer
+				m.claudeInputActive = true
+				m.claudeTextInput.Focus()
+				return m.claudeTextInput.Cursor.BlinkCmd()
+			}
+		}
+
+		// Sessions panel navigation (PRIORITY - check before chat scroll)
+		if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
+			switch key {
+			case "up", "k":
+				if m.mainIndex > 0 {
+					m.mainIndex--
+				}
+				return nil
+			case "down", "j":
+				if m.state.Claude != nil && m.mainIndex < len(m.state.Claude.Sessions)-1 {
+					m.mainIndex++
+				}
+				return nil
+			case "enter":
+				return m.switchToSelectedSession()
+			}
+		}
+
+		// Chat mode scroll controls (only when focus is on chat, not sessions)
+		if m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
+			switch key {
+			case "up", "k":
+				// Scroll up
+				m.claudeChatScroll++
+				return nil
+			case "down", "j":
+				// Scroll down
+				if m.claudeChatScroll > 0 {
+					m.claudeChatScroll--
+				}
+				return nil
+			case "pgup", "ctrl+u":
+				// Page up
+				m.claudeChatScroll += 10
+				return nil
+			case "pgdown", "ctrl+d":
+				// Page down
+				m.claudeChatScroll -= 10
+				if m.claudeChatScroll < 0 {
+					m.claudeChatScroll = 0
+				}
+				return nil
+			case "home", "g":
+				// Go to top
+				m.claudeChatScroll = 999999 // Will be clamped in render
+				return nil
+			case "end", "G":
+				// Go to bottom (latest)
+				m.claudeChatScroll = 0
+				return nil
+			}
+		}
+
 		switch key {
 		case "1":
-			m.claudeMode = ClaudeModeSession
-			m.focusArea = FocusMain
-			m.mainIndex = 0
-			return nil
-		case "2":
 			m.claudeMode = ClaudeModeChat
 			m.focusArea = FocusMain
 			return nil
-		case "3":
+		case "2":
 			m.claudeMode = ClaudeModeSettings
 			m.focusArea = FocusMain
 			m.mainIndex = 0
 			return nil
 		case "]", "shift+right":
-			// Cycle tabs forward
-			switch m.claudeMode {
-			case ClaudeModeSession:
-				m.claudeMode = ClaudeModeChat
-			case ClaudeModeChat:
+			// Toggle between Chat and Settings
+			if m.claudeMode == ClaudeModeChat {
 				m.claudeMode = ClaudeModeSettings
-			case ClaudeModeSettings:
-				m.claudeMode = ClaudeModeSession
+			} else {
+				m.claudeMode = ClaudeModeChat
 			}
 			m.focusArea = FocusMain
 			return nil
 		case "[", "shift+left":
-			// Cycle tabs backward
-			switch m.claudeMode {
-			case ClaudeModeSession:
-				m.claudeMode = ClaudeModeSettings
-			case ClaudeModeChat:
-				m.claudeMode = ClaudeModeSession
-			case ClaudeModeSettings:
+			// Toggle between Chat and Settings
+			if m.claudeMode == ClaudeModeSettings {
 				m.claudeMode = ClaudeModeChat
+			} else {
+				m.claudeMode = ClaudeModeSettings
 			}
 			m.focusArea = FocusMain
 			return nil
 		case "n":
-			// New session (in sessions mode)
-			if m.claudeMode == ClaudeModeSession {
+			// New session (always available in chat mode)
+			if m.claudeMode == ClaudeModeChat {
 				return m.createClaudeSession()
 			}
 			return nil
 		case "x":
-			// Delete session (in sessions mode)
-			if m.claudeMode == ClaudeModeSession && m.claudeActiveSession != "" {
-				m.dialogType = "delete_claude_session"
-				m.dialogMessage = "Delete this Claude session?"
-				m.showDialog = true
-			}
-			return nil
-		case "r":
-			// Rename session (in sessions mode)
-			if m.claudeMode == ClaudeModeSession && m.claudeActiveSession != "" {
-				m.claudeRenameActive = true
-				m.claudeRenameText = ""
+			// Delete selected session (when focus is on sessions panel)
+			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+				if m.state.Claude != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
+					m.dialogType = "delete_claude_session"
+					m.dialogMessage = "Delete this session?"
+					m.showDialog = true
+				}
 			}
 			return nil
 		case "i":
 			// Start input mode (in chat mode)
 			if m.claudeMode == ClaudeModeChat {
 				m.claudeInputActive = true
+				m.claudeTextInput.Focus()
+				return m.claudeTextInput.Cursor.BlinkCmd()
+			}
+			return nil
+		case "tab":
+			// Toggle focus between chat and sessions panel
+			if m.claudeMode == ClaudeModeChat {
+				if m.focusArea == FocusMain {
+					m.focusArea = FocusDetail
+				} else {
+					m.focusArea = FocusMain
+				}
 			}
 			return nil
 		case "esc":
-			// Exit input mode or go back
+			// Exit input mode or switch focus
 			if m.claudeInputActive {
 				m.claudeInputActive = false
 				return nil
 			}
-			if m.claudeRenameActive {
-				m.claudeRenameActive = false
-				m.claudeRenameText = ""
-				return nil
-			}
-			// Go back to sessions from chat
-			if m.claudeMode == ClaudeModeChat {
-				m.claudeMode = ClaudeModeSession
+			// If in sessions panel, go back to chat
+			if m.focusArea == FocusDetail {
+				m.focusArea = FocusMain
 				return nil
 			}
 			return nil
@@ -1307,42 +1502,129 @@ func (m *Model) openClaudeSession() tea.Cmd {
 		sess := m.state.Claude.Sessions[m.mainIndex]
 		m.claudeActiveSession = sess.ID
 		m.claudeMode = ClaudeModeChat
-		return m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(sess.ID))
+
+		// Automatically activate input mode when opening a session
+		m.claudeInputActive = true
+		m.claudeTextInput.Focus()
+
+		// Send select event and start cursor blink
+		return tea.Batch(
+			m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(sess.ID)),
+			m.claudeTextInput.Cursor.BlinkCmd(),
+		)
+	}
+	return nil
+}
+
+// switchToSelectedSession switches to the session selected in the side panel
+func (m *Model) switchToSelectedSession() tea.Cmd {
+	if m.state.Claude == nil || len(m.state.Claude.Sessions) == 0 {
+		return nil
+	}
+	if m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
+		sess := m.state.Claude.Sessions[m.mainIndex]
+		m.claudeActiveSession = sess.ID
+
+		// Switch focus back to chat and activate input
+		m.focusArea = FocusMain
+		m.claudeInputActive = true
+		m.claudeTextInput.Focus()
+
+		// Reset scroll to show latest messages
+		m.claudeChatScroll = 0
+
+		// Send select event
+		return tea.Batch(
+			m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(sess.ID)),
+			m.claudeTextInput.Cursor.BlinkCmd(),
+		)
 	}
 	return nil
 }
 
 // handleClaudeInput handles text input in Claude chat mode
+// Controls:
+//   - Enter: send message, stay in input mode
+//   - Escape: interrupt current Claude request (if processing)
+//   - Double-Escape (within 500ms): exit input mode
 func (m *Model) handleClaudeInput(msg tea.KeyMsg) tea.Cmd {
-	switch msg.Type {
-	case tea.KeyEscape:
+	keyStr := msg.String()
+
+	// Ctrl+C: exit input mode (always)
+	if keyStr == "ctrl+c" {
 		m.claudeInputActive = false
-		m.claudeInputText = ""
-		return nil
-	case tea.KeyEnter:
-		if m.claudeInputText == "" {
-			return nil
-		}
-		// Send message
-		message := m.claudeInputText
-		m.claudeInputText = ""
-		m.claudeInputActive = false
-		return m.sendEvent(core.NewEvent(core.EventClaudeSendMessage).
-			WithData("session_id", m.claudeActiveSession).
-			WithData("message", message))
-	case tea.KeyBackspace:
-		if len(m.claudeInputText) > 0 {
-			m.claudeInputText = m.claudeInputText[:len(m.claudeInputText)-1]
-		}
-		return nil
-	case tea.KeySpace:
-		m.claudeInputText += " "
-		return nil
-	case tea.KeyRunes:
-		m.claudeInputText += string(msg.Runes)
+		m.claudeTextInput.Blur()
 		return nil
 	}
-	return nil
+
+	switch msg.Type {
+	case tea.KeyEscape:
+		now := time.Now()
+		// Double-ESC detection: if last ESC was within 500ms, exit input mode
+		if now.Sub(m.claudeLastEscTime) < 500*time.Millisecond {
+			m.claudeInputActive = false
+			m.claudeTextInput.Blur()
+			m.claudeLastEscTime = time.Time{} // Reset
+			return nil
+		}
+		m.claudeLastEscTime = now
+
+		// Single ESC: interrupt current request if processing
+		if m.state.Claude != nil && m.state.Claude.IsProcessing {
+			return m.sendEvent(core.NewEvent(core.EventClaudeStopSession).WithValue(m.claudeActiveSession))
+		}
+		// Not processing - wait for potential second ESC
+		return nil
+	case tea.KeyEnter:
+		message := m.claudeTextInput.Value()
+		if message == "" {
+			return nil
+		}
+		// Clear input immediately for responsiveness
+		m.claudeTextInput.Reset()
+
+		// Add user message to UI state IMMEDIATELY (before event processing)
+		// This gives instant visual feedback
+		if m.state.Claude != nil {
+			now := time.Now()
+			userMsg := core.ClaudeMessageVM{
+				ID:        "user-" + now.Format("20060102150405.000"),
+				Role:      "user",
+				Content:   message,
+				Timestamp: now,
+				TimeStr:   now.Format("060102 - 15:04:05"),
+			}
+			m.state.Claude.Messages = append(m.state.Claude.Messages, userMsg)
+
+			// Add placeholder for assistant response
+			assistantMsg := core.ClaudeMessageVM{
+				ID:        "assistant-" + now.Format("20060102150405.000"),
+				Role:      "assistant",
+				Content:   "",
+				Timestamp: now,
+				TimeStr:   now.Format("060102 - 15:04:05"),
+				IsPartial: true,
+			}
+			m.state.Claude.Messages = append(m.state.Claude.Messages, assistantMsg)
+			m.state.Claude.IsProcessing = true
+
+			// Reset scroll to bottom to show new messages
+			m.claudeChatScroll = 0
+		}
+
+		// Send event to presenter (async processing) and start refresh loop
+		return tea.Batch(
+			m.sendEvent(core.NewEvent(core.EventClaudeSendMessage).
+				WithData("session_id", m.claudeActiveSession).
+				WithData("message", message)),
+			claudeRefreshCmd(),
+		)
+	default:
+		// Let textinput handle all other keys
+		var cmd tea.Cmd
+		m.claudeTextInput, cmd = m.claudeTextInput.Update(msg)
+		return cmd
+	}
 }
 
 // handleClaudeRenameInput handles text input for renaming Claude sessions
@@ -1763,6 +2045,7 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 	// Sync global state flags from presenter
 	if presenterState := m.presenter.GetState(); presenterState != nil {
 		m.state.Initializing = presenterState.Initializing
+		m.state.GitLoading = presenterState.GitLoading
 	}
 
 	// Always update log source options (logs can come from any view update)
@@ -1770,6 +2053,13 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 
 	// Update max items counts
 	m.updateItemCounts()
+
+	// Auto-exit input mode when Claude is waiting for interactive response
+	// This allows y/n/1-9 keys to work for permission/question/plan dialogs
+	if m.state.Claude != nil && m.state.Claude.WaitingForInput && m.claudeInputActive {
+		m.claudeInputActive = false
+		m.claudeTextInput.Blur()
+	}
 }
 
 // updateItemCounts updates the max item counts for navigation
@@ -2187,6 +2477,16 @@ type tickMsg time.Time
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+// claudeRefreshMsg triggers UI refresh during Claude streaming
+type claudeRefreshMsg struct{}
+
+// claudeRefreshCmd schedules a fast refresh for responsive streaming (50ms)
+func claudeRefreshCmd() tea.Cmd {
+	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+		return claudeRefreshMsg{}
 	})
 }
 

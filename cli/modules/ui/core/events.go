@@ -44,15 +44,18 @@ const (
 	EventReloadConfig    EventType = "reload_config"
 
 	// Claude events
-	EventClaudeCreateSession EventType = "claude_create_session"
-	EventClaudeSelectSession EventType = "claude_select_session"
-	EventClaudeDeleteSession EventType = "claude_delete_session"
-	EventClaudeRenameSession EventType = "claude_rename_session"
-	EventClaudeSendMessage   EventType = "claude_send_message"
-	EventClaudeStopSession   EventType = "claude_stop_session"
-	EventClaudeClearHistory  EventType = "claude_clear_history"
-	EventClaudeApprovePlan   EventType = "claude_approve_plan"
-	EventClaudeRejectPlan    EventType = "claude_reject_plan"
+	EventClaudeCreateSession    EventType = "claude_create_session"
+	EventClaudeSelectSession    EventType = "claude_select_session"
+	EventClaudeDeleteSession    EventType = "claude_delete_session"
+	EventClaudeRenameSession    EventType = "claude_rename_session"
+	EventClaudeSendMessage      EventType = "claude_send_message"
+	EventClaudeStopSession      EventType = "claude_stop_session"
+	EventClaudeClearHistory     EventType = "claude_clear_history"
+	EventClaudeApprovePlan      EventType = "claude_approve_plan"
+	EventClaudeRejectPlan       EventType = "claude_reject_plan"
+	EventClaudeApprovePermission EventType = "claude_approve_permission"
+	EventClaudeDenyPermission    EventType = "claude_deny_permission"
+	EventClaudeAnswerQuestion    EventType = "claude_answer_question"
 
 	// UI state events
 	EventFilter          EventType = "filter"

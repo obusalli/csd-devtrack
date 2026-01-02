@@ -48,6 +48,12 @@ func (m *Model) renderHeader() string {
 		runningStr = StatusRunning.Render(fmt.Sprintf(" %d running", running))
 	}
 
+	// Git loading indicator
+	gitStr := ""
+	if m.state.GitLoading {
+		gitStr = lipgloss.NewStyle().Foreground(ColorWarning).Render(" " + m.spinner.View() + "git")
+	}
+
 	// System metrics (CPU, RAM, Load)
 	metricsStr := ""
 	if m.metricsCollector != nil {
@@ -100,7 +106,7 @@ func (m *Model) renderHeader() string {
 	}
 
 	left := fmt.Sprintf(" %s %s │ %s%s", title, version, viewName, usageStr)
-	right := fmt.Sprintf("%s │ %s%s ", metricsStr, status, runningStr)
+	right := fmt.Sprintf("%s │ %s%s%s ", metricsStr, status, runningStr, gitStr)
 
 	padding := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if padding < 0 {
@@ -592,6 +598,16 @@ func (m *Model) renderDashboard(width, height int) string {
 func (m *Model) renderMiniGit(gitSummary []core.GitStatusVM, width, height int) string {
 	header := SubtitleStyle.Render("─ Git Changes ─")
 
+	// Show loading state if git is loading in background
+	if m.state.GitLoading {
+		loadingMsg := lipgloss.NewStyle().Foreground(ColorWarning).Render(
+			"  " + m.spinner.View() + " Loading git status...",
+		)
+		return UnfocusedBorderStyle.Width(width).Height(height).Render(
+			lipgloss.JoinVertical(lipgloss.Left, header, loadingMsg),
+		)
+	}
+
 	var rows []string
 	for _, g := range gitSummary {
 		if g.IsClean {
@@ -959,13 +975,17 @@ func (m *Model) renderProjects(width, height int) string {
 
 		// Git info: show only on first row
 		gitDisplay := ""
-		if r.IsFirst && r.GitBranch != "" {
-			gitDisplay = fmt.Sprintf("%s %s", IconBranch, truncate(r.GitBranch, 10))
-			if r.GitDirty {
-				gitDisplay += GitDirtyStyle.Render(" *")
-			}
-			if r.GitAhead > 0 {
-				gitDisplay += GitAheadStyle.Render(fmt.Sprintf(" ↑%d", r.GitAhead))
+		if r.IsFirst {
+			if r.GitBranch != "" {
+				gitDisplay = fmt.Sprintf("%s %s", IconBranch, truncate(r.GitBranch, 10))
+				if r.GitDirty {
+					gitDisplay += GitDirtyStyle.Render(" *")
+				}
+				if r.GitAhead > 0 {
+					gitDisplay += GitAheadStyle.Render(fmt.Sprintf(" ↑%d", r.GitAhead))
+				}
+			} else if m.state.GitLoading {
+				gitDisplay = lipgloss.NewStyle().Foreground(ColorMuted).Render(m.spinner.View())
 			}
 		}
 
@@ -1550,7 +1570,12 @@ func (m *Model) renderGit(width, height int) string {
 	}
 
 	if len(projectRows) == 0 {
-		projectRows = append(projectRows, SubtitleStyle.Render("  No git repositories"))
+		if m.state.GitLoading {
+			projectRows = append(projectRows, lipgloss.NewStyle().Foreground(ColorWarning).Render(
+				"  "+m.spinner.View()+" Loading git status..."))
+		} else {
+			projectRows = append(projectRows, SubtitleStyle.Render("  No git repositories"))
+		}
 	}
 
 	// Detail panel (right) - file list with selection
@@ -1565,14 +1590,25 @@ func (m *Model) renderGit(width, height int) string {
 		m.buildGitFileList(&p)
 		m.visibleDetailRows = detailHeight - 4
 
+		branchDisplay := p.Branch
+		if branchDisplay == "" && m.state.GitLoading {
+			branchDisplay = m.spinner.View() + " loading..."
+		} else if branchDisplay == "" {
+			branchDisplay = "(unknown)"
+		}
 		detailLines := []string{
 			PanelTitleStyle.Render(p.ProjectName),
-			fmt.Sprintf("Branch: %s", GitBranchStyle.Render(p.Branch)),
+			fmt.Sprintf("Branch: %s", GitBranchStyle.Render(branchDisplay)),
 			"",
 		}
 
 		if len(m.gitFiles) == 0 {
-			detailLines = append(detailLines, StatusSuccess.Render("✓ Working tree clean"))
+			if m.state.GitLoading {
+				detailLines = append(detailLines, lipgloss.NewStyle().Foreground(ColorWarning).Render(
+					m.spinner.View()+" Loading..."))
+			} else {
+				detailLines = append(detailLines, StatusSuccess.Render("✓ Working tree clean"))
+			}
 		} else {
 			// Calculate scroll offset
 			if m.detailIndex < m.detailScrollOffset {

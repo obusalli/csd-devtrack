@@ -217,16 +217,18 @@ type ClaudeSessionVM struct {
 	State        string `json:"state"` // idle, running, waiting, error
 	MessageCount int    `json:"message_count"`
 	LastActive   string `json:"last_active"`
-	IsActive     bool   `json:"is_active"` // Currently selected session
+	IsActive     bool   `json:"is_active"`      // Currently selected session
+	IsPersistent bool   `json:"is_persistent"`  // Has active persistent process (fast mode)
 }
 
 // ClaudeMessageVM represents a message for display
 type ClaudeMessageVM struct {
-	ID        string `json:"id"`
-	Role      string `json:"role"` // user, assistant
-	Content   string `json:"content"`
-	TimeStr   string `json:"time_str"`
-	IsPartial bool   `json:"is_partial"` // Streaming in progress
+	ID        string    `json:"id"`
+	Role      string    `json:"role"` // user, assistant
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+	TimeStr   string    `json:"time_str"` // Format: YYMMDD - HH:MM:SS
+	IsPartial bool      `json:"is_partial"` // Streaming in progress
 }
 
 // ClaudePlanItemVM represents a plan item for display
@@ -255,6 +257,17 @@ type ClaudeSettingsVM struct {
 	PlanModeEnabled bool     `json:"plan_mode_enabled"` // Use plan mode for complex tasks
 }
 
+// ClaudeInteractiveVM represents the current interactive state
+type ClaudeInteractiveVM struct {
+	Type        string   `json:"type"`          // "none", "permission", "question", "plan"
+	ToolName    string   `json:"tool_name"`     // Tool requesting permission
+	ToolID      string   `json:"tool_id"`       // Tool use ID
+	FilePath    string   `json:"file_path"`     // File for permission
+	Question    string   `json:"question"`      // Question text
+	Options     []string `json:"options"`       // Available options
+	PlanContent string   `json:"plan_content"`  // Plan content
+}
+
 // ClaudeVM is the view model for the Claude AI view
 type ClaudeVM struct {
 	BaseViewModel
@@ -273,6 +286,10 @@ type ClaudeVM struct {
 	PlanMode        bool               `json:"plan_mode"`        // Claude is in plan mode
 	PlanItems       []ClaudePlanItemVM `json:"plan_items"`       // Current plan items
 	PlanPending     bool               `json:"plan_pending"`     // Plan awaiting approval
+
+	// Interactive state (permission requests, questions, etc.)
+	Interactive     *ClaudeInteractiveVM `json:"interactive,omitempty"`
+	WaitingForInput bool                 `json:"waiting_for_input"` // Claude is waiting for user response
 
 	// Usage stats (for current session)
 	Usage           *ClaudeUsageVM    `json:"usage,omitempty"`

@@ -24,7 +24,8 @@ type AppState struct {
 
 	// Global state
 	IsConnected   bool
-	Initializing  bool      // True while presenter is initializing (slow git ops)
+	Initializing  bool      // True while presenter is initializing (project loading)
+	GitLoading    bool      // True while git info is loading in background
 	LastRefresh   time.Time
 	Notifications []*Notification
 }

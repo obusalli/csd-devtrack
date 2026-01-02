@@ -112,18 +112,48 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 	// Set up event handlers
 	p.setupEventHandlers()
 
-	// Initial data load (this includes slow git operations)
-	err := p.Refresh()
+	// FAST: Load projects without git info first
+	p.refreshProjectsWithoutGit()
+	p.refreshProcesses()
+	p.refreshDashboard()
 
-	// Mark initialization as complete
+	// Mark initialization as complete (projects are ready, UI can display)
 	p.mu.Lock()
 	p.state.Initializing = false
+	p.state.GitLoading = true // Git is loading in background
 	p.mu.Unlock()
 
 	// Broadcast state update to inform clients that initialization is complete
 	p.broadcastFullState()
 
-	return err
+	// SLOW: Start git operations in background
+	go p.loadGitInBackground()
+
+	return nil
+}
+
+// loadGitInBackground loads git info for all projects in background
+func (p *AppPresenter) loadGitInBackground() {
+	// Enrich all projects with git info (slow operation)
+	p.gitService.EnrichAllProjects()
+
+	// Refresh git status
+	p.refreshGitStatus()
+
+	// Update projects with git info
+	p.refreshProjectsFromGit()
+
+	// Update dashboard with new git info
+	p.refreshDashboard()
+
+	// Mark git loading as complete
+	p.mu.Lock()
+	p.state.GitLoading = false
+	p.state.LastRefresh = time.Now()
+	p.mu.Unlock()
+
+	// Broadcast full state update
+	p.broadcastFullState()
 }
 
 // broadcastFullState sends the current full state to all subscribers
@@ -226,6 +256,16 @@ func (p *AppPresenter) HandleEvent(event *Event) error {
 		return p.handleClaudeStopSession(event)
 	case EventClaudeClearHistory:
 		return p.handleClaudeClearHistory(event)
+	case EventClaudeApprovePermission:
+		return p.handleClaudeApprovePermission(event)
+	case EventClaudeDenyPermission:
+		return p.handleClaudeDenyPermission(event)
+	case EventClaudeAnswerQuestion:
+		return p.handleClaudeAnswerQuestion(event)
+	case EventClaudeApprovePlan:
+		return p.handleClaudeApprovePlan(event)
+	case EventClaudeRejectPlan:
+		return p.handleClaudeRejectPlan(event)
 
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
@@ -275,13 +315,15 @@ func (p *AppPresenter) SubscribeNotifications(callback func(*Notification)) {
 
 // Refresh forces a refresh of all data
 func (p *AppPresenter) Refresh() error {
-	// Refresh projects
+	// Refresh projects (will skip git enrichment if git is loading in background)
 	if err := p.refreshProjects(); err != nil {
 		return err
 	}
 
-	// Refresh git status
-	p.refreshGitStatus()
+	// Refresh git status (skip if git is loading in background)
+	if !p.state.GitLoading {
+		p.refreshGitStatus()
+	}
 
 	// Refresh processes
 	p.refreshProcesses()
@@ -618,8 +660,10 @@ func (p *AppPresenter) handleFilter(event *Event) error {
 // ============================================
 
 func (p *AppPresenter) refreshProjects() error {
-	// Enrich projects with git info
-	p.gitService.EnrichAllProjects()
+	// Enrich projects with git info (if not loading in background)
+	if !p.state.GitLoading {
+		p.gitService.EnrichAllProjects()
+	}
 
 	allProjects := p.projectService.ListProjects()
 
@@ -639,6 +683,49 @@ func (p *AppPresenter) refreshProjects() error {
 
 	p.notifyStateUpdate(VMProjects, p.state.Projects)
 	return nil
+}
+
+// refreshProjectsWithoutGit loads projects without git info (fast)
+func (p *AppPresenter) refreshProjectsWithoutGit() error {
+	allProjects := p.projectService.ListProjects()
+
+	p.mu.Lock()
+	p.state.Projects.Projects = make([]ProjectVM, len(allProjects))
+	for i, proj := range allProjects {
+		p.state.Projects.Projects[i] = p.projectToVM(proj)
+	}
+
+	// Sort by project name for consistent ordering
+	sort.Slice(p.state.Projects.Projects, func(i, j int) bool {
+		return p.state.Projects.Projects[i].Name < p.state.Projects.Projects[j].Name
+	})
+
+	p.state.Projects.UpdatedAt = time.Now()
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMProjects, p.state.Projects)
+	return nil
+}
+
+// refreshProjectsFromGit updates projects with git info after background load
+func (p *AppPresenter) refreshProjectsFromGit() {
+	allProjects := p.projectService.ListProjects()
+
+	p.mu.Lock()
+	p.state.Projects.Projects = make([]ProjectVM, len(allProjects))
+	for i, proj := range allProjects {
+		p.state.Projects.Projects[i] = p.projectToVM(proj)
+	}
+
+	// Sort by project name for consistent ordering
+	sort.Slice(p.state.Projects.Projects, func(i, j int) bool {
+		return p.state.Projects.Projects[i].Name < p.state.Projects.Projects[j].Name
+	})
+
+	p.state.Projects.UpdatedAt = time.Now()
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMProjects, p.state.Projects)
 }
 
 func (p *AppPresenter) refreshProcesses() {
@@ -973,6 +1060,14 @@ func (p *AppPresenter) handleClaudeSelectSession(event *Event) error {
 		return err
 	}
 
+	// Start persistent process for faster responses
+	// Uses stream-json bidirectional mode to keep Claude running
+	go func() {
+		if err := p.claudeService.StartPersistentProcess(sessionID); err != nil {
+			p.notify(NotifyWarning, "Persistent Mode", "Could not start persistent process: "+err.Error())
+		}
+	}()
+
 	// Update active session in state
 	p.mu.Lock()
 	p.state.Claude.ActiveSessionID = sessionID
@@ -1024,25 +1119,52 @@ func (p *AppPresenter) handleClaudeSendMessage(event *Event) error {
 		return fmt.Errorf("session ID and message required")
 	}
 
-	// Add user message to UI immediately
+	// The TUI may have already added the user message for immediate feedback.
+	// We check if the last user message matches to avoid duplicates.
+	now := time.Now()
 	p.mu.Lock()
-	userMsg := ClaudeMessageVM{
-		ID:      fmt.Sprintf("user-%d", time.Now().UnixNano()),
-		Role:    "user",
-		Content: message,
-		TimeStr: time.Now().Format("15:04"),
-	}
-	p.state.Claude.Messages = append(p.state.Claude.Messages, userMsg)
 
-	// Add placeholder for assistant response
-	assistantMsg := ClaudeMessageVM{
-		ID:        fmt.Sprintf("assistant-%d", time.Now().UnixNano()),
-		Role:      "assistant",
-		Content:   "",
-		TimeStr:   time.Now().Format("15:04"),
-		IsPartial: true,
+	// Check if user message already exists (added by TUI for instant feedback)
+	needUserMsg := true
+	if len(p.state.Claude.Messages) > 0 {
+		lastMsg := p.state.Claude.Messages[len(p.state.Claude.Messages)-1]
+		// Check if it's a recent user message with same content (within last 2 seconds)
+		if lastMsg.Role == "user" && lastMsg.Content == message &&
+			now.Sub(lastMsg.Timestamp) < 2*time.Second {
+			needUserMsg = false
+		}
+		// Also check if there's an assistant placeholder after a matching user msg
+		if len(p.state.Claude.Messages) > 1 && lastMsg.Role == "assistant" && lastMsg.IsPartial {
+			prevMsg := p.state.Claude.Messages[len(p.state.Claude.Messages)-2]
+			if prevMsg.Role == "user" && prevMsg.Content == message &&
+				now.Sub(prevMsg.Timestamp) < 2*time.Second {
+				needUserMsg = false
+			}
+		}
 	}
-	p.state.Claude.Messages = append(p.state.Claude.Messages, assistantMsg)
+
+	if needUserMsg {
+		userMsg := ClaudeMessageVM{
+			ID:        fmt.Sprintf("user-%d", now.UnixNano()),
+			Role:      "user",
+			Content:   message,
+			Timestamp: now,
+			TimeStr:   now.Format("060102 - 15:04:05"),
+		}
+		p.state.Claude.Messages = append(p.state.Claude.Messages, userMsg)
+
+		// Add placeholder for assistant response
+		assistantMsg := ClaudeMessageVM{
+			ID:        fmt.Sprintf("assistant-%d", now.UnixNano()),
+			Role:      "assistant",
+			Content:   "",
+			Timestamp: now,
+			TimeStr:   now.Format("060102 - 15:04:05"),
+			IsPartial: true,
+		}
+		p.state.Claude.Messages = append(p.state.Claude.Messages, assistantMsg)
+	}
+
 	assistantIdx := len(p.state.Claude.Messages) - 1
 	p.state.Claude.IsProcessing = true
 	p.mu.Unlock()
@@ -1054,7 +1176,15 @@ func (p *AppPresenter) handleClaudeSendMessage(event *Event) error {
 
 	// Start processing in background
 	go func() {
-		err := p.claudeService.SendMessage(p.ctx, sessionID, message, outputChan)
+		var err error
+
+		// Try persistent process first (faster), fallback to one-shot
+		if p.claudeService.IsPersistentProcessRunning(sessionID) {
+			err = p.claudeService.SendMessagePersistent(sessionID, message, outputChan)
+		} else {
+			err = p.claudeService.SendMessage(p.ctx, sessionID, message, outputChan)
+		}
+
 		if err != nil {
 			p.notify(NotifyError, "Send Failed", err.Error())
 			p.mu.Lock()
@@ -1078,17 +1208,91 @@ func (p *AppPresenter) handleClaudeSendMessage(event *Event) error {
 				if assistantIdx < len(p.state.Claude.Messages) {
 					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
 				}
+
 			case "tool_use":
-				// Show tool usage in the message
+				// Show tool usage with details
 				if assistantIdx < len(p.state.Claude.Messages) {
-					toolInfo := fmt.Sprintf("\n[Using tool: %s]\n", output.Tool)
+					toolInfo := fmt.Sprintf("\n📦 [%s]\n", output.Tool)
+					if output.Content != "" {
+						// Show truncated input for readability
+						input := output.Content
+						if len(input) > 200 {
+							input = input[:200] + "..."
+						}
+						toolInfo += fmt.Sprintf("```\n%s\n```\n", input)
+					}
 					contentBuilder.WriteString(toolInfo)
 					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
 				}
+
+				// Check if waiting for permission
+				if output.WaitingForInput && output.InputType == "permission" {
+					p.state.Claude.WaitingForInput = true
+					p.state.Claude.IsProcessing = false
+					p.state.Claude.Interactive = &ClaudeInteractiveVM{
+						Type:     "permission",
+						ToolName: output.Tool,
+						ToolID:   output.ToolID,
+						FilePath: output.FilePath,
+					}
+				}
+
+			case "thinking":
+				// Show Claude's thinking process
+				if assistantIdx < len(p.state.Claude.Messages) {
+					thinkInfo := fmt.Sprintf("\n💭 *thinking...*\n%s\n", output.Content)
+					contentBuilder.WriteString(thinkInfo)
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
+				}
+
+			case "permission_request", "permission_denied":
+				// Show permission issues
+				if assistantIdx < len(p.state.Claude.Messages) {
+					permInfo := fmt.Sprintf("\n⚠️ %s\n", output.Content)
+					contentBuilder.WriteString(permInfo)
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
+				}
+
+			case "question":
+				// Claude is asking a question
+				if assistantIdx < len(p.state.Claude.Messages) {
+					questionInfo := fmt.Sprintf("\n❓ %s\n", output.Content)
+					contentBuilder.WriteString(questionInfo)
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
+				}
+				if output.WaitingForInput {
+					p.state.Claude.WaitingForInput = true
+					p.state.Claude.IsProcessing = false
+					p.state.Claude.Interactive = &ClaudeInteractiveVM{
+						Type:     "question",
+						Question: output.Content,
+						Options:  output.Options,
+					}
+				}
+
+			case "plan":
+				// Claude has a plan for approval
+				if assistantIdx < len(p.state.Claude.Messages) {
+					planInfo := fmt.Sprintf("\n📋 Plan:\n%s\n", output.Content)
+					contentBuilder.WriteString(planInfo)
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
+				}
+				if output.WaitingForInput {
+					p.state.Claude.WaitingForInput = true
+					p.state.Claude.IsProcessing = false
+					p.state.Claude.PlanMode = true
+					p.state.Claude.PlanPending = true
+					p.state.Claude.Interactive = &ClaudeInteractiveVM{
+						Type:        "plan",
+						PlanContent: output.Content,
+					}
+				}
+
 			case "error":
 				p.state.Claude.IsProcessing = false
+				p.state.Claude.WaitingForInput = false
 				if assistantIdx < len(p.state.Claude.Messages) {
-					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String() + "\n[Error: " + output.Content + "]"
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String() + "\n❌ Error: " + output.Content
 					p.state.Claude.Messages[assistantIdx].IsPartial = false
 				}
 			}
@@ -1146,6 +1350,134 @@ func (p *AppPresenter) handleClaudeClearHistory(event *Event) error {
 	return nil
 }
 
+func (p *AppPresenter) handleClaudeApprovePermission(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Claude.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.claudeService.SendInteractiveResponse(sessionID, "approve", ""); err != nil {
+		p.notify(NotifyError, "Approval Failed", err.Error())
+		return err
+	}
+
+	// Clear interactive state in UI
+	p.mu.Lock()
+	p.state.Claude.WaitingForInput = false
+	p.state.Claude.Interactive = nil
+	p.state.Claude.IsProcessing = true
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeDenyPermission(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Claude.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.claudeService.SendInteractiveResponse(sessionID, "deny", ""); err != nil {
+		p.notify(NotifyError, "Denial Failed", err.Error())
+		return err
+	}
+
+	// Clear interactive state in UI
+	p.mu.Lock()
+	p.state.Claude.WaitingForInput = false
+	p.state.Claude.Interactive = nil
+	p.state.Claude.IsProcessing = true
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeAnswerQuestion(event *Event) error {
+	sessionID := event.Data["session_id"]
+	answer := event.Data["answer"]
+	if sessionID == "" {
+		sessionID = p.state.Claude.ActiveSessionID
+	}
+	if sessionID == "" || answer == "" {
+		return fmt.Errorf("session ID and answer required")
+	}
+
+	if err := p.claudeService.SendInteractiveResponse(sessionID, answer, answer); err != nil {
+		p.notify(NotifyError, "Answer Failed", err.Error())
+		return err
+	}
+
+	// Clear interactive state in UI
+	p.mu.Lock()
+	p.state.Claude.WaitingForInput = false
+	p.state.Claude.Interactive = nil
+	p.state.Claude.IsProcessing = true
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeApprovePlan(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Claude.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.claudeService.SendInteractiveResponse(sessionID, "yes", ""); err != nil {
+		p.notify(NotifyError, "Plan Approval Failed", err.Error())
+		return err
+	}
+
+	// Clear plan state in UI
+	p.mu.Lock()
+	p.state.Claude.PlanPending = false
+	p.state.Claude.WaitingForInput = false
+	p.state.Claude.Interactive = nil
+	p.state.Claude.IsProcessing = true
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeRejectPlan(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Claude.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.claudeService.SendInteractiveResponse(sessionID, "no", ""); err != nil {
+		p.notify(NotifyError, "Plan Rejection Failed", err.Error())
+		return err
+	}
+
+	// Clear plan state in UI
+	p.mu.Lock()
+	p.state.Claude.PlanPending = false
+	p.state.Claude.WaitingForInput = false
+	p.state.Claude.Interactive = nil
+	p.state.Claude.IsProcessing = true
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+	return nil
+}
+
 // ============================================
 // Claude refresh and converters
 // ============================================
@@ -1162,6 +1494,12 @@ func (p *AppPresenter) refreshClaude() {
 	p.state.Claude.IsInstalled = p.claudeService.IsInstalled()
 	p.state.Claude.ClaudePath = p.claudeService.GetClaudePath()
 
+	// Get sessions with persistent processes
+	persistentSessions := make(map[string]bool)
+	for _, id := range p.claudeService.GetPersistentProcessSessions() {
+		persistentSessions[id] = true
+	}
+
 	// Get all sessions
 	sessions := p.claudeService.ListSessions("")
 	p.state.Claude.Sessions = make([]ClaudeSessionVM, len(sessions))
@@ -1175,6 +1513,7 @@ func (p *AppPresenter) refreshClaude() {
 			MessageCount: s.MessageCount,
 			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
 			IsActive:     s.ID == p.state.Claude.ActiveSessionID,
+			IsPersistent: persistentSessions[s.ID],
 		}
 	}
 
@@ -1235,7 +1574,8 @@ func (p *AppPresenter) messagesToVM(messages []claude.Message) []ClaudeMessageVM
 			ID:        m.ID,
 			Role:      m.Role,
 			Content:   m.Content,
-			TimeStr:   m.Timestamp.Format("15:04"),
+			Timestamp: m.Timestamp,
+			TimeStr:   m.Timestamp.Format("060102 - 15:04:05"),
 			IsPartial: m.Partial,
 		}
 	}
