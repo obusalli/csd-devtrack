@@ -412,23 +412,28 @@ func (m *Model) renderDashboard(width, height int) string {
 	)
 
 	// Calculate panel sizes
-	panelHeight := height - 10
-	leftWidth := width / 2
+	// Left: Projects + Processes stacked (narrow)
+	// Right: Logs (wide)
+	panelHeight := height - 8
+	leftWidth := width / 3
+	if leftWidth < 30 {
+		leftWidth = 30
+	}
 	rightWidth := width - leftWidth - 2
 
-	// Left: Projects list
-	projectsPanel := m.renderProjectsList(vm.Projects, leftWidth, panelHeight, m.focusArea == FocusMain)
+	// Left: Projects (top) + Processes (bottom)
+	projectsHeight := panelHeight / 2
+	processesHeight := panelHeight - projectsHeight
 
-	// Right: Split between Processes (top) and Logs (bottom)
-	processHeight := panelHeight / 2
-	logsHeight := panelHeight - processHeight
+	projectsPanel := m.renderProjectsList(vm.Projects, leftWidth, projectsHeight, m.focusArea == FocusMain)
+	processesPanel := m.renderProcessesList(vm.RunningProcesses, leftWidth, processesHeight, false)
 
-	processesPanel := m.renderProcessesList(vm.RunningProcesses, rightWidth, processHeight, false)
-	logsPanel := m.renderMiniLogs(rightWidth, logsHeight)
+	leftPane := lipgloss.JoinVertical(lipgloss.Left, projectsPanel, processesPanel)
 
-	rightPane := lipgloss.JoinVertical(lipgloss.Left, processesPanel, logsPanel)
+	// Right: Logs (full height)
+	logsPanel := m.renderMiniLogs(rightWidth, panelHeight)
 
-	panels := lipgloss.JoinHorizontal(lipgloss.Top, projectsPanel, rightPane)
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, logsPanel)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		stats,
@@ -437,20 +442,30 @@ func (m *Model) renderDashboard(width, height int) string {
 	)
 }
 
-// renderMiniLogs renders a compact logs panel for dashboard
+// renderMiniLogs renders a compact logs panel for dashboard (run logs only)
 func (m *Model) renderMiniLogs(width, height int) string {
-	header := SubtitleStyle.Render("─ Logs ─")
+	header := SubtitleStyle.Render("─ Run Logs ─")
 
 	var lines []string
 	if m.state.Logs != nil && len(m.state.Logs.Lines) > 0 {
-		// Show last N lines that fit
 		maxLines := height - 3
-		start := len(m.state.Logs.Lines) - maxLines
+
+		// Filter to only show run logs (not build logs)
+		// Build logs have source like "build:project/component"
+		var runLogs []core.LogLineVM
+		for _, line := range m.state.Logs.Lines {
+			if !strings.HasPrefix(line.Source, "build:") {
+				runLogs = append(runLogs, line)
+			}
+		}
+
+		// Show last N lines that fit
+		start := len(runLogs) - maxLines
 		if start < 0 {
 			start = 0
 		}
 
-		for _, line := range m.state.Logs.Lines[start:] {
+		for _, line := range runLogs[start:] {
 			// Compact format: [source] message
 			var levelStyle lipgloss.Style
 			switch line.Level {

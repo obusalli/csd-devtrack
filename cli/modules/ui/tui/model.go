@@ -160,9 +160,45 @@ func NewModel(presenter core.Presenter) *Model {
 		homeDir, _ = os.Getwd()
 	}
 
+	// Create initial state and populate from presenter
+	state := core.NewAppState()
+	if presenter != nil {
+		// Fetch initial state from presenter (already loaded)
+		if vm, err := presenter.GetViewModel(core.VMDashboard); err == nil {
+			if dashboard, ok := vm.(*core.DashboardVM); ok {
+				state.Dashboard = dashboard
+			}
+		}
+		if vm, err := presenter.GetViewModel(core.VMProjects); err == nil {
+			if projects, ok := vm.(*core.ProjectsVM); ok {
+				state.Projects = projects
+			}
+		}
+		if vm, err := presenter.GetViewModel(core.VMProcesses); err == nil {
+			if processes, ok := vm.(*core.ProcessesVM); ok {
+				state.Processes = processes
+			}
+		}
+		if vm, err := presenter.GetViewModel(core.VMLogs); err == nil {
+			if logs, ok := vm.(*core.LogsVM); ok {
+				state.Logs = logs
+			}
+		}
+		if vm, err := presenter.GetViewModel(core.VMGit); err == nil {
+			if git, ok := vm.(*core.GitVM); ok {
+				state.Git = git
+			}
+		}
+		if vm, err := presenter.GetViewModel(core.VMBuild); err == nil {
+			if builds, ok := vm.(*core.BuildsVM); ok {
+				state.Builds = builds
+			}
+		}
+	}
+
 	return &Model{
 		presenter:           presenter,
-		state:               core.NewAppState(),
+		state:               state,
 		keys:                DefaultKeyMap(),
 		currentView:         core.VMDashboard,
 		focusArea:           FocusSidebar,
