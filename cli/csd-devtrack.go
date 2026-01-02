@@ -46,11 +46,13 @@ func main() {
 	}
 
 	// Load configuration
+	// If --config is explicitly specified, create the file if it doesn't exist
+	explicitConfig := configPath != ""
 	if configPath == "" {
 		configPath = config.FindConfigFile()
 	}
 
-	if err := config.LoadGlobal(configPath); err != nil {
+	if err := config.LoadGlobalWithCreate(configPath, explicitConfig); err != nil {
 		if verbose {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to load config: %v\n", err)
 		}

@@ -145,6 +145,8 @@ func (p *AppPresenter) HandleEvent(event *Event) error {
 		return p.handleRestartProcess(event)
 	case EventKillProcess:
 		return p.handleKillProcess(event)
+	case EventPauseProcess:
+		return p.handlePauseProcess(event)
 
 	// Git events
 	case EventGitStatus:
@@ -432,6 +434,25 @@ func (p *AppPresenter) handleKillProcess(event *Event) error {
 		err := p.processService.KillProcess(processID, p.processMgr)
 		if err != nil {
 			p.notify(NotifyError, "Kill Failed", err.Error())
+		}
+		p.refreshProcesses()
+	}()
+	return nil
+}
+
+func (p *AppPresenter) handlePauseProcess(event *Event) error {
+	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
+	go func() {
+		err := p.processService.PauseProcess(processID, p.processMgr)
+		if err != nil {
+			p.notify(NotifyError, "Pause/Resume Failed", err.Error())
+		} else {
+			proc := p.processService.GetProcess(processID)
+			if proc != nil && proc.IsPaused() {
+				p.notify(NotifyInfo, "Paused", fmt.Sprintf("%s is paused", processID))
+			} else {
+				p.notify(NotifyInfo, "Resumed", fmt.Sprintf("%s is running", processID))
+			}
 		}
 		p.refreshProcesses()
 	}()

@@ -108,6 +108,7 @@ type Model struct {
 	logSourceOptions []string // Available sources for selection
 	logScrollOffset  int      // Scroll offset from bottom (0 = auto-scroll to bottom)
 	logAutoScroll    bool     // Auto-scroll to bottom on new logs
+	logPaused        bool     // Pause log display updates
 
 	// Build profiles
 	currentBuildProfile string // "dev", "test", "prod"
@@ -803,6 +804,13 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			m.dialogMessage = "Kill the selected process?"
 			m.showDialog = true
 			return nil
+		case "p":
+			if m.isSelectedProjectSelf() {
+				m.lastError = "Cannot pause self"
+				m.lastErrorTime = time.Now()
+				return nil
+			}
+			return m.pauseResumeSelected()
 		case "l":
 			return m.viewLogsForSelected()
 		}
@@ -1091,6 +1099,15 @@ func (m *Model) handleLogsShortcuts(msg tea.KeyMsg) bool {
 		// Go to bottom (resume auto-scroll)
 		m.logScrollOffset = 0
 		m.logAutoScroll = true
+		m.logPaused = false
+		return true
+	case " ":
+		// Toggle pause
+		m.logPaused = !m.logPaused
+		if m.logPaused {
+			// When pausing, disable auto-scroll
+			m.logAutoScroll = false
+		}
 		return true
 	}
 
@@ -1455,6 +1472,15 @@ func (m *Model) killSelected() tea.Cmd {
 	}
 	component := m.getSelectedComponent()
 	return m.sendEvent(core.NewEvent(core.EventKillProcess).WithProject(projectID).WithComponent(component))
+}
+
+func (m *Model) pauseResumeSelected() tea.Cmd {
+	projectID := m.getSelectedProjectID()
+	if projectID == "" {
+		return nil
+	}
+	component := m.getSelectedComponent()
+	return m.sendEvent(core.NewEvent(core.EventPauseProcess).WithProject(projectID).WithComponent(component))
 }
 
 func (m *Model) viewLogs() tea.Cmd {

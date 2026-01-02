@@ -268,6 +268,74 @@ func (m *Manager) Signal(proc *processes.Process, sig int) error {
 	return m.signalProcess(cmd, syscall.Signal(sig))
 }
 
+// Pause pauses a running process using SIGSTOP
+func (m *Manager) Pause(proc *processes.Process) error {
+	cmd := proc.GetCmd()
+	if cmd == nil || cmd.Process == nil {
+		return fmt.Errorf("process not running")
+	}
+
+	if proc.IsPaused() {
+		return nil // Already paused
+	}
+
+	if err := m.signalProcess(cmd, syscall.SIGSTOP); err != nil {
+		return fmt.Errorf("failed to pause process: %w", err)
+	}
+
+	proc.SetState(processes.ProcessStatePaused)
+
+	// Emit paused event
+	m.emitEvent(processes.ProcessEvent{
+		Type:      processes.ProcessEventPaused,
+		ProcessID: proc.ID,
+		ProjectID: proc.ProjectID,
+		Component: string(proc.Component),
+		Message:   fmt.Sprintf("Paused %s", proc.ID),
+		Timestamp: time.Now(),
+	})
+
+	return nil
+}
+
+// Resume resumes a paused process using SIGCONT
+func (m *Manager) Resume(proc *processes.Process) error {
+	cmd := proc.GetCmd()
+	if cmd == nil || cmd.Process == nil {
+		return fmt.Errorf("process not running")
+	}
+
+	if !proc.IsPaused() {
+		return nil // Not paused
+	}
+
+	if err := m.signalProcess(cmd, syscall.SIGCONT); err != nil {
+		return fmt.Errorf("failed to resume process: %w", err)
+	}
+
+	proc.SetState(processes.ProcessStateRunning)
+
+	// Emit resumed event
+	m.emitEvent(processes.ProcessEvent{
+		Type:      processes.ProcessEventResumed,
+		ProcessID: proc.ID,
+		ProjectID: proc.ProjectID,
+		Component: string(proc.Component),
+		Message:   fmt.Sprintf("Resumed %s", proc.ID),
+		Timestamp: time.Now(),
+	})
+
+	return nil
+}
+
+// TogglePause toggles pause state of a process
+func (m *Manager) TogglePause(proc *processes.Process) error {
+	if proc.IsPaused() {
+		return m.Resume(proc)
+	}
+	return m.Pause(proc)
+}
+
 // monitor monitors a process and handles crashes
 func (m *Manager) monitor(proc *processes.Process) {
 	cmd := proc.GetCmd()

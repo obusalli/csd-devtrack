@@ -30,3 +30,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+# Config file (user-specific)
+devtrack.yaml

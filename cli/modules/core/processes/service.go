@@ -219,6 +219,20 @@ func (s *Service) KillProcess(processID string, supervisor Supervisor) error {
 	return supervisor.Kill(proc)
 }
 
+// PauseProcess toggles pause state of a process
+func (s *Service) PauseProcess(processID string, supervisor Supervisor) error {
+	proc := s.GetProcess(processID)
+	if proc == nil {
+		return fmt.Errorf("process not found: %s", processID)
+	}
+
+	if !proc.IsRunning() {
+		return fmt.Errorf("process is not running: %s", processID)
+	}
+
+	return supervisor.TogglePause(proc)
+}
+
 // GetProcessSummaries returns summaries of all processes
 func (s *Service) GetProcessSummaries() []*ProcessSummary {
 	procs := s.GetAllProcesses()
@@ -242,4 +256,5 @@ type Supervisor interface {
 	Stop(ctx context.Context, proc *Process, force bool) error
 	Kill(proc *Process) error
 	Signal(proc *Process, sig int) error
+	TogglePause(proc *Process) error
 }

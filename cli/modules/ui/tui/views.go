@@ -236,6 +236,7 @@ func (m *Model) renderFooter() string {
 			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
 			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
+			HelpKeyStyle.Render("p")+HelpDescStyle.Render(" pause  "),
 			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
 			HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
 		)
@@ -255,6 +256,7 @@ func (m *Model) renderFooter() string {
 			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
 			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
 			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
+			HelpKeyStyle.Render("p")+HelpDescStyle.Render(" pause  "),
 			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
 			HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
 		)
@@ -277,6 +279,7 @@ func (m *Model) renderFooter() string {
 				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" scroll  "),
 				HelpKeyStyle.Render("S-↑↓")+HelpDescStyle.Render(" page  "),
 				HelpKeyStyle.Render("End")+HelpDescStyle.Render(" bottom  "),
+				HelpKeyStyle.Render("Space")+HelpDescStyle.Render(" pause  "),
 				HelpKeyStyle.Render("s")+HelpDescStyle.Render(" source  "),
 				HelpKeyStyle.Render("t")+HelpDescStyle.Render(" type  "),
 				HelpKeyStyle.Render("/")+HelpDescStyle.Render(" search  "),
@@ -428,8 +431,6 @@ func (m *Model) renderDashboard(width, height int) string {
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, projectsPanel, rightPane)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
-		PanelTitleStyle.Render("Dashboard"),
-		"",
 		stats,
 		"",
 		panels,
@@ -438,12 +439,12 @@ func (m *Model) renderDashboard(width, height int) string {
 
 // renderMiniLogs renders a compact logs panel for dashboard
 func (m *Model) renderMiniLogs(width, height int) string {
-	title := PanelTitleStyle.Render("Recent Logs")
+	header := SubtitleStyle.Render("─ Logs ─")
 
 	var lines []string
 	if m.state.Logs != nil && len(m.state.Logs.Lines) > 0 {
 		// Show last N lines that fit
-		maxLines := height - 4
+		maxLines := height - 3
 		start := len(m.state.Logs.Lines) - maxLines
 		if start < 0 {
 			start = 0
@@ -474,7 +475,7 @@ func (m *Model) renderMiniLogs(width, height int) string {
 	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
 
 	return UnfocusedBorderStyle.Width(width).Height(height).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, content),
+		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 }
 
@@ -495,7 +496,7 @@ func (m *Model) renderStatBox(label, value string, color lipgloss.Color) string 
 
 // renderProjectsList renders a list of projects
 func (m *Model) renderProjectsList(projects []core.ProjectVM, width, height int, focused bool) string {
-	title := PanelTitleStyle.Render("Projects")
+	header := SubtitleStyle.Render("─ Projects ─")
 
 	var rows []string
 	for i, p := range projects {
@@ -536,13 +537,13 @@ func (m *Model) renderProjectsList(projects []core.ProjectVM, width, height int,
 	}
 
 	return style.Width(width).Height(height).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, content),
+		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 }
 
 // renderProcessesList renders a list of processes
 func (m *Model) renderProcessesList(processes []core.ProcessVM, width, height int, focused bool) string {
-	title := PanelTitleStyle.Render("Running Processes")
+	header := SubtitleStyle.Render("─ Processes ─")
 
 	var rows []string
 	for i, p := range processes {
@@ -551,7 +552,14 @@ func (m *Model) renderProcessesList(processes []core.ProcessVM, width, height in
 			break
 		}
 
-		row := fmt.Sprintf("%s %s/%s", StatusRunning.Render(IconRunning), truncate(p.ProjectName, 12), p.Component)
+		// Show paused state
+		var stateIcon string
+		if p.State == "paused" {
+			stateIcon = StatusWarning.Render("⏸")
+		} else {
+			stateIcon = StatusRunning.Render(IconRunning)
+		}
+		row := fmt.Sprintf("%s %s/%s", stateIcon, truncate(p.ProjectName, 12), p.Component)
 		rows = append(rows, "  "+row)
 	}
 
@@ -569,7 +577,7 @@ func (m *Model) renderProcessesList(processes []core.ProcessVM, width, height in
 	}
 
 	return style.Width(width).Height(height).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, content),
+		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 }
 
@@ -591,8 +599,6 @@ func (m *Model) renderProjects(width, height int) string {
 	if vm == nil {
 		return m.renderLoading()
 	}
-
-	title := PanelTitleStyle.Render("Projects")
 
 	// Build flat list of component rows
 	var componentRows []ProjectComponentRow
@@ -747,7 +753,7 @@ func (m *Model) renderProjects(width, height int) string {
 	}
 
 	mainPanel := style.Width(width - 2).Height(height - 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, header, content),
+		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 
 	return mainPanel
@@ -759,8 +765,6 @@ func (m *Model) renderBuild(width, height int) string {
 	if vm == nil {
 		return m.renderLoading()
 	}
-
-	title := PanelTitleStyle.Render("Build")
 
 	// Profile selector bar
 	profiles := []struct {
@@ -845,7 +849,6 @@ func (m *Model) renderBuild(width, height int) string {
 
 	return style.Width(width - 2).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
-			title,
 			profileBar,
 			"",
 			buildStatus,
@@ -885,8 +888,6 @@ func (m *Model) renderProcesses(width, height int) string {
 	if vm == nil {
 		return m.renderLoading()
 	}
-
-	title := PanelTitleStyle.Render("Processes")
 
 	// Calculate dynamic column widths based on content
 	colName := len("Project/Component") // minimum width
@@ -996,7 +997,7 @@ func (m *Model) renderProcesses(width, height int) string {
 	}
 
 	return style.Width(width - 2).Height(height - 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, header, content),
+		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 }
 
@@ -1006,8 +1007,6 @@ func (m *Model) renderLogs(width, height int) string {
 	if vm == nil {
 		return m.renderLoading()
 	}
-
-	title := PanelTitleStyle.Render("Logs")
 
 	// Build source options from log lines
 	m.updateLogSourceOptions()
@@ -1194,14 +1193,16 @@ func (m *Model) renderLogs(width, height int) string {
 
 	// Stats line with scroll info
 	var scrollInfo string
-	if m.logScrollOffset > 0 {
+	if m.logPaused {
+		scrollInfo = " │ " + StatusWarning.Render("⏸ PAUSED") + SubtitleStyle.Render(" (Space to resume)")
+	} else if m.logScrollOffset > 0 {
 		scrollInfo = fmt.Sprintf(" │ ↑%d lines (End to resume)", m.logScrollOffset)
 	} else if m.logAutoScroll {
 		scrollInfo = " │ Auto-scroll"
 	}
 	statsLine := SubtitleStyle.Render(fmt.Sprintf(
-		"Lines %d-%d of %d%s",
-		start+1, end, totalLines, scrollInfo))
+		"Lines %d-%d of %d",
+		start+1, end, totalLines)) + scrollInfo
 
 	if len(logLines) == 0 {
 		logLines = append(logLines, SubtitleStyle.Render("No logs matching filters"))
@@ -1217,7 +1218,7 @@ func (m *Model) renderLogs(width, height int) string {
 	}
 
 	return style.Width(width - 2).Height(height - 2).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, filterBar1, filterBar2, statsLine, "", content),
+		lipgloss.JoinVertical(lipgloss.Left, filterBar1, filterBar2, statsLine, "", content),
 	)
 }
 
@@ -1259,8 +1260,6 @@ func (m *Model) renderGit(width, height int) string {
 	if m.gitShowDiff {
 		return m.renderGitDiff(width, height)
 	}
-
-	title := PanelTitleStyle.Render("Git Status")
 
 	// Projects list (left panel) - narrower to give more space to details
 	listWidth := width / 3
@@ -1389,7 +1388,7 @@ func (m *Model) renderGit(width, height int) string {
 	}
 
 	listPanel := listStyle.Width(listWidth).Height(height - 4).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, strings.Join(projectRows, "\n")),
+		strings.Join(projectRows, "\n"),
 	)
 	detailPanel := detailStyle.Width(detailWidth).Height(height - 4).Render(detailContent)
 
@@ -1437,7 +1436,6 @@ func (m *Model) buildGitFileList(p *core.GitStatusVM) {
 
 // renderGitDiff renders the diff view
 func (m *Model) renderGitDiff(width, height int) string {
-	title := PanelTitleStyle.Render("Git Diff")
 	hint := SubtitleStyle.Render("Press Escape to go back")
 
 	contentHeight := height - 6
@@ -1477,7 +1475,7 @@ func (m *Model) renderGitDiff(width, height int) string {
 	content := strings.Join(lines, "\n")
 
 	panel := FocusedBorderStyle.Width(width - 2).Height(height - 4).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, hint, "", content),
+		lipgloss.JoinVertical(lipgloss.Left, hint, "", content),
 	)
 
 	return panel
@@ -1849,6 +1847,7 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		"  b         Build selected component",
 		"  r         Run/Start component",
 		"  s         Stop component",
+		"  p         Pause/Resume process (SIGSTOP/SIGCONT)",
 		"  k         Kill (force stop)",
 		"  l         View logs for component",
 		"",
@@ -1860,6 +1859,7 @@ func (m *Model) renderHelpOverlay(background string, width, height int) string {
 		"  ↑/↓ j/k   Scroll up/down one line",
 		"  S-↑/↓     Page up/down",
 		"  Home/End  Go to top/bottom",
+		"  Space     Pause/Resume log display",
 		"  s/←→      Cycle source (project/component)",
 		"  t         Cycle type (all/build/run)",
 		"  e w i a   Filter level: error/warn/info/all",

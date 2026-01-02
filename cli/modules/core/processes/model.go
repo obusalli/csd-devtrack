@@ -15,6 +15,7 @@ const (
 	ProcessStateStopped  ProcessState = "stopped"
 	ProcessStateStarting ProcessState = "starting"
 	ProcessStateRunning  ProcessState = "running"
+	ProcessStatePaused   ProcessState = "paused"
 	ProcessStateStopping ProcessState = "stopping"
 	ProcessStateCrashed  ProcessState = "crashed"
 )
@@ -111,10 +112,15 @@ func (p *Process) GetAllLogs() []string {
 	return p.logBuffer.ReadAll()
 }
 
-// IsRunning returns true if the process is running
+// IsRunning returns true if the process is running (includes paused)
 func (p *Process) IsRunning() bool {
 	state := p.GetState()
-	return state == ProcessStateRunning || state == ProcessStateStarting
+	return state == ProcessStateRunning || state == ProcessStateStarting || state == ProcessStatePaused
+}
+
+// IsPaused returns true if the process is paused
+func (p *Process) IsPaused() bool {
+	return p.GetState() == ProcessStatePaused
 }
 
 // ProcessAction represents an action to perform on a process
@@ -126,6 +132,8 @@ const (
 	ActionRestart   ProcessAction = "restart"
 	ActionKill      ProcessAction = "kill"      // SIGKILL force
 	ActionForceKill ProcessAction = "force_kill" // SIGKILL -9 immediate
+	ActionPause     ProcessAction = "pause"     // SIGSTOP to pause
+	ActionResume    ProcessAction = "resume"    // SIGCONT to resume
 )
 
 // ProcessEvent represents an event from a process
@@ -146,6 +154,8 @@ const (
 	ProcessEventStarted    ProcessEventType = "started"
 	ProcessEventStopping   ProcessEventType = "stopping"
 	ProcessEventStopped    ProcessEventType = "stopped"
+	ProcessEventPaused     ProcessEventType = "paused"
+	ProcessEventResumed    ProcessEventType = "resumed"
 	ProcessEventCrashed    ProcessEventType = "crashed"
 	ProcessEventRestarting ProcessEventType = "restarting"
 	ProcessEventOutput     ProcessEventType = "output"

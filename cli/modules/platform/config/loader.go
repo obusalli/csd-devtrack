@@ -39,10 +39,24 @@ func NewLoader(configPath string) *Loader {
 
 // Load loads configuration from file
 func (l *Loader) Load() (*Config, error) {
+	return l.LoadWithCreate(false)
+}
+
+// LoadWithCreate loads configuration from file, optionally creating it if missing
+func (l *Loader) LoadWithCreate(createIfMissing bool) (*Config, error) {
 	// Check if config file exists
 	if _, err := os.Stat(l.configPath); os.IsNotExist(err) {
-		// Return default config if file doesn't exist
-		return DefaultConfig(), nil
+		// Create default config
+		config := DefaultConfig()
+
+		// Create the file if requested
+		if createIfMissing {
+			if err := l.Save(config); err != nil {
+				return nil, fmt.Errorf("failed to create config file: %w", err)
+			}
+		}
+
+		return config, nil
 	}
 
 	data, err := os.ReadFile(l.configPath)
@@ -139,6 +153,11 @@ func FindConfigFile() string {
 
 // LoadGlobal loads configuration globally
 func LoadGlobal(configPath string) error {
+	return LoadGlobalWithCreate(configPath, false)
+}
+
+// LoadGlobalWithCreate loads configuration globally, optionally creating the file if missing
+func LoadGlobalWithCreate(configPath string, createIfMissing bool) error {
 	configMutex.Lock()
 	defer configMutex.Unlock()
 
@@ -147,7 +166,7 @@ func LoadGlobal(configPath string) error {
 	}
 
 	loader := NewLoader(configPath)
-	config, err := loader.Load()
+	config, err := loader.LoadWithCreate(createIfMissing)
 	if err != nil {
 		return err
 	}

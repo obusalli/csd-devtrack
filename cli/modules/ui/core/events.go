@@ -31,6 +31,7 @@ const (
 	EventStopProcess     EventType = "stop_process"
 	EventRestartProcess  EventType = "restart_process"
 	EventKillProcess     EventType = "kill_process"
+	EventPauseProcess    EventType = "pause_process"
 	EventViewLogs        EventType = "view_logs"
 
 	// Git events
