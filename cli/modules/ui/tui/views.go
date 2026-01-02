@@ -248,6 +248,13 @@ func (m *Model) renderFooter() string {
 				HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
 			)
 		case core.VMBuild:
+		// Profile shortcuts
+		shortcuts = append(shortcuts,
+			HelpKeyStyle.Render("d")+HelpDescStyle.Render(" dev  "),
+			HelpKeyStyle.Render("t")+HelpDescStyle.Render(" test  "),
+			HelpKeyStyle.Render("p")+HelpDescStyle.Render(" prod  "),
+			HelpKeyStyle.Render("←→")+HelpDescStyle.Render(" cycle  "),
+		)
 		if m.state.Builds != nil && m.state.Builds.IsBuilding {
 			shortcuts = append(shortcuts,
 				HelpKeyStyle.Render("CTRL+c")+HelpDescStyle.Render(" cancel  "),

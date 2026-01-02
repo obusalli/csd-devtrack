@@ -262,15 +262,8 @@ func runAsDaemon() {
 
 	appCtx := commands.GetContext()
 
-	// Create presenter
+	// Create presenter (but don't initialize yet - that does slow git operations)
 	presenter := commands.CreatePresenter(appCtx)
-
-	// Initialize presenter to populate state (projects, processes, git, etc.)
-	ctx := context.Background()
-	if err := presenter.Initialize(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Daemon: Failed to initialize presenter: %v\n", err)
-		os.Exit(1)
-	}
 
 	// Initialize logger from config
 	cfg := config.GetGlobal()
@@ -317,12 +310,21 @@ func runAsDaemon() {
 
 	log.Info("Daemon starting...")
 
+	// Start server FIRST so socket/PID exist (client can connect)
 	if err := server.Start(); err != nil {
 		log.Error("Failed to start: %v", err)
 		os.Exit(1)
 	}
 
 	log.Info("Daemon started successfully")
+
+	// NOW initialize presenter (this does slow git operations)
+	// Client can already connect while this runs
+	ctx := context.Background()
+	if err := presenter.Initialize(ctx); err != nil {
+		log.Error("Failed to initialize presenter: %v", err)
+		// Don't exit - server is running, just log the error
+	}
 
 	// Handle shutdown signals
 	sigCh := make(chan os.Signal, 1)

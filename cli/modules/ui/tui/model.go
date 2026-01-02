@@ -874,14 +874,36 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	// Build view specific keys
 	if m.currentView == core.VMBuild {
 		switch key {
-		case "1":
+		case "d", "1":
 			m.currentBuildProfile = "dev"
 			return nil
-		case "2":
+		case "t", "2":
 			m.currentBuildProfile = "test"
 			return nil
-		case "3":
+		case "p", "3":
 			m.currentBuildProfile = "prod"
+			return nil
+		case "left":
+			// Cycle profiles backward: dev <- test <- prod <- dev
+			switch m.currentBuildProfile {
+			case "dev":
+				m.currentBuildProfile = "prod"
+			case "test":
+				m.currentBuildProfile = "dev"
+			case "prod":
+				m.currentBuildProfile = "test"
+			}
+			return nil
+		case "right":
+			// Cycle profiles forward: dev -> test -> prod -> dev
+			switch m.currentBuildProfile {
+			case "dev":
+				m.currentBuildProfile = "test"
+			case "test":
+				m.currentBuildProfile = "prod"
+			case "prod":
+				m.currentBuildProfile = "dev"
+			}
 			return nil
 		case "b":
 			return m.buildSelected()
