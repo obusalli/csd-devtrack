@@ -2082,42 +2082,67 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 // updateClaudeTree builds the flattened tree structure for Claude sessions navigation
 func (m *Model) updateClaudeTree() {
 	// Build tree: group sessions by project
+	// Only show projects that are registered in csd-devtrack AND have sessions
 	type projectNode struct {
 		ID       string
 		Name     string
+		Path     string
 		Sessions []core.ClaudeSessionVM
 	}
 
 	projectMap := make(map[string]*projectNode)
 	var projectOrder []string
 
-	// First, add all projects (even those without sessions)
+	// Build a map of registered project paths for matching
+	registeredProjects := make(map[string]*projectNode) // path -> node
 	if m.state.Projects != nil {
 		for _, proj := range m.state.Projects.Projects {
-			projectMap[proj.ID] = &projectNode{
+			registeredProjects[proj.Path] = &projectNode{
 				ID:       proj.ID,
 				Name:     proj.Name,
+				Path:     proj.Path,
 				Sessions: []core.ClaudeSessionVM{},
 			}
-			projectOrder = append(projectOrder, proj.ID)
 		}
 	}
 
-	// Then add sessions to their projects
+	// Add sessions only to registered projects (match by project name in path)
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
-			if node, ok := projectMap[sess.ProjectID]; ok {
-				node.Sessions = append(node.Sessions, sess)
-			} else {
-				// Project not in list, add it
-				projectMap[sess.ProjectID] = &projectNode{
-					ID:       sess.ProjectID,
-					Name:     sess.ProjectName,
-					Sessions: []core.ClaudeSessionVM{sess},
+			// Try to match session with a registered project
+			// Session ProjectName is the last segment of the workDir (e.g., "csd-devtrack")
+			// Project Path is the full path (e.g., "/data/devel/infra/csd-devtrack")
+			var matchedNode *projectNode
+			for path, node := range registeredProjects {
+				// Match if project path ends with session's project name
+				if sess.ProjectName != "" && strings.HasSuffix(path, "/"+sess.ProjectName) {
+					matchedNode = node
+					break
 				}
-				projectOrder = append(projectOrder, sess.ProjectID)
+				// Also match if project name equals session's project name
+				if node.Name == sess.ProjectName {
+					matchedNode = node
+					break
+				}
 			}
+
+			if matchedNode != nil {
+				// Add session to matched project
+				if _, exists := projectMap[matchedNode.ID]; !exists {
+					projectMap[matchedNode.ID] = matchedNode
+					projectOrder = append(projectOrder, matchedNode.ID)
+				}
+				projectMap[matchedNode.ID].Sessions = append(projectMap[matchedNode.ID].Sessions, sess)
+			}
+			// Sessions not matching any registered project are ignored
 		}
+	}
+
+	// Sort sessions within each project by last active time (newest first)
+	for _, node := range projectMap {
+		sort.Slice(node.Sessions, func(i, j int) bool {
+			return node.Sessions[i].LastActive > node.Sessions[j].LastActive
+		})
 	}
 
 	// Build flattened tree for navigation

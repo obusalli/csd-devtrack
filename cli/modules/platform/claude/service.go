@@ -164,13 +164,6 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 		return
 	}
 
-	// Convert project folder name back to workdir
-	// e.g., -data-devel-infra-csd-devtrack -> /data/devel/infra/csd-devtrack
-	workDir := strings.ReplaceAll(projectName, "-", "/")
-	if !strings.HasPrefix(workDir, "/") {
-		workDir = "/" + workDir[1:] // Fix double slash at start
-	}
-
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
@@ -199,8 +192,8 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 			continue
 		}
 
-		// Load session metadata from JSONL
-		session := s.parseSessionFile(sessionID, sessionFile, workDir)
+		// Load session metadata from JSONL (workDir will be extracted from cwd field)
+		session := s.parseSessionFile(sessionID, sessionFile)
 		if session != nil {
 			s.sessions[sessionID] = session
 		}
@@ -208,7 +201,7 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 }
 
 // parseSessionFile reads a Claude CLI JSONL session file and extracts metadata
-func (s *Service) parseSessionFile(sessionID, filePath, workDir string) *Session {
+func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil
@@ -217,18 +210,10 @@ func (s *Service) parseSessionFile(sessionID, filePath, workDir string) *Session
 
 	session := &Session{
 		ID:            sessionID,
-		WorkDir:       workDir,
 		State:         SessionIdle,
 		Messages:      make([]Message, 0),
 		IsRealSession: true,
 		SessionFile:   filePath,
-	}
-
-	// Extract project info from workDir
-	parts := strings.Split(workDir, "/")
-	if len(parts) > 0 {
-		session.ProjectName = parts[len(parts)-1]
-		session.ProjectID = session.ProjectName // Use folder name as project ID
 	}
 
 	scanner := bufio.NewScanner(file)
@@ -238,7 +223,7 @@ func (s *Service) parseSessionFile(sessionID, filePath, workDir string) *Session
 
 	var firstTimestamp, lastTimestamp time.Time
 	var sessionName string
-	messageCount := 0
+	var workDir string
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -249,6 +234,11 @@ func (s *Service) parseSessionFile(sessionID, filePath, workDir string) *Session
 		var entry map[string]interface{}
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue
+		}
+
+		// Get working directory from cwd field (most reliable source)
+		if cwd, ok := entry["cwd"].(string); ok && workDir == "" {
+			workDir = cwd
 		}
 
 		// Get session name from slug
@@ -269,8 +259,6 @@ func (s *Service) parseSessionFile(sessionID, filePath, workDir string) *Session
 		// Count messages (user and assistant types)
 		if entryType, ok := entry["type"].(string); ok {
 			if entryType == "user" || entryType == "assistant" {
-				messageCount++
-
 				// Extract message content for display
 				if msg, ok := entry["message"].(map[string]interface{}); ok {
 					role := ""
@@ -305,11 +293,24 @@ func (s *Service) parseSessionFile(sessionID, filePath, workDir string) *Session
 		}
 	}
 
+	// Set working directory and extract project info
+	session.WorkDir = workDir
+	if workDir != "" {
+		// Extract project name from last path segment
+		parts := strings.Split(workDir, "/")
+		if len(parts) > 0 {
+			session.ProjectName = parts[len(parts)-1]
+			session.ProjectID = session.ProjectName
+		}
+	}
+
 	// Set session name
 	if sessionName != "" {
 		session.Name = sessionName
-	} else {
+	} else if len(sessionID) >= 8 {
 		session.Name = sessionID[:8] // Use first 8 chars of UUID
+	} else {
+		session.Name = sessionID
 	}
 
 	// Set timestamps
