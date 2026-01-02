@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"csd-devtrack/cli/modules/core/processes"
 	"csd-devtrack/cli/modules/core/projects"
 	"csd-devtrack/cli/modules/platform/builder"
+	"csd-devtrack/cli/modules/platform/claude"
 	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/platform/git"
 	"csd-devtrack/cli/modules/platform/supervisor"
@@ -27,6 +30,7 @@ type AppPresenter struct {
 	processService *processes.Service
 	processMgr     *supervisor.Manager
 	gitService     *git.Service
+	claudeService  *claude.Service
 	config         *config.Config
 
 	// State
@@ -89,6 +93,22 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 	// Initialize git service
 	p.gitService = git.NewService(p.projectService)
 
+	// Initialize Claude service
+	claudeDataDir := ""
+	if p.config != nil && p.config.Settings != nil && p.config.Settings.Claude != nil {
+		claudeDataDir = p.config.Settings.Claude.SessionsDir
+	}
+	if claudeDataDir == "" {
+		// Default to ~/.csd-devtrack/claude-sessions/
+		if home, err := os.UserHomeDir(); err == nil {
+			claudeDataDir = filepath.Join(home, ".csd-devtrack", "claude-sessions")
+		}
+	}
+	p.claudeService = claude.NewService(claudeDataDir)
+
+	// Initialize Claude state
+	p.refreshClaude()
+
 	// Set up event handlers
 	p.setupEventHandlers()
 
@@ -113,7 +133,7 @@ func (p *AppPresenter) broadcastFullState() {
 	p.mu.RUnlock()
 
 	// Notify all view updates to refresh the entire UI
-	for _, viewType := range []ViewModelType{VMDashboard, VMProjects, VMBuild, VMProcesses, VMLogs, VMGit, VMConfig} {
+	for _, viewType := range []ViewModelType{VMDashboard, VMProjects, VMBuild, VMProcesses, VMLogs, VMGit, VMConfig, VMClaude} {
 		vm, _ := p.GetViewModel(viewType)
 		if vm != nil {
 			update := StateUpdate{
@@ -191,6 +211,22 @@ func (p *AppPresenter) HandleEvent(event *Event) error {
 	case EventFilter:
 		return p.handleFilter(event)
 
+	// Claude events
+	case EventClaudeCreateSession:
+		return p.handleClaudeCreateSession(event)
+	case EventClaudeSelectSession:
+		return p.handleClaudeSelectSession(event)
+	case EventClaudeDeleteSession:
+		return p.handleClaudeDeleteSession(event)
+	case EventClaudeRenameSession:
+		return p.handleClaudeRenameSession(event)
+	case EventClaudeSendMessage:
+		return p.handleClaudeSendMessage(event)
+	case EventClaudeStopSession:
+		return p.handleClaudeStopSession(event)
+	case EventClaudeClearHistory:
+		return p.handleClaudeClearHistory(event)
+
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
 	}
@@ -216,6 +252,8 @@ func (p *AppPresenter) GetViewModel(viewType ViewModelType) (ViewModel, error) {
 		return p.state.Git, nil
 	case VMConfig:
 		return p.state.Config, nil
+	case VMClaude:
+		return p.state.Claude, nil
 	default:
 		return nil, fmt.Errorf("unknown view type: %s", viewType)
 	}
@@ -260,6 +298,12 @@ func (p *AppPresenter) Shutdown() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
+
+	// Shutdown Claude service
+	if p.claudeService != nil {
+		p.claudeService.Shutdown()
+	}
+
 	return nil
 }
 
@@ -288,6 +332,8 @@ func (p *AppPresenter) handleNavigate(event *Event) error {
 		p.refreshProcesses()
 	case VMGit:
 		p.refreshGitStatus()
+	case VMClaude:
+		p.refreshClaude()
 	}
 
 	p.notifyStateUpdate(viewType, p.state.GetCurrentViewModel())
@@ -886,4 +932,312 @@ func (p *AppPresenter) handleProcessEvent(event processes.ProcessEvent) {
 	p.mu.Unlock()
 
 	p.notifyStateUpdate(VMLogs, p.state.Logs)
+}
+
+// ============================================
+// Claude handlers
+// ============================================
+
+func (p *AppPresenter) handleClaudeCreateSession(event *Event) error {
+	projectID := event.ProjectID
+	if projectID == "" {
+		return fmt.Errorf("project ID required")
+	}
+
+	// Get project info
+	proj, err := p.projectService.GetProject(projectID)
+	if err != nil {
+		return err
+	}
+
+	// Create session
+	session, err := p.claudeService.CreateSession(projectID, proj.Name, proj.Path, "")
+	if err != nil {
+		p.notify(NotifyError, "Create Session Failed", err.Error())
+		return err
+	}
+
+	p.notify(NotifySuccess, "Session Created", fmt.Sprintf("Created %s", session.Name))
+	p.refreshClaude()
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeSelectSession(event *Event) error {
+	sessionID, ok := event.Value.(string)
+	if !ok || sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	session, err := p.claudeService.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Update active session in state
+	p.mu.Lock()
+	p.state.Claude.ActiveSessionID = sessionID
+	p.state.Claude.ActiveSession = p.sessionToVM(session)
+	p.state.Claude.Messages = p.messagesToVM(session.Messages)
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeDeleteSession(event *Event) error {
+	sessionID, ok := event.Value.(string)
+	if !ok || sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.claudeService.DeleteSession(sessionID); err != nil {
+		p.notify(NotifyError, "Delete Failed", err.Error())
+		return err
+	}
+
+	p.notify(NotifySuccess, "Session Deleted", "Session was deleted")
+	p.refreshClaude()
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeRenameSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	newName := event.Data["new_name"]
+	if sessionID == "" || newName == "" {
+		return fmt.Errorf("session ID and new name required")
+	}
+
+	if err := p.claudeService.RenameSession(sessionID, newName); err != nil {
+		p.notify(NotifyError, "Rename Failed", err.Error())
+		return err
+	}
+
+	p.notify(NotifySuccess, "Session Renamed", fmt.Sprintf("Renamed to %s", newName))
+	p.refreshClaude()
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeSendMessage(event *Event) error {
+	sessionID := event.Data["session_id"]
+	message := event.Data["message"]
+	if sessionID == "" || message == "" {
+		return fmt.Errorf("session ID and message required")
+	}
+
+	// Add user message to UI immediately
+	p.mu.Lock()
+	userMsg := ClaudeMessageVM{
+		ID:      fmt.Sprintf("user-%d", time.Now().UnixNano()),
+		Role:    "user",
+		Content: message,
+		TimeStr: time.Now().Format("15:04"),
+	}
+	p.state.Claude.Messages = append(p.state.Claude.Messages, userMsg)
+
+	// Add placeholder for assistant response
+	assistantMsg := ClaudeMessageVM{
+		ID:        fmt.Sprintf("assistant-%d", time.Now().UnixNano()),
+		Role:      "assistant",
+		Content:   "",
+		TimeStr:   time.Now().Format("15:04"),
+		IsPartial: true,
+	}
+	p.state.Claude.Messages = append(p.state.Claude.Messages, assistantMsg)
+	assistantIdx := len(p.state.Claude.Messages) - 1
+	p.state.Claude.IsProcessing = true
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
+
+	// Create output channel for streaming
+	outputChan := make(chan claude.ClaudeOutput, 100)
+
+	// Start processing in background
+	go func() {
+		err := p.claudeService.SendMessage(p.ctx, sessionID, message, outputChan)
+		if err != nil {
+			p.notify(NotifyError, "Send Failed", err.Error())
+			p.mu.Lock()
+			p.state.Claude.IsProcessing = false
+			p.mu.Unlock()
+			p.notifyStateUpdate(VMClaude, p.state.Claude)
+			return
+		}
+
+		// Process streaming output
+		var contentBuilder strings.Builder
+		for output := range outputChan {
+			if output.IsEnd {
+				break
+			}
+
+			p.mu.Lock()
+			switch output.Type {
+			case "text":
+				contentBuilder.WriteString(output.Content)
+				if assistantIdx < len(p.state.Claude.Messages) {
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
+				}
+			case "tool_use":
+				// Show tool usage in the message
+				if assistantIdx < len(p.state.Claude.Messages) {
+					toolInfo := fmt.Sprintf("\n[Using tool: %s]\n", output.Tool)
+					contentBuilder.WriteString(toolInfo)
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
+				}
+			case "error":
+				p.state.Claude.IsProcessing = false
+				if assistantIdx < len(p.state.Claude.Messages) {
+					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String() + "\n[Error: " + output.Content + "]"
+					p.state.Claude.Messages[assistantIdx].IsPartial = false
+				}
+			}
+			p.mu.Unlock()
+
+			// Notify UI of update
+			p.notifyStateUpdate(VMClaude, p.state.Claude)
+		}
+
+		// Mark as complete
+		p.mu.Lock()
+		p.state.Claude.IsProcessing = false
+		if assistantIdx < len(p.state.Claude.Messages) {
+			p.state.Claude.Messages[assistantIdx].IsPartial = false
+		}
+		p.mu.Unlock()
+
+		// Final refresh to sync with service state
+		p.refreshClaudeMessages(sessionID)
+		p.notifyStateUpdate(VMClaude, p.state.Claude)
+	}()
+
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeStopSession(event *Event) error {
+	sessionID, ok := event.Value.(string)
+	if !ok || sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.claudeService.StopSession(sessionID); err != nil {
+		p.notify(NotifyError, "Stop Failed", err.Error())
+		return err
+	}
+
+	p.notify(NotifyInfo, "Stopped", "Claude session stopped")
+	p.refreshClaude()
+	return nil
+}
+
+func (p *AppPresenter) handleClaudeClearHistory(event *Event) error {
+	sessionID, ok := event.Value.(string)
+	if !ok || sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.claudeService.ClearSessionHistory(sessionID); err != nil {
+		p.notify(NotifyError, "Clear Failed", err.Error())
+		return err
+	}
+
+	p.notify(NotifyInfo, "Cleared", "Session history cleared")
+	p.refreshClaude()
+	return nil
+}
+
+// ============================================
+// Claude refresh and converters
+// ============================================
+
+func (p *AppPresenter) refreshClaude() {
+	if p.claudeService == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Update installation status
+	p.state.Claude.IsInstalled = p.claudeService.IsInstalled()
+	p.state.Claude.ClaudePath = p.claudeService.GetClaudePath()
+
+	// Get all sessions
+	sessions := p.claudeService.ListSessions("")
+	p.state.Claude.Sessions = make([]ClaudeSessionVM, len(sessions))
+	for i, s := range sessions {
+		p.state.Claude.Sessions[i] = ClaudeSessionVM{
+			ID:           s.ID,
+			Name:         s.Name,
+			ProjectID:    s.ProjectID,
+			ProjectName:  s.ProjectName,
+			State:        string(s.State),
+			MessageCount: s.MessageCount,
+			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
+			IsActive:     s.ID == p.state.Claude.ActiveSessionID,
+		}
+	}
+
+	// Load settings from config
+	if p.config != nil && p.config.Settings != nil && p.config.Settings.Claude != nil {
+		cfg := p.config.Settings.Claude
+		p.state.Claude.Settings = &ClaudeSettingsVM{
+			AllowedTools:    cfg.AllowedTools,
+			AutoApprove:     cfg.AutoApprove,
+			OutputFormat:    cfg.OutputFormat,
+			MaxTurns:        cfg.MaxTurns,
+			PlanModeEnabled: cfg.PlanModeEnabled,
+		}
+	}
+}
+
+// refreshClaudeMessages syncs messages from the service for a specific session
+func (p *AppPresenter) refreshClaudeMessages(sessionID string) {
+	if p.claudeService == nil || sessionID == "" {
+		return
+	}
+
+	session, err := p.claudeService.GetSession(sessionID)
+	if err != nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Update messages from the service (authoritative source)
+	p.state.Claude.Messages = p.messagesToVM(session.Messages)
+
+	// Update active session info
+	p.state.Claude.ActiveSession = p.sessionToVM(session)
+}
+
+func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
+	if session == nil {
+		return nil
+	}
+	return &ClaudeSessionVM{
+		ID:           session.ID,
+		Name:         session.Name,
+		ProjectID:    session.ProjectID,
+		ProjectName:  session.ProjectName,
+		State:        string(session.State),
+		MessageCount: len(session.Messages),
+		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
+		IsActive:     true,
+	}
+}
+
+func (p *AppPresenter) messagesToVM(messages []claude.Message) []ClaudeMessageVM {
+	result := make([]ClaudeMessageVM, len(messages))
+	for i, m := range messages {
+		result[i] = ClaudeMessageVM{
+			ID:        m.ID,
+			Role:      m.Role,
+			Content:   m.Content,
+			TimeStr:   m.Timestamp.Format("15:04"),
+			IsPartial: m.Partial,
+		}
+	}
+	return result
 }

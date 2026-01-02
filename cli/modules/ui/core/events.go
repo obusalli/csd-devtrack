@@ -43,6 +43,17 @@ const (
 	EventSaveConfig      EventType = "save_config"
 	EventReloadConfig    EventType = "reload_config"
 
+	// Claude events
+	EventClaudeCreateSession EventType = "claude_create_session"
+	EventClaudeSelectSession EventType = "claude_select_session"
+	EventClaudeDeleteSession EventType = "claude_delete_session"
+	EventClaudeRenameSession EventType = "claude_rename_session"
+	EventClaudeSendMessage   EventType = "claude_send_message"
+	EventClaudeStopSession   EventType = "claude_stop_session"
+	EventClaudeClearHistory  EventType = "claude_clear_history"
+	EventClaudeApprovePlan   EventType = "claude_approve_plan"
+	EventClaudeRejectPlan    EventType = "claude_reject_plan"
+
 	// UI state events
 	EventFilter          EventType = "filter"
 	EventSort            EventType = "sort"

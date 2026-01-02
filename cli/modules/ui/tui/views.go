@@ -48,11 +48,59 @@ func (m *Model) renderHeader() string {
 		runningStr = StatusRunning.Render(fmt.Sprintf(" %d running", running))
 	}
 
+	// System metrics (CPU, RAM, Load)
+	metricsStr := ""
+	if m.metricsCollector != nil {
+		metrics := m.metricsCollector.Get()
+		// CPU with color based on usage
+		cpuStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
+		if metrics.CPUPercent > 80 {
+			cpuStyle = lipgloss.NewStyle().Foreground(ColorError)
+		} else if metrics.CPUPercent > 50 {
+			cpuStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+		}
+		cpuStr := cpuStyle.Render(fmt.Sprintf("CPU:%.0f%%", metrics.CPUPercent))
+
+		// RAM with color based on usage
+		ramStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
+		if metrics.MemPercent > 80 {
+			ramStyle = lipgloss.NewStyle().Foreground(ColorError)
+		} else if metrics.MemPercent > 50 {
+			ramStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+		}
+		ramStr := ramStyle.Render(fmt.Sprintf("RAM:%.1f/%.0fG", metrics.MemUsedGB, metrics.MemTotalGB))
+
+		// Load average with color based on load vs CPU count
+		loadStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
+		if metrics.LoadAvg1 > float64(metrics.NumCPU) {
+			loadStyle = lipgloss.NewStyle().Foreground(ColorError)
+		} else if metrics.LoadAvg1 > float64(metrics.NumCPU)*0.7 {
+			loadStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+		}
+		loadStr := loadStyle.Render(fmt.Sprintf("Load:%.2f", metrics.LoadAvg1))
+
+		metricsStr = fmt.Sprintf("%s %s %s", cpuStr, ramStr, loadStr)
+	}
+
 	// Current view indicator
 	viewName := strings.ToUpper(string(m.currentView))
 
-	left := fmt.Sprintf(" %s %s │ %s", title, version, viewName)
-	right := fmt.Sprintf("%s%s ", status, runningStr)
+	// Claude usage info if in Claude view with active session
+	usageStr := ""
+	if m.currentView == core.VMClaude && m.state.Claude != nil && m.state.Claude.Usage != nil {
+		usage := m.state.Claude.Usage
+		usageStr = lipgloss.NewStyle().Foreground(ColorSecondary).Render(
+			fmt.Sprintf(" │ %dk tokens", usage.TotalTokens/1000),
+		)
+		if usage.CostUSD > 0 {
+			usageStr += lipgloss.NewStyle().Foreground(ColorMuted).Render(
+				fmt.Sprintf(" ~$%.2f", usage.CostUSD),
+			)
+		}
+	}
+
+	left := fmt.Sprintf(" %s %s │ %s%s", title, version, viewName, usageStr)
+	right := fmt.Sprintf("%s │ %s%s ", metricsStr, status, runningStr)
 
 	padding := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if padding < 0 {
@@ -72,11 +120,14 @@ func (m *Model) renderHeader() string {
 		Render(header)
 }
 
-// sidebarViews defines the navigation menu items
-var sidebarViews = []struct {
+// sidebarView represents a navigation menu item
+type sidebarView struct {
 	name  string // Name with [X] shortcut highlighted
 	vtype core.ViewModelType
-}{
+}
+
+// baseSidebarViews defines the base navigation menu items (always shown)
+var baseSidebarViews = []sidebarView{
 	{"[D]ashboard", core.VMDashboard},
 	{"[P]rojects", core.VMProjects},
 	{"[B]uild", core.VMBuild},
@@ -86,15 +137,31 @@ var sidebarViews = []struct {
 	{"[C]onfig", core.VMConfig},
 }
 
+// getSidebarViews returns the sidebar views, including Claude if installed
+func (m *Model) getSidebarViews() []sidebarView {
+	views := make([]sidebarView, len(baseSidebarViews))
+	copy(views, baseSidebarViews)
+
+	// Add Claude view if installed
+	if m.state.Claude != nil && m.state.Claude.IsInstalled {
+		views = append(views, sidebarView{"[A]I Claude", core.VMClaude})
+	}
+
+	return views
+}
+
 // getSidebarWidth returns a fixed width that fits all menu items
 func getSidebarWidth() int {
-	// Find longest name
+	// Find longest name (including potential Claude entry)
 	maxLen := 0
-	for _, v := range sidebarViews {
-		// Name like "[D]ashboard" = 11 chars
+	for _, v := range baseSidebarViews {
 		if len(v.name) > maxLen {
 			maxLen = len(v.name)
 		}
+	}
+	// Also account for Claude entry "[A]I Claude" = 11 chars
+	if len("[A]I Claude") > maxLen {
+		maxLen = len("[A]I Claude")
 	}
 	// Format: "> 1 [D]ashboard" = prefix(2) + key(1) + space(1) + name
 	// + borders(2) + padding(4) + margin(2)
@@ -122,6 +189,7 @@ func (m *Model) renderSidebar() string {
 	var items []string
 	items = append(items, title, separator)
 
+	sidebarViews := m.getSidebarViews()
 	for i, v := range sidebarViews {
 		// Selection indicator prefix (no chevron, use spaces)
 		prefix := "  "
@@ -190,6 +258,8 @@ func (m *Model) renderMainContent() string {
 		content = m.renderGit(width, height)
 	case core.VMConfig:
 		content = m.renderConfig(width, height)
+	case core.VMClaude:
+		content = m.renderClaude(width, height)
 	default:
 		content = m.renderDashboard(width, height)
 	}
@@ -241,6 +311,12 @@ func (m *Model) renderFooter() string {
 				HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
 				HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
 			)
+			// Show AI shortcut if Claude is installed
+			if m.state.Claude != nil && m.state.Claude.IsInstalled {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("a")+HelpDescStyle.Render(" ai  "),
+				)
+			}
 		case core.VMBuild:
 		// Profile shortcuts
 		shortcuts = append(shortcuts,
@@ -333,6 +409,47 @@ func (m *Model) renderFooter() string {
 		case "settings":
 			shortcuts = append(shortcuts,
 				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" scroll  "),
+			)
+		}
+	case core.VMClaude:
+		// Claude-specific shortcuts based on current tab
+		shortcuts = append(shortcuts,
+			HelpKeyStyle.Render("1-3")+HelpDescStyle.Render(" tabs  "),
+		)
+		switch m.claudeMode {
+		case ClaudeModeSession:
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("n")+HelpDescStyle.Render(" new  "),
+				HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" open  "),
+				HelpKeyStyle.Render("r")+HelpDescStyle.Render(" rename  "),
+				HelpKeyStyle.Render("x")+HelpDescStyle.Render(" delete  "),
+			)
+			if m.claudeFilterProject != "" {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("c")+HelpDescStyle.Render(" clear  "),
+				)
+			}
+		case ClaudeModeChat:
+			if m.claudeInputActive {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" send  "),
+					HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" cancel  "),
+				)
+			} else {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("i")+HelpDescStyle.Render(" input  "),
+					HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" back  "),
+				)
+			}
+			if m.state.Claude != nil && m.state.Claude.IsProcessing {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("CTRL+c")+HelpDescStyle.Render(" stop  "),
+				)
+			}
+		case ClaudeModeSettings:
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" scroll  "),
+				HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" toggle  "),
 			)
 		}
 		}

@@ -20,6 +20,7 @@ type AppState struct {
 	Logs       *LogsVM
 	Git        *GitVM
 	Config     *ConfigVM
+	Claude     *ClaudeVM
 
 	// Global state
 	IsConnected   bool
@@ -40,6 +41,7 @@ func NewAppState() *AppState {
 		Logs:         &LogsVM{BaseViewModel: BaseViewModel{VMType: VMLogs}, AutoScroll: true, MaxLines: 1000},
 		Git:          &GitVM{BaseViewModel: BaseViewModel{VMType: VMGit}},
 		Config:       &ConfigVM{BaseViewModel: BaseViewModel{VMType: VMConfig}},
+		Claude:       &ClaudeVM{BaseViewModel: BaseViewModel{VMType: VMClaude}},
 		Notifications: make([]*Notification, 0),
 	}
 }
@@ -64,6 +66,8 @@ func (s *AppState) GetCurrentViewModel() ViewModel {
 		return s.Git
 	case VMConfig:
 		return s.Config
+	case VMClaude:
+		return s.Claude
 	default:
 		return s.Dashboard
 	}
@@ -96,6 +100,8 @@ func (s *AppState) UpdateViewModel(vm ViewModel) {
 		s.Git = v
 	case *ConfigVM:
 		s.Config = v
+	case *ClaudeVM:
+		s.Claude = v
 	}
 }
 

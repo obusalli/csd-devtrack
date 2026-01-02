@@ -20,6 +20,7 @@ const (
 	VMLogs      ViewModelType = "logs"
 	VMGit       ViewModelType = "git"
 	VMConfig    ViewModelType = "config"
+	VMClaude    ViewModelType = "claude"
 )
 
 // ViewModel is the base interface for all view models
@@ -205,4 +206,77 @@ type ConfigVM struct {
 	Settings       map[string]interface{} `json:"settings"`
 	Projects       []ProjectVM            `json:"projects"`
 	IsEditing      bool                   `json:"is_editing"`
+}
+
+// ClaudeSessionVM represents a Claude session for display
+type ClaudeSessionVM struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	ProjectID    string `json:"project_id"`
+	ProjectName  string `json:"project_name"`
+	State        string `json:"state"` // idle, running, waiting, error
+	MessageCount int    `json:"message_count"`
+	LastActive   string `json:"last_active"`
+	IsActive     bool   `json:"is_active"` // Currently selected session
+}
+
+// ClaudeMessageVM represents a message for display
+type ClaudeMessageVM struct {
+	ID        string `json:"id"`
+	Role      string `json:"role"` // user, assistant
+	Content   string `json:"content"`
+	TimeStr   string `json:"time_str"`
+	IsPartial bool   `json:"is_partial"` // Streaming in progress
+}
+
+// ClaudePlanItemVM represents a plan item for display
+type ClaudePlanItemVM struct {
+	Content    string `json:"content"`
+	Status     string `json:"status"` // pending, in_progress, completed
+	ActiveForm string `json:"active_form"`
+}
+
+// ClaudeUsageVM represents token/cost usage stats
+type ClaudeUsageVM struct {
+	InputTokens    int     `json:"input_tokens"`
+	OutputTokens   int     `json:"output_tokens"`
+	TotalTokens    int     `json:"total_tokens"`
+	CacheReadTokens  int   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int   `json:"cache_write_tokens,omitempty"`
+	CostUSD        float64 `json:"cost_usd,omitempty"` // Estimated cost
+}
+
+// ClaudeSettingsVM represents Claude settings for the UI
+type ClaudeSettingsVM struct {
+	AllowedTools    []string `json:"allowed_tools"`    // Tools Claude can use
+	AutoApprove     bool     `json:"auto_approve"`     // Auto-approve safe operations
+	OutputFormat    string   `json:"output_format"`    // text, json, stream-json
+	MaxTurns        int      `json:"max_turns"`        // Max conversation turns
+	PlanModeEnabled bool     `json:"plan_mode_enabled"` // Use plan mode for complex tasks
+}
+
+// ClaudeVM is the view model for the Claude AI view
+type ClaudeVM struct {
+	BaseViewModel
+	IsInstalled     bool              `json:"is_installed"`
+	ClaudePath      string            `json:"claude_path,omitempty"`
+	Sessions        []ClaudeSessionVM `json:"sessions"`
+	ActiveSessionID string            `json:"active_session_id,omitempty"`
+	ActiveSession   *ClaudeSessionVM  `json:"active_session,omitempty"`
+	Messages        []ClaudeMessageVM `json:"messages,omitempty"`
+	InputText       string            `json:"input_text"`      // Current input being typed
+	IsTyping        bool              `json:"is_typing"`       // User is typing
+	IsProcessing    bool              `json:"is_processing"`   // Claude is processing
+	FilterProject   string            `json:"filter_project"`  // Filter sessions by project
+
+	// Plan mode
+	PlanMode        bool               `json:"plan_mode"`        // Claude is in plan mode
+	PlanItems       []ClaudePlanItemVM `json:"plan_items"`       // Current plan items
+	PlanPending     bool               `json:"plan_pending"`     // Plan awaiting approval
+
+	// Usage stats (for current session)
+	Usage           *ClaudeUsageVM    `json:"usage,omitempty"`
+
+	// Settings
+	Settings        *ClaudeSettingsVM `json:"settings,omitempty"`
 }

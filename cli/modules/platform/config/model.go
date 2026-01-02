@@ -79,6 +79,46 @@ type Settings struct {
 
 	// Browser settings
 	BrowserPath string `yaml:"browser_path,omitempty" json:"browser_path,omitempty"` // Default path for file browser (default: home directory)
+
+	// Claude AI integration
+	Claude *ClaudeConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
+}
+
+// ClaudeConfig represents Claude AI integration settings
+type ClaudeConfig struct {
+	// Path to Claude CLI binary (empty = auto-detect)
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+
+	// Allowed tools for Claude to use
+	AllowedTools []string `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
+
+	// Auto-approve safe operations (read-only tools)
+	AutoApprove bool `yaml:"auto_approve,omitempty" json:"auto_approve,omitempty"`
+
+	// Output format: text, json, stream-json
+	OutputFormat string `yaml:"output_format,omitempty" json:"output_format,omitempty"`
+
+	// Max conversation turns
+	MaxTurns int `yaml:"max_turns,omitempty" json:"max_turns,omitempty"`
+
+	// Enable plan mode for complex tasks
+	PlanModeEnabled bool `yaml:"plan_mode_enabled,omitempty" json:"plan_mode_enabled,omitempty"`
+
+	// Sessions data directory (for storing session history)
+	SessionsDir string `yaml:"sessions_dir,omitempty" json:"sessions_dir,omitempty"`
+}
+
+// DefaultClaudeConfig returns default Claude configuration
+func DefaultClaudeConfig() *ClaudeConfig {
+	return &ClaudeConfig{
+		Path:            "", // Auto-detect
+		AllowedTools:    []string{"Read", "Glob", "Grep", "Bash"},
+		AutoApprove:     false,
+		OutputFormat:    "stream-json",
+		MaxTurns:        10,
+		PlanModeEnabled: true,
+		SessionsDir:     "", // Will default to ~/.csd-devtrack/claude-sessions/
+	}
 }
 
 // GetLoggerConfig returns the logger config, applying defaults and legacy field migration

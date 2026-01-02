@@ -11,6 +11,7 @@ import (
 	"csd-devtrack/cli/modules/core/projects"
 	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/platform/daemon"
+	"csd-devtrack/cli/modules/platform/system"
 	"csd-devtrack/cli/modules/ui/core"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -129,6 +130,18 @@ type Model struct {
 	gitFiles          []GitFileEntry // Flat list of all files for current project
 	gitFilesProjectID string   // Project ID for which gitFiles was built
 
+	// Claude view state
+	claudeInstalled      bool     // Is Claude CLI installed
+	claudeMode           string   // "sessions", "chat", "settings"
+	claudeActiveSession  string   // Active session ID
+	claudeInputText      string   // Current input text
+	claudeInputActive    bool     // User is typing
+	claudeChatScroll     int      // Scroll offset for chat messages
+	claudeSessionScroll  int      // Scroll offset for session list
+	claudeRenameActive   bool     // Renaming a session
+	claudeRenameText     string   // New name for session
+	claudeFilterProject  string   // Filter sessions by project ID
+
 	// Components
 	help     help.Model
 	spinner  spinner.Model
@@ -148,6 +161,9 @@ type Model struct {
 
 	// State restoration callback (for daemon mode)
 	onStateRestore func()
+
+	// System metrics
+	metricsCollector *system.MetricsCollector
 }
 
 // NewModel creates a new TUI model
@@ -221,7 +237,16 @@ func NewModel(presenter core.Presenter) *Model {
 				state.Builds = builds
 			}
 		}
+		if vm, err := presenter.GetViewModel(core.VMClaude); err == nil {
+			if claude, ok := vm.(*core.ClaudeVM); ok {
+				state.Claude = claude
+			}
+		}
 	}
+
+	// Create metrics collector (updates every 2 seconds)
+	metricsCollector := system.NewMetricsCollector(2 * time.Second)
+	metricsCollector.Start()
 
 	return &Model{
 		presenter:           presenter,
@@ -240,6 +265,7 @@ func NewModel(presenter core.Presenter) *Model {
 		browserPath:         browserPath,
 		viewStates:          make(map[core.ViewModelType]*ViewState),
 		logAutoScroll:       true, // Auto-scroll logs by default
+		metricsCollector:    metricsCollector,
 	}
 }
 
@@ -308,6 +334,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.YPosition = headerHeight
 
 	case tea.KeyMsg:
+		// Claude input handling (chat or rename)
+		if m.claudeInputActive {
+			cmd := m.handleClaudeInput(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+		if m.claudeRenameActive {
+			cmd := m.handleClaudeRenameInput(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.logSearchActive {
 			// In search mode - handle typing
 			if m.handleLogsSearchInput(msg) {
@@ -793,45 +835,61 @@ func (m *Model) ensureDetailVisible() {
 	}
 }
 
-// selectView changes the current view
+// selectView changes the current view by index
 func (m *Model) selectView(index int) tea.Cmd {
-	views := []core.ViewModelType{
-		core.VMDashboard,
-		core.VMProjects,
-		core.VMBuild,
-		core.VMProcesses,
-		core.VMLogs,
-		core.VMGit,
-		core.VMConfig,
-	}
+	views := m.getSidebarViews()
 
 	if index >= 0 && index < len(views) {
-		newView := views[index]
-
-		// Save current view state before switching
-		m.saveViewState()
-
-		// Switch view
-		m.sidebarIndex = index
-		m.currentView = newView
-
-		// Restore saved state for new view
-		m.restoreViewState(newView)
-
-		// Initialize Config view
-		if m.currentView == core.VMConfig {
-			if m.configMode == "" {
-				m.configMode = "projects"
-			}
-			if m.configMode == "browser" {
-				m.loadBrowserEntries()
-			}
-		}
-
-		m.state.SetCurrentView(m.currentView)
-		return m.sendEvent(core.NavigateEvent(m.currentView))
+		return m.selectViewByType(views[index].vtype)
 	}
 	return nil
+}
+
+// selectViewByType changes the current view by type
+func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
+	// Find index in sidebar
+	views := m.getSidebarViews()
+	index := -1
+	for i, v := range views {
+		if v.vtype == viewType {
+			index = i
+			break
+		}
+	}
+
+	if index < 0 {
+		return nil // View not available
+	}
+
+	// Save current view state before switching
+	m.saveViewState()
+
+	// Switch view
+	m.sidebarIndex = index
+	m.currentView = viewType
+
+	// Restore saved state for new view
+	m.restoreViewState(viewType)
+
+	// Initialize Config view
+	if m.currentView == core.VMConfig {
+		if m.configMode == "" {
+			m.configMode = "projects"
+		}
+		if m.configMode == "browser" {
+			m.loadBrowserEntries()
+		}
+	}
+
+	// Initialize Claude view
+	if m.currentView == core.VMClaude {
+		if m.claudeMode == "" {
+			m.claudeMode = ClaudeModeSession
+		}
+	}
+
+	m.state.SetCurrentView(m.currentView)
+	return m.sendEvent(core.NavigateEvent(m.currentView))
 }
 
 // handleEnter handles the Enter key based on focus
@@ -873,6 +931,11 @@ func (m *Model) handleEnter() tea.Cmd {
 					m.loadBrowserEntries()
 				}
 			}
+		case core.VMClaude:
+			// Claude view - depends on current tab
+			if m.claudeMode == ClaudeModeSession {
+				return m.openClaudeSession()
+			}
 		}
 	case FocusDetail:
 		// Detail panel Enter actions
@@ -893,19 +956,25 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	// These ALWAYS navigate to views - no exceptions
 	switch key {
 	case "D":
-		return m.selectView(0) // Dashboard
+		return m.selectViewByType(core.VMDashboard)
 	case "P":
-		return m.selectView(1) // Projects
+		return m.selectViewByType(core.VMProjects)
 	case "B":
-		return m.selectView(2) // Build
+		return m.selectViewByType(core.VMBuild)
 	case "O":
-		return m.selectView(3) // PrOcesses
+		return m.selectViewByType(core.VMProcesses)
 	case "L":
-		return m.selectView(4) // Logs
+		return m.selectViewByType(core.VMLogs)
 	case "G":
-		return m.selectView(5) // Git
+		return m.selectViewByType(core.VMGit)
 	case "C":
-		return m.selectView(6) // Config
+		return m.selectViewByType(core.VMConfig)
+	case "A":
+		// AI/Claude view (only if installed)
+		if m.state.Claude != nil && m.state.Claude.IsInstalled {
+			return m.selectViewByType(core.VMClaude)
+		}
+		return nil
 	}
 
 	// Projects/Processes view action keys (lowercase)
@@ -936,6 +1005,16 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			return m.pauseResumeSelected()
 		case "l":
 			return m.viewLogsForSelected()
+		case "a":
+			// Open Claude with selected project filter
+			if m.state.Claude != nil && m.state.Claude.IsInstalled {
+				projectID := m.getSelectedProjectID()
+				if projectID != "" {
+					m.claudeFilterProject = projectID
+				}
+				return m.selectViewByType(core.VMClaude)
+			}
+			return nil
 		}
 	}
 
@@ -1101,6 +1180,98 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
+	// Claude view specific keys
+	if m.currentView == core.VMClaude {
+		switch key {
+		case "1":
+			m.claudeMode = ClaudeModeSession
+			m.focusArea = FocusMain
+			m.mainIndex = 0
+			return nil
+		case "2":
+			m.claudeMode = ClaudeModeChat
+			m.focusArea = FocusMain
+			return nil
+		case "3":
+			m.claudeMode = ClaudeModeSettings
+			m.focusArea = FocusMain
+			m.mainIndex = 0
+			return nil
+		case "]", "shift+right":
+			// Cycle tabs forward
+			switch m.claudeMode {
+			case ClaudeModeSession:
+				m.claudeMode = ClaudeModeChat
+			case ClaudeModeChat:
+				m.claudeMode = ClaudeModeSettings
+			case ClaudeModeSettings:
+				m.claudeMode = ClaudeModeSession
+			}
+			m.focusArea = FocusMain
+			return nil
+		case "[", "shift+left":
+			// Cycle tabs backward
+			switch m.claudeMode {
+			case ClaudeModeSession:
+				m.claudeMode = ClaudeModeSettings
+			case ClaudeModeChat:
+				m.claudeMode = ClaudeModeSession
+			case ClaudeModeSettings:
+				m.claudeMode = ClaudeModeChat
+			}
+			m.focusArea = FocusMain
+			return nil
+		case "n":
+			// New session (in sessions mode)
+			if m.claudeMode == ClaudeModeSession {
+				return m.createClaudeSession()
+			}
+			return nil
+		case "x":
+			// Delete session (in sessions mode)
+			if m.claudeMode == ClaudeModeSession && m.claudeActiveSession != "" {
+				m.dialogType = "delete_claude_session"
+				m.dialogMessage = "Delete this Claude session?"
+				m.showDialog = true
+			}
+			return nil
+		case "r":
+			// Rename session (in sessions mode)
+			if m.claudeMode == ClaudeModeSession && m.claudeActiveSession != "" {
+				m.claudeRenameActive = true
+				m.claudeRenameText = ""
+			}
+			return nil
+		case "i":
+			// Start input mode (in chat mode)
+			if m.claudeMode == ClaudeModeChat {
+				m.claudeInputActive = true
+			}
+			return nil
+		case "esc":
+			// Exit input mode or go back
+			if m.claudeInputActive {
+				m.claudeInputActive = false
+				return nil
+			}
+			if m.claudeRenameActive {
+				m.claudeRenameActive = false
+				m.claudeRenameText = ""
+				return nil
+			}
+			// Go back to sessions from chat
+			if m.claudeMode == ClaudeModeChat {
+				m.claudeMode = ClaudeModeSession
+				return nil
+			}
+			return nil
+		case "c":
+			// Clear filter
+			m.claudeFilterProject = ""
+			return nil
+		}
+	}
+
 	// Global action keys (F-keys and Ctrl shortcuts)
 	switch key {
 	case "f5":
@@ -1109,6 +1280,109 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		return m.buildAll()
 	case "ctrl+r":
 		return m.restartSelected()
+	}
+	return nil
+}
+
+// createClaudeSession creates a new Claude session for the current/selected project
+func (m *Model) createClaudeSession() tea.Cmd {
+	projectID := m.claudeFilterProject
+	if projectID == "" {
+		projectID = m.getSelectedProjectID()
+	}
+	if projectID == "" {
+		m.lastError = "No project selected"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+	return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(projectID))
+}
+
+// openClaudeSession opens the selected session in chat mode
+func (m *Model) openClaudeSession() tea.Cmd {
+	if m.state.Claude == nil || len(m.state.Claude.Sessions) == 0 {
+		return nil
+	}
+	if m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
+		sess := m.state.Claude.Sessions[m.mainIndex]
+		m.claudeActiveSession = sess.ID
+		m.claudeMode = ClaudeModeChat
+		return m.sendEvent(core.NewEvent(core.EventClaudeSelectSession).WithValue(sess.ID))
+	}
+	return nil
+}
+
+// handleClaudeInput handles text input in Claude chat mode
+func (m *Model) handleClaudeInput(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.claudeInputActive = false
+		m.claudeInputText = ""
+		return nil
+	case tea.KeyEnter:
+		if m.claudeInputText == "" {
+			return nil
+		}
+		// Send message
+		message := m.claudeInputText
+		m.claudeInputText = ""
+		m.claudeInputActive = false
+		return m.sendEvent(core.NewEvent(core.EventClaudeSendMessage).
+			WithData("session_id", m.claudeActiveSession).
+			WithData("message", message))
+	case tea.KeyBackspace:
+		if len(m.claudeInputText) > 0 {
+			m.claudeInputText = m.claudeInputText[:len(m.claudeInputText)-1]
+		}
+		return nil
+	case tea.KeySpace:
+		m.claudeInputText += " "
+		return nil
+	case tea.KeyRunes:
+		m.claudeInputText += string(msg.Runes)
+		return nil
+	}
+	return nil
+}
+
+// handleClaudeRenameInput handles text input for renaming Claude sessions
+func (m *Model) handleClaudeRenameInput(msg tea.KeyMsg) tea.Cmd {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.claudeRenameActive = false
+		m.claudeRenameText = ""
+		return nil
+	case tea.KeyEnter:
+		if m.claudeRenameText == "" {
+			m.claudeRenameActive = false
+			return nil
+		}
+		// Rename session
+		newName := m.claudeRenameText
+		m.claudeRenameText = ""
+		m.claudeRenameActive = false
+		// Get selected session ID
+		var sessionID string
+		if m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
+			sessionID = m.state.Claude.Sessions[m.mainIndex].ID
+		}
+		if sessionID == "" {
+			return nil
+		}
+		return m.sendEvent(core.NewEvent(core.EventClaudeRenameSession).
+			WithData("session_id", sessionID).
+			WithData("new_name", newName))
+	case tea.KeyBackspace:
+		if len(m.claudeRenameText) > 0 {
+			m.claudeRenameText = m.claudeRenameText[:len(m.claudeRenameText)-1]
+		}
+		return nil
+	case tea.KeySpace:
+		m.claudeRenameText += " "
+		return nil
+	case tea.KeyRunes:
+		m.claudeRenameText += string(msg.Runes)
+		return nil
 	}
 	return nil
 }
@@ -1158,6 +1432,24 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 				}
 			}
 			m.pendingRemovePath = ""
+		}
+		return nil
+	case "delete_claude_session":
+		// Delete the selected Claude session
+		if m.state.Claude != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Claude.Sessions) {
+			sessionID := m.state.Claude.Sessions[m.mainIndex].ID
+			// Reset active session if deleting it
+			if m.claudeActiveSession == sessionID {
+				m.claudeActiveSession = ""
+			}
+			// Adjust index if needed
+			if m.mainIndex >= len(m.state.Claude.Sessions)-1 {
+				m.mainIndex = len(m.state.Claude.Sessions) - 2
+				if m.mainIndex < 0 {
+					m.mainIndex = 0
+				}
+			}
+			return m.sendEvent(core.NewEvent(core.EventClaudeDeleteSession).WithValue(sessionID))
 		}
 		return nil
 	}
@@ -1528,6 +1820,25 @@ func (m *Model) updateItemCounts() {
 		case "browser":
 			m.maxMainItems = len(m.browserEntries)
 		case "settings":
+			m.maxMainItems = 0 // No navigation in settings
+		}
+	case core.VMClaude:
+		// Claude view - count depends on current tab
+		switch m.claudeMode {
+		case ClaudeModeSession:
+			if m.state.Claude != nil {
+				// Count filtered sessions
+				count := 0
+				for _, sess := range m.state.Claude.Sessions {
+					if m.claudeFilterProject == "" || sess.ProjectID == m.claudeFilterProject {
+						count++
+					}
+				}
+				m.maxMainItems = count
+			}
+		case ClaudeModeChat:
+			m.maxMainItems = 0 // No list navigation in chat
+		case ClaudeModeSettings:
 			m.maxMainItems = 0 // No navigation in settings
 		}
 	}
