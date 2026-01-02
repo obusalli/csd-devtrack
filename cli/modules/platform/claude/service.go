@@ -11,16 +11,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
-// generateID generates a unique ID for sessions
+// generateID generates a unique ID for messages
 func generateID() string {
 	b := make([]byte, 8)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// claudeProjectsDir returns the path to Claude CLI projects directory
+func claudeProjectsDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "projects")
+}
+
+// workDirToClaudeProject converts a work directory to Claude project folder name
+// e.g., /data/devel/infra/csd-devtrack -> -data-devel-infra-csd-devtrack
+func workDirToClaudeProject(workDir string) string {
+	return strings.ReplaceAll(workDir, "/", "-")
+}
+
+// isValidUUID checks if a string is a valid UUID
+func isValidUUID(s string) bool {
+	uuidRegex := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	return uuidRegex.MatchString(s)
 }
 
 // persistentProcess holds a running Claude process for a session
@@ -115,61 +134,226 @@ func (s *Service) RefreshInstallStatus() bool {
 	return s.IsInstalled()
 }
 
-// sessionsFilePath returns the path to the sessions JSON file
-func (s *Service) sessionsFilePath() string {
-	return filepath.Join(s.dataDir, "claude-sessions.json")
-}
-
-// loadSessions loads sessions from disk
+// loadSessions loads sessions from Claude CLI's ~/.claude/projects/ directory
 func (s *Service) loadSessions() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.sessionsFilePath())
+	projectsDir := claudeProjectsDir()
+
+	// Read all project directories
+	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
-		return // File doesn't exist yet
+		return // No Claude projects yet
 	}
 
-	var sessions []*Session
-	if err := json.Unmarshal(data, &sessions); err != nil {
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		projectPath := filepath.Join(projectsDir, entry.Name())
+		s.loadProjectSessions(projectPath, entry.Name())
+	}
+}
+
+// loadProjectSessions loads sessions from a specific Claude project directory
+func (s *Service) loadProjectSessions(projectPath, projectName string) {
+	entries, err := os.ReadDir(projectPath)
+	if err != nil {
 		return
 	}
 
-	for _, sess := range sessions {
-		// Reset running sessions to idle on load
-		if sess.State == SessionRunning {
-			sess.State = SessionIdle
+	// Convert project folder name back to workdir
+	// e.g., -data-devel-infra-csd-devtrack -> /data/devel/infra/csd-devtrack
+	workDir := strings.ReplaceAll(projectName, "-", "/")
+	if !strings.HasPrefix(workDir, "/") {
+		workDir = "/" + workDir[1:] // Fix double slash at start
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
 		}
-		s.sessions[sess.ID] = sess
+
+		// Skip agent sessions (they have different format)
+		if strings.HasPrefix(entry.Name(), "agent-") {
+			continue
+		}
+
+		sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
+
+		// Only load UUID sessions (not agent IDs)
+		if !isValidUUID(sessionID) {
+			continue
+		}
+
+		sessionFile := filepath.Join(projectPath, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		// Skip empty sessions
+		if info.Size() == 0 {
+			continue
+		}
+
+		// Load session metadata from JSONL
+		session := s.parseSessionFile(sessionID, sessionFile, workDir)
+		if session != nil {
+			s.sessions[sessionID] = session
+		}
 	}
 }
 
-// saveSessions persists sessions to disk
-func (s *Service) saveSessions() error {
-	s.mu.RLock()
-	sessions := make([]*Session, 0, len(s.sessions))
-	for _, sess := range s.sessions {
-		sessions = append(sessions, sess)
-	}
-	s.mu.RUnlock()
-
-	data, err := json.MarshalIndent(sessions, "", "  ")
+// parseSessionFile reads a Claude CLI JSONL session file and extracts metadata
+func (s *Service) parseSessionFile(sessionID, filePath, workDir string) *Session {
+	file, err := os.Open(filePath)
 	if err != nil {
-		return err
+		return nil
+	}
+	defer file.Close()
+
+	session := &Session{
+		ID:            sessionID,
+		WorkDir:       workDir,
+		State:         SessionIdle,
+		Messages:      make([]Message, 0),
+		IsRealSession: true,
+		SessionFile:   filePath,
 	}
 
-	// Ensure directory exists
-	if err := os.MkdirAll(s.dataDir, 0755); err != nil {
-		return err
+	// Extract project info from workDir
+	parts := strings.Split(workDir, "/")
+	if len(parts) > 0 {
+		session.ProjectName = parts[len(parts)-1]
+		session.ProjectID = session.ProjectName // Use folder name as project ID
 	}
 
-	return os.WriteFile(s.sessionsFilePath(), data, 0644)
+	scanner := bufio.NewScanner(file)
+	// Increase buffer size for large lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	var firstTimestamp, lastTimestamp time.Time
+	var sessionName string
+	messageCount := 0
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var entry map[string]interface{}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+
+		// Get session name from slug
+		if slug, ok := entry["slug"].(string); ok && sessionName == "" {
+			sessionName = slug
+		}
+
+		// Get timestamp
+		if ts, ok := entry["timestamp"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				if firstTimestamp.IsZero() {
+					firstTimestamp = t
+				}
+				lastTimestamp = t
+			}
+		}
+
+		// Count messages (user and assistant types)
+		if entryType, ok := entry["type"].(string); ok {
+			if entryType == "user" || entryType == "assistant" {
+				messageCount++
+
+				// Extract message content for display
+				if msg, ok := entry["message"].(map[string]interface{}); ok {
+					role := ""
+					if r, ok := msg["role"].(string); ok {
+						role = r
+					}
+
+					content := ""
+					if c, ok := msg["content"].([]interface{}); ok {
+						for _, item := range c {
+							if textItem, ok := item.(map[string]interface{}); ok {
+								if textItem["type"] == "text" {
+									if text, ok := textItem["text"].(string); ok {
+										content = text
+										break
+									}
+								}
+							}
+						}
+					}
+
+					if role != "" && content != "" {
+						session.Messages = append(session.Messages, Message{
+							ID:        fmt.Sprintf("%s-%d", sessionID, len(session.Messages)),
+							Role:      role,
+							Content:   content,
+							Timestamp: lastTimestamp,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// Set session name
+	if sessionName != "" {
+		session.Name = sessionName
+	} else {
+		session.Name = sessionID[:8] // Use first 8 chars of UUID
+	}
+
+	// Set timestamps
+	if !firstTimestamp.IsZero() {
+		session.CreatedAt = firstTimestamp
+	} else {
+		// Use file mod time as fallback
+		if info, err := os.Stat(filePath); err == nil {
+			session.CreatedAt = info.ModTime()
+		}
+	}
+	if !lastTimestamp.IsZero() {
+		session.LastActiveAt = lastTimestamp
+	} else {
+		session.LastActiveAt = session.CreatedAt
+	}
+
+	return session
+}
+
+// RefreshSessions reloads sessions from Claude CLI directory
+func (s *Service) RefreshSessions() {
+	s.mu.Lock()
+	// Clear existing sessions
+	s.sessions = make(map[string]*Session)
+	s.mu.Unlock()
+
+	s.loadSessions()
+}
+
+// saveSessions is now a no-op since Claude CLI manages its own sessions
+func (s *Service) saveSessions() error {
+	// Sessions are managed by Claude CLI, nothing to save
+	return nil
 }
 
 // CreateSession creates a new Claude session for a project
+// Uses a real UUID that will be used with Claude CLI --session-id
 func (s *Service) CreateSession(projectID, projectName, workDir, name string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Generate a real UUID for Claude CLI compatibility
+	sessionID := GenerateSessionID()
 
 	// Generate session name with project prefix if not provided
 	if name == "" {
@@ -188,20 +372,25 @@ func (s *Service) CreateSession(projectID, projectName, workDir, name string) (*
 		}
 	}
 
+	// Build the expected session file path
+	claudeProjectName := workDirToClaudeProject(workDir)
+	sessionFile := filepath.Join(claudeProjectsDir(), claudeProjectName, sessionID+".jsonl")
+
 	session := &Session{
-		ID:           generateID(),
-		Name:         name,
-		ProjectID:    projectID,
-		ProjectName:  projectName,
-		WorkDir:      workDir,
-		State:        SessionIdle,
-		Messages:     make([]Message, 0),
-		CreatedAt:    time.Now(),
-		LastActiveAt: time.Now(),
+		ID:            sessionID,
+		Name:          name,
+		ProjectID:     projectID,
+		ProjectName:   projectName,
+		WorkDir:       workDir,
+		State:         SessionIdle,
+		Messages:      make([]Message, 0),
+		CreatedAt:     time.Now(),
+		LastActiveAt:  time.Now(),
+		IsRealSession: true,
+		SessionFile:   sessionFile,
 	}
 
 	s.sessions[session.ID] = session
-	go s.saveSessions()
 
 	return session, nil
 }
@@ -250,9 +439,19 @@ func (s *Service) StartPersistentProcess(sessionID string) error {
 		"--verbose",
 	}
 
-	// Use --continue if we have session history
-	if len(sess.Messages) > 0 {
-		args = append(args, "--continue")
+	// Use real Claude CLI session ID for persistence
+	// If session file exists, use --resume to continue; otherwise --session-id to create
+	if sess.IsRealSession && sess.SessionFile != "" {
+		if _, err := os.Stat(sess.SessionFile); err == nil {
+			// Session file exists, resume it
+			args = append(args, "--resume", sessionID)
+		} else {
+			// New session, use --session-id to create with specific UUID
+			args = append(args, "--session-id", sessionID)
+		}
+	} else if isValidUUID(sessionID) {
+		// Use session ID for new sessions
+		args = append(args, "--session-id", sessionID)
 	}
 
 	cmd := exec.CommandContext(ctx, s.claudePath, args...)
@@ -897,9 +1096,17 @@ func (s *Service) SendMessage(ctx context.Context, sessionID, message string, ou
 		"--output-format", "text",
 	}
 
-	// If session has history, use --continue to maintain context
-	if len(sess.Messages) > 1 {
-		args = append(args, "--continue")
+	// Use real Claude CLI session ID for persistence
+	if sess.IsRealSession && sess.SessionFile != "" {
+		if _, err := os.Stat(sess.SessionFile); err == nil {
+			// Session file exists, resume it
+			args = append(args, "--resume", sessionID)
+		} else {
+			// New session, use --session-id
+			args = append(args, "--session-id", sessionID)
+		}
+	} else if isValidUUID(sessionID) {
+		args = append(args, "--session-id", sessionID)
 	}
 
 	cmd := exec.CommandContext(ctx, claudePath, args...)

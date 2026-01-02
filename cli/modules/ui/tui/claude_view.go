@@ -176,138 +176,122 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 		Foreground(ColorBorder).
 		Render(strings.Repeat("─", width-4)))
 
-	// Build tree: group sessions by project
-	type projectNode struct {
-		ID       string
-		Name     string
-		Sessions []core.ClaudeSessionVM
-	}
-
-	projectMap := make(map[string]*projectNode)
-	var projectOrder []string
-
-	// First, add all projects (even those without sessions)
-	if m.state.Projects != nil {
-		for _, proj := range m.state.Projects.Projects {
-			projectMap[proj.ID] = &projectNode{
-				ID:       proj.ID,
-				Name:     proj.Name,
-				Sessions: []core.ClaudeSessionVM{},
-			}
-			projectOrder = append(projectOrder, proj.ID)
-		}
-	}
-
-	// Then add sessions to their projects
+	// Build session lookup map for rendering details
+	sessionMap := make(map[string]core.ClaudeSessionVM)
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
-			if node, ok := projectMap[sess.ProjectID]; ok {
-				node.Sessions = append(node.Sessions, sess)
-			} else {
-				// Project not in list, add it
-				projectMap[sess.ProjectID] = &projectNode{
-					ID:       sess.ProjectID,
-					Name:     sess.ProjectName,
-					Sessions: []core.ClaudeSessionVM{sess},
-				}
-				projectOrder = append(projectOrder, sess.ProjectID)
-			}
+			sessionMap[sess.ID] = sess
 		}
 	}
 
-	if len(projectOrder) == 0 {
+	// Build project lookup map for names
+	projectNames := make(map[string]string)
+	projectSessionCount := make(map[string]int)
+	if m.state.Projects != nil {
+		for _, proj := range m.state.Projects.Projects {
+			projectNames[proj.ID] = proj.Name
+		}
+	}
+	// Count sessions per project
+	for _, item := range m.claudeTreeItems {
+		if !item.IsProject {
+			projectSessionCount[item.ProjectID]++
+		}
+	}
+
+	if len(m.claudeTreeItems) == 0 {
 		emptyStyle := lipgloss.NewStyle().Foreground(ColorMuted)
 		items = append(items, emptyStyle.Render("No projects"))
-		m.claudeTreeItems = nil
-		m.claudeTreeItemCount = 0
 	} else {
-		// Build flattened tree for navigation
-		m.claudeTreeItems = nil
+		// Render using pre-built tree items
+		isFocused := m.focusArea == FocusDetail
 
-		for _, projID := range projectOrder {
-			node := projectMap[projID]
+		for idx, item := range m.claudeTreeItems {
+			isNavigationCursor := idx == m.mainIndex && isFocused
 
-			// Add project to tree
-			m.claudeTreeItems = append(m.claudeTreeItems, claudeTreeItem{
-				IsProject: true,
-				ProjectID: node.ID,
-			})
-			treeIndex := len(m.claudeTreeItems) - 1
+			if item.IsProject {
+				// Project line
+				projName := projectNames[item.ProjectID]
+				if projName == "" {
+					projName = item.ProjectID
+				}
 
-			// Project line
-			isProjectSelected := treeIndex == m.mainIndex && m.focusArea == FocusDetail
-			projIcon := "📁"
-			if len(node.Sessions) > 0 {
-				projIcon = "📂"
-			}
+				sessCount := projectSessionCount[item.ProjectID]
+				projIcon := "📁"
+				if sessCount > 0 {
+					projIcon = "📂"
+				}
 
-			projLine := fmt.Sprintf("%s %s", projIcon, truncate(node.Name, width-10))
-			if len(node.Sessions) > 0 {
-				projLine += lipgloss.NewStyle().Foreground(ColorMuted).Render(fmt.Sprintf(" (%d)", len(node.Sessions)))
-			}
+				projLine := fmt.Sprintf("%s %s", projIcon, truncate(projName, width-10))
+				if sessCount > 0 {
+					projLine += lipgloss.NewStyle().Foreground(ColorMuted).Render(fmt.Sprintf(" (%d)", sessCount))
+				}
 
-			var projStyle lipgloss.Style
-			if isProjectSelected {
-				projStyle = lipgloss.NewStyle().
-					Bold(true).
-					Foreground(ColorSecondary).
-					Background(ColorBgAlt).
-					Width(width - 4)
+				var projStyle lipgloss.Style
+				if isNavigationCursor {
+					projStyle = lipgloss.NewStyle().
+						Bold(true).
+						Foreground(ColorSecondary).
+						Background(ColorBgAlt).
+						Width(width - 4)
+				} else {
+					projStyle = lipgloss.NewStyle().
+						Foreground(ColorSecondary).
+						Width(width - 4)
+				}
+				items = append(items, projStyle.Render(projLine))
 			} else {
-				projStyle = lipgloss.NewStyle().
-					Foreground(ColorSecondary).
-					Width(width - 4)
-			}
-			items = append(items, projStyle.Render(projLine))
-
-			// Session lines (indented)
-			for _, sess := range node.Sessions {
-				// Add session to tree
-				m.claudeTreeItems = append(m.claudeTreeItems, claudeTreeItem{
-					IsProject: false,
-					ProjectID: sess.ProjectID,
-					SessionID: sess.ID,
-				})
-				sessTreeIndex := len(m.claudeTreeItems) - 1
-
-				isActive := sess.ID == m.claudeActiveSession
-				isSelected := sessTreeIndex == m.mainIndex && m.focusArea == FocusDetail
+				// Session line
+				sess, hasDetails := sessionMap[item.SessionID]
+				isActiveSession := item.SessionID == m.claudeActiveSession
 
 				// State indicator
 				stateIcon := "○"
 				stateColor := ColorMuted
-				switch sess.State {
-				case "running":
-					stateIcon = "●"
-					stateColor = ColorSuccess
-				case "waiting":
-					stateIcon = "◐"
-					stateColor = ColorWarning
-				case "error":
-					stateIcon = "✗"
-					stateColor = ColorError
+				if hasDetails {
+					switch sess.State {
+					case "running":
+						stateIcon = "●"
+						stateColor = ColorSuccess
+					case "waiting":
+						stateIcon = "◐"
+						stateColor = ColorWarning
+					case "error":
+						stateIcon = "✗"
+						stateColor = ColorError
+					}
 				}
 
 				// Persistent indicator
 				persistIcon := ""
-				if sess.IsPersistent {
+				if hasDetails && sess.IsPersistent {
 					persistIcon = "⚡"
 				}
 
-				// Active indicator
+				// Navigation cursor prefix (like menu)
+				cursorPrefix := "  "
+				if isNavigationCursor {
+					cursorPrefix = "> "
+				}
+
+				// Active session indicator
 				activePrefix := " "
-				if isActive {
+				if isActiveSession {
 					activePrefix = "▶"
 				}
 
-				// Session name (remove project prefix for cleaner display)
-				sessName := sess.Name
-				if idx := strings.Index(sessName, "-"); idx > 0 && strings.HasPrefix(sessName, sess.ProjectID) {
-					sessName = sessName[idx+1:]
+				// Session name
+				sessName := item.SessionID
+				if hasDetails {
+					sessName = sess.Name
+					if idx := strings.Index(sessName, "-"); idx > 0 && strings.HasPrefix(sessName, sess.ProjectID) {
+						sessName = sessName[idx+1:]
+					}
 				}
 				sessName = truncate(sessName, width-14)
 
-				line := fmt.Sprintf("  %s%s%s %s",
+				line := fmt.Sprintf("%s%s%s%s %s",
+					cursorPrefix,
 					activePrefix,
 					persistIcon,
 					lipgloss.NewStyle().Foreground(stateColor).Render(stateIcon),
@@ -315,18 +299,27 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 				)
 
 				var lineStyle lipgloss.Style
-				if isActive {
+				if isNavigationCursor && isActiveSession {
+					// Both cursor and active
 					lineStyle = lipgloss.NewStyle().
 						Bold(true).
 						Foreground(ColorPrimary).
 						Background(ColorBgAlt).
 						Width(width - 4)
-				} else if isSelected {
+				} else if isNavigationCursor {
+					// Just cursor
 					lineStyle = lipgloss.NewStyle().
 						Foreground(ColorText).
 						Background(ColorBgAlt).
 						Width(width - 4)
+				} else if isActiveSession {
+					// Just active (no cursor)
+					lineStyle = lipgloss.NewStyle().
+						Bold(true).
+						Foreground(ColorPrimary).
+						Width(width - 4)
 				} else {
+					// Normal
 					lineStyle = lipgloss.NewStyle().
 						Foreground(ColorText).
 						Width(width - 4)
@@ -335,9 +328,6 @@ func (m *Model) renderSessionsSidePanel(width, height int) string {
 				items = append(items, lineStyle.Render(line))
 			}
 		}
-
-		// Store total tree items for navigation
-		m.claudeTreeItemCount = len(m.claudeTreeItems)
 	}
 
 	// Spacer

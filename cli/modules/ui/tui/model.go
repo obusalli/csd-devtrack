@@ -2068,12 +2068,79 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 	// Update max items counts
 	m.updateItemCounts()
 
+	// Update Claude tree for navigation (must persist across Update calls)
+	m.updateClaudeTree()
+
 	// Auto-exit input mode when Claude is waiting for interactive response
 	// This allows y/n/1-9 keys to work for permission/question/plan dialogs
 	if m.state.Claude != nil && m.state.Claude.WaitingForInput && m.claudeInputActive {
 		m.claudeInputActive = false
 		m.claudeTextInput.Blur()
 	}
+}
+
+// updateClaudeTree builds the flattened tree structure for Claude sessions navigation
+func (m *Model) updateClaudeTree() {
+	// Build tree: group sessions by project
+	type projectNode struct {
+		ID       string
+		Name     string
+		Sessions []core.ClaudeSessionVM
+	}
+
+	projectMap := make(map[string]*projectNode)
+	var projectOrder []string
+
+	// First, add all projects (even those without sessions)
+	if m.state.Projects != nil {
+		for _, proj := range m.state.Projects.Projects {
+			projectMap[proj.ID] = &projectNode{
+				ID:       proj.ID,
+				Name:     proj.Name,
+				Sessions: []core.ClaudeSessionVM{},
+			}
+			projectOrder = append(projectOrder, proj.ID)
+		}
+	}
+
+	// Then add sessions to their projects
+	if m.state.Claude != nil {
+		for _, sess := range m.state.Claude.Sessions {
+			if node, ok := projectMap[sess.ProjectID]; ok {
+				node.Sessions = append(node.Sessions, sess)
+			} else {
+				// Project not in list, add it
+				projectMap[sess.ProjectID] = &projectNode{
+					ID:       sess.ProjectID,
+					Name:     sess.ProjectName,
+					Sessions: []core.ClaudeSessionVM{sess},
+				}
+				projectOrder = append(projectOrder, sess.ProjectID)
+			}
+		}
+	}
+
+	// Build flattened tree for navigation
+	m.claudeTreeItems = nil
+	for _, projID := range projectOrder {
+		node := projectMap[projID]
+
+		// Add project to tree
+		m.claudeTreeItems = append(m.claudeTreeItems, claudeTreeItem{
+			IsProject: true,
+			ProjectID: node.ID,
+		})
+
+		// Add sessions under project
+		for _, sess := range node.Sessions {
+			m.claudeTreeItems = append(m.claudeTreeItems, claudeTreeItem{
+				IsProject: false,
+				ProjectID: sess.ProjectID,
+				SessionID: sess.ID,
+			})
+		}
+	}
+	m.claudeTreeItemCount = len(m.claudeTreeItems)
 }
 
 // updateItemCounts updates the max item counts for navigation

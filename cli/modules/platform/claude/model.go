@@ -2,6 +2,8 @@ package claude
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // SessionState represents the state of a Claude session
@@ -24,20 +26,30 @@ type Message struct {
 }
 
 // Session represents a Claude Code session
+// Uses real Claude CLI session IDs (UUIDs) for compatibility
 type Session struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`          // User-friendly name
-	ProjectID    string       `json:"project_id"`    // Associated project
-	ProjectName  string       `json:"project_name"`  // For display
-	WorkDir      string       `json:"work_dir"`      // Working directory for Claude
+	ID           string       `json:"id"`             // UUID matching Claude CLI session
+	Name         string       `json:"name"`           // User-friendly name (slug from Claude)
+	ProjectID    string       `json:"project_id"`     // Associated project in csd-devtrack
+	ProjectName  string       `json:"project_name"`   // For display
+	WorkDir      string       `json:"work_dir"`       // Working directory for Claude
 	State        SessionState `json:"state"`
-	Messages     []Message    `json:"messages"`
+	Messages     []Message    `json:"messages"`       // Loaded from Claude CLI JSONL
 	CreatedAt    time.Time    `json:"created_at"`
 	LastActiveAt time.Time    `json:"last_active_at"`
 	Error        string       `json:"error,omitempty"`
 
 	// Interactive state
 	Interactive *InteractiveState `json:"interactive,omitempty"`
+
+	// Real Claude CLI session info
+	IsRealSession bool   `json:"is_real_session"` // True if from ~/.claude/projects/
+	SessionFile   string `json:"session_file"`    // Path to JSONL file
+}
+
+// GenerateSessionID generates a new UUID for a Claude session
+func GenerateSessionID() string {
+	return uuid.New().String()
 }
 
 // SessionSummary is a lightweight version for listing
