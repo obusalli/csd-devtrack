@@ -869,12 +869,12 @@ func (m *Model) renderChatMessage(msg core.ClaudeMessageVM, width int) []string 
 		// Handle diff markers {{-...}} and {{+...}}
 		contentLines := strings.Split(msg.Content, "\n")
 		for _, line := range contentLines {
-			styledLine := m.styleDiffLine(line, contentStyle)
+			styledLine := m.styleDiffLine(line, contentStyle, contentWidth)
 			// Wrap long lines
 			if len(line) > contentWidth {
 				wrapped := wrapText(line, contentWidth)
 				for _, wl := range wrapped {
-					lines = append(lines, indent+m.styleDiffLine(wl, contentStyle))
+					lines = append(lines, indent+m.styleDiffLine(wl, contentStyle, contentWidth))
 				}
 			} else {
 				lines = append(lines, indent+styledLine)
@@ -889,24 +889,26 @@ func (m *Model) renderChatMessage(msg core.ClaudeMessageVM, width int) []string 
 }
 
 // styleDiffLine applies colors to diff lines
-// Handles markers: {{-...}} for removed (red bg), {{+...}} for added (green bg)
+// Handles markers: {{-...}} for removed (red bg), {{+...}} for added (blue bg)
 // Also styles lines starting with ● for tool names
-func (m *Model) styleDiffLine(line string, defaultStyle lipgloss.Style) string {
+func (m *Model) styleDiffLine(line string, defaultStyle lipgloss.Style, lineWidth int) string {
 	// Check for diff markers
 	if strings.HasPrefix(line, "{{-") && strings.HasSuffix(line, "}}") {
-		// Removed line - red background
+		// Removed line - red background, full width
 		content := line[3 : len(line)-2]
 		return lipgloss.NewStyle().
 			Background(lipgloss.Color("#5c1a1a")).
 			Foreground(lipgloss.Color("#ff9999")).
+			Width(lineWidth).
 			Render(content)
 	}
 	if strings.HasPrefix(line, "{{+") && strings.HasSuffix(line, "}}") {
-		// Added line - green background
+		// Added line - blue background, full width
 		content := line[3 : len(line)-2]
 		return lipgloss.NewStyle().
-			Background(lipgloss.Color("#1a3d1a")).
-			Foreground(lipgloss.Color("#99ff99")).
+			Background(lipgloss.Color("#1a2d5c")).
+			Foreground(lipgloss.Color("#99ccff")).
+			Width(lineWidth).
 			Render(content)
 	}
 
