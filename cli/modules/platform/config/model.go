@@ -25,6 +25,28 @@ type BuildProfile struct {
 	Optimize    bool              `yaml:"optimize,omitempty" json:"optimize,omitempty"` // -O for production
 }
 
+// LoggerConfig represents logger configuration
+type LoggerConfig struct {
+	Level         string `yaml:"level" json:"level"`                   // debug, info, warn, error
+	FilePath      string `yaml:"file_path" json:"file_path"`           // Log file path (empty = no file)
+	MaxSizeMB     int    `yaml:"max_size_mb" json:"max_size_mb"`       // Max log file size before rotation
+	BufferSize    int    `yaml:"buffer_size" json:"buffer_size"`       // Log buffer size for TUI
+	CaptureStderr bool   `yaml:"capture_stderr" json:"capture_stderr"` // Capture stderr output
+	CaptureStdout bool   `yaml:"capture_stdout" json:"capture_stdout"` // Capture stdout output
+}
+
+// DefaultLoggerConfig returns default logger configuration
+func DefaultLoggerConfig() *LoggerConfig {
+	return &LoggerConfig{
+		Level:         "info",
+		FilePath:      "", // Will default to ~/.csd-devtrack/daemon.log
+		MaxSizeMB:     10,
+		BufferSize:    10000,
+		CaptureStderr: true,
+		CaptureStdout: false,
+	}
+}
+
 // Settings represents global application settings
 type Settings struct {
 	// Auto-detection
@@ -33,9 +55,12 @@ type Settings struct {
 	// Build settings
 	ParallelBuilds int `yaml:"parallel_builds" json:"parallel_builds"`
 
-	// Logging
-	LogBufferSize int    `yaml:"log_buffer_size" json:"log_buffer_size"`
-	LogLevel      string `yaml:"log_level" json:"log_level"`
+	// Logging (legacy fields for backwards compatibility)
+	LogBufferSize int    `yaml:"log_buffer_size,omitempty" json:"log_buffer_size,omitempty"`
+	LogLevel      string `yaml:"log_level,omitempty" json:"log_level,omitempty"`
+
+	// Logger configuration
+	Logger *LoggerConfig `yaml:"logger,omitempty" json:"logger,omitempty"`
 
 	// Web server
 	WebEnabled    bool `yaml:"web_enabled" json:"web_enabled"`
@@ -53,6 +78,22 @@ type Settings struct {
 	ShowTimestamps bool   `yaml:"show_timestamps" json:"show_timestamps"`
 }
 
+// GetLoggerConfig returns the logger config, applying defaults and legacy field migration
+func (s *Settings) GetLoggerConfig() *LoggerConfig {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	// Migrate legacy fields
+	cfg := DefaultLoggerConfig()
+	if s.LogLevel != "" {
+		cfg.Level = s.LogLevel
+	}
+	if s.LogBufferSize > 0 {
+		cfg.BufferSize = s.LogBufferSize
+	}
+	return cfg
+}
+
 // DefaultSettings returns default configuration settings
 func DefaultSettings() *Settings {
 	return &Settings{
@@ -62,9 +103,8 @@ func DefaultSettings() *Settings {
 		// Build settings
 		ParallelBuilds: 4,
 
-		// Logging
-		LogBufferSize: 10000,
-		LogLevel:      "info",
+		// Logger configuration
+		Logger: DefaultLoggerConfig(),
 
 		// Web server
 		WebEnabled:    true,

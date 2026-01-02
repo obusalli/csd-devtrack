@@ -10,6 +10,7 @@ import (
 
 	"csd-devtrack/cli/modules/core/projects"
 	"csd-devtrack/cli/modules/platform/config"
+	"csd-devtrack/cli/modules/platform/daemon"
 	"csd-devtrack/cli/modules/ui/core"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -140,6 +141,13 @@ type Model struct {
 	// Errors
 	lastError     string
 	lastErrorTime time.Time
+
+	// Daemon mode
+	detachable bool // If true, Ctrl+D detaches from TUI (daemon mode)
+	detached   bool // Set to true when user presses Ctrl+D
+
+	// State restoration callback (for daemon mode)
+	onStateRestore func()
 }
 
 // NewModel creates a new TUI model
@@ -343,6 +351,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.gitDiffContent = msg.lines
 		m.gitShowDiff = true
 		m.detailScrollOffset = 0
+
+	case tuiStateRestoreMsg:
+		m.ImportTUIState(msg.state)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -400,6 +411,14 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Quit
 	case key.Matches(msg, m.keys.Quit):
 		return tea.Quit
+
+	// Detach (Ctrl+D) - only in daemon mode
+	case key.Matches(msg, m.keys.Detach):
+		if m.detachable {
+			m.detached = true
+			return tea.Quit // Quit the TUI but leave daemon running
+		}
+		return nil // Ignore if not in daemon mode
 
 	// Cancel current build/process (Ctrl+C)
 	case key.Matches(msg, m.keys.Cancel):
@@ -1755,6 +1774,11 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// tuiStateRestoreMsg is sent when TUI state should be restored (reattach)
+type tuiStateRestoreMsg struct {
+	state *daemon.TUIState
+}
+
 // ============================================================================
 // File Browser functions for Config view
 // ============================================================================
@@ -1964,4 +1988,117 @@ func (m *Model) enterBrowserDirectory() {
 	m.browserPath = entry.Path
 	m.mainIndex = 0
 	m.loadBrowserEntries()
+}
+
+// ============================================================================
+// TUI State Export/Import for Daemon Mode
+// ============================================================================
+
+// ExportTUIState exports the current TUI state for daemon persistence
+func (m *Model) ExportTUIState() *daemon.TUIState {
+	return &daemon.TUIState{
+		// Current view
+		CurrentView: m.currentView,
+
+		// Focus state
+		FocusArea:    int(m.focusArea),
+		SidebarIndex: m.sidebarIndex,
+
+		// Selection state
+		MainIndex:   m.mainIndex,
+		DetailIndex: m.detailIndex,
+
+		// Scroll offsets
+		MainScrollOffset:   m.mainScrollOffset,
+		DetailScrollOffset: m.detailScrollOffset,
+
+		// Config view state
+		ConfigMode:  m.configMode,
+		BrowserPath: m.browserPath,
+
+		// Log view state
+		LogLevelFilter:  m.logLevelFilter,
+		LogSourceFilter: m.logSourceFilter,
+		LogTypeFilter:   m.logTypeFilter,
+		LogSearchText:   m.logSearchText,
+		LogScrollOffset: m.logScrollOffset,
+		LogAutoScroll:   m.logAutoScroll,
+
+		// Git view state
+		GitShowDiff: m.gitShowDiff,
+
+		// Build profile
+		BuildProfile: m.currentBuildProfile,
+	}
+}
+
+// ImportTUIState restores TUI state from daemon persistence
+func (m *Model) ImportTUIState(state *daemon.TUIState) {
+	if state == nil {
+		return
+	}
+
+	// Reset any modal states that could block input
+	m.showDialog = false
+	m.showHelp = false
+	m.filterActive = false
+	m.logSearchActive = false
+
+	// Restore current view
+	m.currentView = state.CurrentView
+	m.sidebarIndex = state.SidebarIndex
+
+	// Restore focus state
+	m.focusArea = FocusArea(state.FocusArea)
+
+	// Restore selection state
+	m.mainIndex = state.MainIndex
+	m.detailIndex = state.DetailIndex
+
+	// Restore scroll offsets
+	m.mainScrollOffset = state.MainScrollOffset
+	m.detailScrollOffset = state.DetailScrollOffset
+
+	// Restore Config view state
+	m.configMode = state.ConfigMode
+	if state.BrowserPath != "" {
+		m.browserPath = state.BrowserPath
+	}
+
+	// Restore Log view state
+	m.logLevelFilter = state.LogLevelFilter
+	m.logSourceFilter = state.LogSourceFilter
+	m.logTypeFilter = state.LogTypeFilter
+	m.logSearchText = state.LogSearchText
+	m.logScrollOffset = state.LogScrollOffset
+	m.logAutoScroll = state.LogAutoScroll
+
+	// Restore Git view state
+	m.gitShowDiff = state.GitShowDiff
+
+	// Restore Build profile
+	if state.BuildProfile != "" {
+		m.currentBuildProfile = state.BuildProfile
+	}
+
+	// Reload browser entries if in config browser mode
+	if m.currentView == core.VMConfig && m.configMode == "browser" {
+		m.loadBrowserEntries()
+	}
+
+	// Update state to match restored view
+	m.state.SetCurrentView(m.currentView)
+
+	// Recalculate item counts for the restored view
+	m.updateItemCounts()
+
+	// Call restore callback if set
+	if m.onStateRestore != nil {
+		m.onStateRestore()
+	}
+}
+
+// SetStateRestoreCallback sets a callback to be called after state is restored
+func (m *Model) SetStateRestoreCallback(callback func()) {
+	m.onStateRestore = callback
 }

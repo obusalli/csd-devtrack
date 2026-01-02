@@ -232,6 +232,13 @@ func (p *AppPresenter) Shutdown() error {
 	return nil
 }
 
+// GetState returns the full application state (for daemon sync)
+func (p *AppPresenter) GetState() *AppState {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state
+}
+
 // ============================================
 // Private handlers
 // ============================================

@@ -44,6 +44,7 @@ type KeyMap struct {
 	Quit   key.Binding
 	Filter key.Binding
 	Cancel key.Binding // Ctrl+C to cancel current build/process
+	Detach key.Binding // Ctrl+D to detach from TUI (daemon mode only)
 }
 
 // DefaultKeyMap returns the default key bindings
@@ -67,12 +68,12 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("→", "right"),
 		),
 		PageUp: key.NewBinding(
-			key.WithKeys("pgup", "ctrl+u"),
-			key.WithHelp("PgUp", "page up"),
+			key.WithKeys("pgup", "shift+up"),
+			key.WithHelp("S-↑", "page up"),
 		),
 		PageDown: key.NewBinding(
-			key.WithKeys("pgdown", "ctrl+d"),
-			key.WithHelp("PgDn", "page down"),
+			key.WithKeys("pgdown", "shift+down"),
+			key.WithHelp("S-↓", "page down"),
 		),
 		Home: key.NewBinding(
 			key.WithKeys("home"),
@@ -110,7 +111,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Refresh: key.NewBinding(
 			key.WithKeys("ctrl+r"),
-			key.WithHelp("C-r", "refresh"),
+			key.WithHelp("CTRL+r", "refresh"),
 		),
 
 		// Project actions
@@ -120,7 +121,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		BuildAll: key.NewBinding(
 			key.WithKeys("ctrl+b"),
-			key.WithHelp("C-b", "build all"),
+			key.WithHelp("CTRL+b", "build all"),
 		),
 		Run: key.NewBinding(
 			key.WithKeys("r"),
@@ -132,7 +133,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Restart: key.NewBinding(
 			key.WithKeys("ctrl+r"),
-			key.WithHelp("C-r", "restart"),
+			key.WithHelp("CTRL+r", "restart"),
 		),
 		Kill: key.NewBinding(
 			key.WithKeys("k"),
@@ -172,7 +173,11 @@ func DefaultKeyMap() KeyMap {
 		),
 		Cancel: key.NewBinding(
 			key.WithKeys("ctrl+c"),
-			key.WithHelp("C-c", "cancel build/process"),
+			key.WithHelp("CTRL+c", "cancel build/process"),
+		),
+		Detach: key.NewBinding(
+			key.WithKeys("ctrl+d"),
+			key.WithHelp("CTRL+d", "detach"),
 		),
 	}
 }

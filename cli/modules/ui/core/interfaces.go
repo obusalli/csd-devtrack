@@ -49,6 +49,9 @@ type Presenter interface {
 
 	// Shutdown cleans up resources
 	Shutdown() error
+
+	// GetState returns the full application state (for daemon sync)
+	GetState() *AppState
 }
 
 // ViewFactory creates views of different types

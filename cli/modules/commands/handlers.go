@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"csd-devtrack/cli/modules/core/builds"
 	"csd-devtrack/cli/modules/core/processes"
 	"csd-devtrack/cli/modules/core/projects"
 	"csd-devtrack/cli/modules/platform/builder"
+	"csd-devtrack/cli/modules/platform/daemon"
 	"csd-devtrack/cli/modules/platform/git"
 	"csd-devtrack/cli/modules/platform/server"
 	"csd-devtrack/cli/modules/platform/supervisor"
@@ -918,19 +922,58 @@ func configInitCommand(args []string) error {
 	return nil
 }
 
+// isTUICapable checks if we're running in a terminal that supports TUI
+// Shell mode (readline) works fine even with TERM=dumb, only TUI needs full terminal support
+func isTUICapable() bool {
+	// Check if stdin and stdout are terminals
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return false
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return false
+	}
+
+	// Check TERM environment variable - only dumb terminal blocks TUI
+	termEnv := os.Getenv("TERM")
+	if termEnv == "dumb" {
+		return false
+	}
+
+	return true
+}
+
 // uiCommand handles the 'ui' command
 func uiCommand(args []string) error {
 	if err := InitContext(); err != nil {
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
 
+	// Check if terminal supports TUI
+	if !isTUICapable() {
+		fmt.Printf("Terminal does not support TUI (TERM=%s)\n", os.Getenv("TERM"))
+		fmt.Println("Falling back to shell mode...")
+		return shellCommand(args)
+	}
+
+	ctx := context.Background()
+
+	// Check if we should run in daemon mode
+	if IsDaemonMode() {
+		return uiCommandWithDaemon(ctx)
+	}
+
+	// Direct mode (no daemon)
+	return uiCommandDirect(ctx)
+}
+
+// uiCommandDirect runs the TUI directly without daemon
+func uiCommandDirect(ctx context.Context) error {
 	appCtx := GetContext()
 
 	// Create the presenter with services
 	presenter := uicore.NewPresenter(appCtx.ProjectService, appCtx.Config)
 
 	// Initialize presenter
-	ctx := context.Background()
 	if err := presenter.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize presenter: %w", err)
 	}
@@ -944,6 +987,81 @@ func uiCommand(args []string) error {
 
 	// Run the TUI (blocking)
 	if err := tuiView.Run(ctx); err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	return nil
+}
+
+// uiCommandWithDaemon runs the TUI as a client connecting to daemon
+func uiCommandWithDaemon(ctx context.Context) error {
+	// Ensure daemon is running
+	started, err := daemon.EnsureDaemon()
+	if err != nil {
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+	if started {
+		fmt.Println("Daemon started in background")
+		// Give daemon a moment to fully initialize
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Connect to daemon
+	client := daemon.NewClient()
+	if err := client.Connect(); err != nil {
+		return fmt.Errorf("failed to connect to daemon: %w", err)
+	}
+
+	// Create client presenter
+	presenter := daemon.NewClientPresenter(client)
+	if err := presenter.Initialize(ctx); err != nil {
+		client.Disconnect()
+		return fmt.Errorf("failed to initialize presenter: %w", err)
+	}
+
+	// Create and run TUI view
+	tuiView := tui.NewTUIView()
+	tuiView.SetDetachable(true) // Enable Ctrl+D detach
+	if err := tuiView.Initialize(presenter); err != nil {
+		presenter.Disconnect()
+		return fmt.Errorf("failed to initialize TUI: %w", err)
+	}
+
+	// Set up TUI state restore callback
+	presenter.SetTUIStateCallback(func(state *daemon.TUIState) {
+		tuiView.ImportTUIState(state)
+	})
+
+	// Run the TUI (blocking until quit or detach)
+	err = tuiView.Run(ctx)
+
+	// Check if we detached (not quit)
+	if tuiView.WasDetached() {
+		// Save TUI state before disconnecting
+		if tuiState := tuiView.ExportTUIState(); tuiState != nil {
+			if saveErr := presenter.SaveTUIState(tuiState); saveErr != nil {
+				fmt.Printf("Warning: failed to save TUI state: %v\n", saveErr)
+			}
+			// Give time for the message to be sent and processed by the server
+			time.Sleep(100 * time.Millisecond)
+		}
+		fmt.Println("Detached from TUI. Daemon still running.")
+		fmt.Println("Run 'csd-devtrack' or 'csd-devtrack ui' to reattach.")
+		presenter.Disconnect()
+		return nil
+	}
+
+	// User quit - stop the daemon
+	presenter.Disconnect()
+
+	// Stop the daemon when user quits with 'q'
+	if daemon.IsRunning() {
+		if stopErr := daemon.StopDaemon(); stopErr != nil {
+			fmt.Printf("Warning: failed to stop daemon: %v\n", stopErr)
+		}
+	}
+
+	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)
 	}
 
@@ -985,3 +1103,4 @@ func serverCommand(args []string) error {
 	// Wait forever (Ctrl+C will terminate the process)
 	select {}
 }
+

@@ -31,7 +31,7 @@ var (
 // renderHeader renders the top header bar
 func (m *Model) renderHeader() string {
 	title := TitleStyle.Render(modules.AppName)
-	version := SubtitleStyle.Render("v" + modules.AppVersion)
+	version := SubtitleStyle.Render("v" + modules.AppVersion + " (" + modules.BuildHash() + ")")
 
 	// Status indicators
 	var status string
@@ -250,12 +250,12 @@ func (m *Model) renderFooter() string {
 		case core.VMBuild:
 		if m.state.Builds != nil && m.state.Builds.IsBuilding {
 			shortcuts = append(shortcuts,
-				HelpKeyStyle.Render("C-c")+HelpDescStyle.Render(" cancel  "),
+				HelpKeyStyle.Render("CTRL+c")+HelpDescStyle.Render(" cancel  "),
 			)
 		} else {
 			shortcuts = append(shortcuts,
 				HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
-				HelpKeyStyle.Render("C-b")+HelpDescStyle.Render(" all  "),
+				HelpKeyStyle.Render("CTRL+b")+HelpDescStyle.Render(" all  "),
 			)
 		}
 	case core.VMProcesses:
@@ -271,7 +271,7 @@ func (m *Model) renderFooter() string {
 		// Show cancel if a build is running
 		if m.state.Builds != nil && m.state.Builds.IsBuilding {
 			shortcuts = append(shortcuts,
-				HelpKeyStyle.Render("C-c")+HelpDescStyle.Render(" cancel  "),
+				HelpKeyStyle.Render("CTRL+c")+HelpDescStyle.Render(" cancel  "),
 			)
 		}
 		if m.logSearchActive {
@@ -335,6 +335,13 @@ func (m *Model) renderFooter() string {
 			)
 		}
 		}
+	}
+
+	// Show detach if in daemon mode
+	if m.detachable {
+		shortcuts = append(shortcuts,
+			HelpKeyStyle.Render("CTRL+d")+HelpDescStyle.Render(" detach  "),
+		)
 	}
 
 	// Always show help and quit
@@ -532,8 +539,20 @@ func (m *Model) renderMiniLogs(width, height int) string {
 			start = 0
 		}
 
+		// Calculate max source width from visible logs
+		maxSourceLen := 12 // minimum width
 		for _, line := range runLogs[start:] {
-			// Compact format: [source] message
+			if len(line.Source) > maxSourceLen {
+				maxSourceLen = len(line.Source)
+			}
+		}
+		// Cap at reasonable max
+		if maxSourceLen > 20 {
+			maxSourceLen = 20
+		}
+
+		for _, line := range runLogs[start:] {
+			// Compact format: [source] message - show full source name
 			var levelStyle lipgloss.Style
 			switch line.Level {
 			case "error":
@@ -543,9 +562,14 @@ func (m *Model) renderMiniLogs(width, height int) string {
 			default:
 				levelStyle = LogInfoStyle
 			}
+			sourceWidth := maxSourceLen + 2 // for brackets
+			msgWidth := width - sourceWidth - 2
+			if msgWidth < 20 {
+				msgWidth = 20
+			}
 			logLine := fmt.Sprintf("%s %s",
-				LogSourceStyle.Render(fmt.Sprintf("[%-8s]", truncate(line.Source, 8))),
-				levelStyle.Render(truncate(line.Message, width-14)))
+				LogSourceStyle.Render(fmt.Sprintf("[%-*s]", maxSourceLen, line.Source)),
+				levelStyle.Render(truncate(line.Message, msgWidth)))
 			lines = append(lines, logLine)
 		}
 	}
@@ -1912,60 +1936,101 @@ func (m *Model) renderDialogOverlay(background string, width, height int) string
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, dialog)
 }
 
-// renderHelpOverlay renders the help overlay
+// renderHelpOverlay renders the help overlay in 2 columns
 func (m *Model) renderHelpOverlay(background string, width, height int) string {
-	helpContent := []string{
-		DialogTitleStyle.Render("Keyboard Shortcuts"),
+	// Left column content
+	leftCol := []string{
+		HelpKeyStyle.Render("Navigation"),
+		"  ↑/↓        Navigate items",
+		"  Tab        Switch focus between panels",
+		"  D P B O    Dashboard, Projects, Build, PrOcesses",
+		"  L G C      Logs, Git, Config",
+		"  PgUp/Dn    Page scroll",
+		"  Esc        Back / Cancel",
 		"",
-		HelpKeyStyle.Render("Global Navigation"),
-		"  ↑/↓       Navigate items",
-		"  Tab       Switch focus between panels",
-		"  D P B O   Dashboard, Projects, Build, PrOcesses",
-		"  L G C     Logs, Git, Config",
-		"  PgUp/Dn   Page scroll",
-		"  Esc       Back / Cancel",
-		"",
-		HelpKeyStyle.Render("Actions (Projects/Processes/Dashboard)"),
-		"  b         Build selected component",
-		"  r         Run/Start component",
-		"  s         Stop component",
-		"  p         Pause/Resume process (SIGSTOP/SIGCONT)",
-		"  k         Kill (force stop)",
-		"  l         View logs for component",
+		HelpKeyStyle.Render("Actions"),
+		"  b          Build selected component",
+		"  r          Run/Start component",
+		"  s          Stop component",
+		"  p          Pause/Resume (SIGSTOP/SIGCONT)",
+		"  k          Kill (force stop)",
+		"  l          View logs for component",
 		"",
 		HelpKeyStyle.Render("Build"),
-		"  Ctrl+B    Build all projects",
-		"  Ctrl+C    Cancel current build",
-		"",
+		"  Ctrl+B     Build all projects",
+		"  Ctrl+C     Cancel current build",
+	}
+
+	// Right column content
+	rightCol := []string{
 		HelpKeyStyle.Render("Logs"),
-		"  ↑/↓ j/k   Scroll up/down one line",
-		"  S-↑/↓     Page up/down",
-		"  Home/End  Go to top/bottom",
-		"  Space     Pause/Resume log display",
-		"  s/←→      Cycle source (project/component)",
-		"  t         Cycle type (all/build/run)",
-		"  e w i a   Filter level: error/warn/info/all",
-		"  /         Search, Esc to exit",
-		"  c         Clear all filters",
+		"  ↑/↓ j/k    Scroll up/down one line",
+		"  S-↑/↓      Page up/down",
+		"  Home/End   Go to top/bottom",
+		"  Space      Pause/Resume log display",
+		"  s/←→       Cycle source filter",
+		"  t          Cycle type (all/build/run)",
+		"  e w i a    Filter: error/warn/info/all",
+		"  /          Search, Esc to exit",
+		"  c          Clear all filters",
 		"",
 		HelpKeyStyle.Render("Git"),
-		"  Enter     Show files / Show diff",
-		"  Esc       Back to project list",
+		"  Enter      Show files / Show diff",
+		"  Esc        Back to project list",
 		"",
 		HelpKeyStyle.Render("Config"),
-		"  ←→        Switch tabs",
-		"  a         Add project (in browser)",
-		"  x         Remove project",
+		"  ←→         Switch tabs",
+		"  a          Add project (in browser)",
+		"  x          Remove project",
+	}
+
+	// Pad columns to same height
+	for len(leftCol) < len(rightCol) {
+		leftCol = append(leftCol, "")
+	}
+	for len(rightCol) < len(leftCol) {
+		rightCol = append(rightCol, "")
+	}
+
+	// Column widths
+	colWidth := 54
+
+	// Build left and right column strings
+	leftContent := lipgloss.NewStyle().Width(colWidth).Render(strings.Join(leftCol, "\n"))
+	rightContent := lipgloss.NewStyle().Width(colWidth).Render(strings.Join(rightCol, "\n"))
+
+	// Join columns horizontally with separator
+	columns := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftContent,
+		lipgloss.NewStyle().Foreground(ColorBorder).Render(" │ "),
+		rightContent,
+	)
+
+	// Footer
+	footer := []string{
 		"",
-		HelpKeyStyle.Render("Other"),
-		"  Ctrl+R    Refresh data",
-		"  ?         Toggle this help",
-		"  q         Quit",
+		lipgloss.JoinHorizontal(lipgloss.Left,
+			HelpKeyStyle.Render("Ctrl+R"),
+			" Refresh  ",
+			HelpKeyStyle.Render("Ctrl+D"),
+			" Detach  ",
+			HelpKeyStyle.Render("?"),
+			" Help  ",
+			HelpKeyStyle.Render("q"),
+			" Quit",
+		),
 		"",
 		SubtitleStyle.Render("Press any key to close"),
 	}
 
-	helpBox := DialogStyle.Width(55).Render(strings.Join(helpContent, "\n"))
+	helpContent := lipgloss.JoinVertical(lipgloss.Center,
+		DialogTitleStyle.Render("Keyboard Shortcuts"),
+		"",
+		columns,
+		strings.Join(footer, "\n"),
+	)
+
+	helpBox := DialogStyle.Width(116).Render(helpContent)
 
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, helpBox)
 }

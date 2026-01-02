@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"csd-devtrack/cli/modules/platform/daemon"
 	"csd-devtrack/cli/modules/ui/core"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,12 +13,16 @@ import (
 
 // TUIView implements the core.View interface for Bubble Tea TUI
 type TUIView struct {
-	mu        sync.RWMutex
-	presenter core.Presenter
-	program   *tea.Program
-	model     *Model
-	ctx       context.Context
-	cancel    context.CancelFunc
+	mu              sync.RWMutex
+	presenter       core.Presenter
+	program         *tea.Program
+	model           *Model
+	ctx             context.Context
+	cancel          context.CancelFunc
+	detachable      bool              // If true, Ctrl+D detaches instead of quit
+	detached        bool              // Set to true if user detached
+	pendingTUIState *daemon.TUIState  // Buffered TUI state if received before program starts
+	pendingUpdates  []core.StateUpdate // Buffered state updates if received before program starts
 }
 
 // NewTUIView creates a new TUI view
@@ -25,15 +30,69 @@ func NewTUIView() *TUIView {
 	return &TUIView{}
 }
 
+// SetDetachable enables or disables Ctrl+D detach (daemon mode)
+func (v *TUIView) SetDetachable(enabled bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.detachable = enabled
+}
+
+// WasDetached returns true if the user detached (Ctrl+D) instead of quit
+func (v *TUIView) WasDetached() bool {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.detached
+}
+
+// ExportTUIState exports the current TUI state for daemon persistence
+func (v *TUIView) ExportTUIState() *daemon.TUIState {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.model != nil {
+		return v.model.ExportTUIState()
+	}
+	return nil
+}
+
+// ImportTUIState restores TUI state from daemon persistence
+// This sends a message to the running tea.Program to restore state
+func (v *TUIView) ImportTUIState(state *daemon.TUIState) {
+	if state == nil {
+		return
+	}
+
+	v.mu.Lock()
+	program := v.program
+	if program == nil {
+		// Program not started yet, buffer the state
+		v.pendingTUIState = state
+		v.mu.Unlock()
+		return
+	}
+	v.mu.Unlock()
+
+	// Send via the tea.Program message queue
+	program.Send(tuiStateRestoreMsg{state: state})
+}
+
+// SetStateRestoreCallback sets a callback to be called after state is restored
+func (v *TUIView) SetStateRestoreCallback(callback func()) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.model != nil {
+		v.model.SetStateRestoreCallback(callback)
+	}
+}
+
 // Initialize sets up the view with a presenter
 func (v *TUIView) Initialize(presenter core.Presenter) error {
 	v.mu.Lock()
-	defer v.mu.Unlock()
-
 	v.presenter = presenter
 	v.model = NewModel(presenter)
+	v.model.detachable = v.detachable
+	v.mu.Unlock()
 
-	// Subscribe to state updates
+	// Subscribe to state updates (must be outside lock - callback may call UpdateState)
 	presenter.Subscribe(func(update core.StateUpdate) {
 		v.UpdateState(update)
 	})
@@ -50,27 +109,65 @@ func (v *TUIView) Initialize(presenter core.Presenter) error {
 func (v *TUIView) Run(ctx context.Context) error {
 	v.mu.Lock()
 	v.ctx, v.cancel = context.WithCancel(ctx)
+	v.detached = false // Reset detached state for this run
+	pendingState := v.pendingTUIState
+	v.pendingTUIState = nil
+	pendingUpdates := v.pendingUpdates
+	v.pendingUpdates = nil
+	v.mu.Unlock()
+
+	// Create the program
+	v.mu.Lock()
+	v.model.detached = false // Ensure model starts with detached=false
 	v.program = tea.NewProgram(
 		v.model,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
+	program := v.program
 	v.mu.Unlock()
 
-	// Run in a goroutine so we can handle context cancellation
-	errCh := make(chan error, 1)
+	// Channel to receive final model and error from program.Run()
+	type runResult struct {
+		model tea.Model
+		err   error
+	}
+	resultCh := make(chan runResult, 1)
 	go func() {
-		_, err := v.program.Run()
-		errCh <- err
+		finalModel, err := program.Run()
+		resultCh <- runResult{model: finalModel, err: err}
 	}()
+
+	// Apply pending state updates after program starts
+	for _, update := range pendingUpdates {
+		program.Send(stateUpdateMsg{update: update})
+	}
+
+	// Apply pending TUI state if we had one buffered (for reattach)
+	if pendingState != nil {
+		program.Send(tuiStateRestoreMsg{state: pendingState})
+	}
 
 	// Wait for either context cancellation or program exit
 	select {
 	case <-v.ctx.Done():
 		v.program.Quit()
 		return v.ctx.Err()
-	case err := <-errCh:
-		return err
+	case result := <-resultCh:
+		// Get the final model state from Bubble Tea (it works with copies)
+		v.mu.Lock()
+		if finalModel, ok := result.model.(Model); ok {
+			v.model = &finalModel
+			v.detached = finalModel.detached
+		} else if finalModelPtr, ok := result.model.(*Model); ok {
+			v.model = finalModelPtr
+			v.detached = finalModelPtr.detached
+		} else {
+			// Type assertion failed - default to not detached (quit)
+			v.detached = false
+		}
+		v.mu.Unlock()
+		return result.err
 	}
 }
 
@@ -90,13 +187,17 @@ func (v *TUIView) Stop() error {
 
 // UpdateState updates the view with new state from the presenter
 func (v *TUIView) UpdateState(update core.StateUpdate) {
-	v.mu.RLock()
+	v.mu.Lock()
 	program := v.program
-	v.mu.RUnlock()
-
-	if program != nil {
-		program.Send(stateUpdateMsg{update: update})
+	if program == nil {
+		// Buffer if program not started yet
+		v.pendingUpdates = append(v.pendingUpdates, update)
+		v.mu.Unlock()
+		return
 	}
+	v.mu.Unlock()
+
+	program.Send(stateUpdateMsg{update: update})
 }
 
 // ShowNotification displays a notification

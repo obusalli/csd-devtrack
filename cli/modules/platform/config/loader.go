@@ -72,6 +72,11 @@ func (l *Loader) LoadWithCreate(createIfMissing bool) (*Config, error) {
 	// Apply defaults for missing fields
 	if config.Settings == nil {
 		config.Settings = DefaultSettings()
+	} else {
+		// Ensure Logger config exists
+		if config.Settings.Logger == nil {
+			config.Settings.Logger = config.Settings.GetLoggerConfig()
+		}
 	}
 
 	return &config, nil
