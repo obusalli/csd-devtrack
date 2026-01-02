@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1210,17 +1211,9 @@ func (p *AppPresenter) handleClaudeSendMessage(event *Event) error {
 				}
 
 			case "tool_use":
-				// Show tool usage with details
+				// Show tool usage with formatted diff output (Claude CLI style)
 				if assistantIdx < len(p.state.Claude.Messages) {
-					toolInfo := fmt.Sprintf("\n📦 [%s]\n", output.Tool)
-					if output.Content != "" {
-						// Show truncated input for readability
-						input := output.Content
-						if len(input) > 200 {
-							input = input[:200] + "..."
-						}
-						toolInfo += fmt.Sprintf("```\n%s\n```\n", input)
-					}
+					toolInfo := "\n" + formatToolOutput(output.Tool, output.Content)
 					contentBuilder.WriteString(toolInfo)
 					p.state.Claude.Messages[assistantIdx].Content = contentBuilder.String()
 				}
@@ -1565,6 +1558,195 @@ func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
 		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
 		IsActive:     true,
 	}
+}
+
+// formatToolOutput formats tool usage for display in chat
+// Mimics Claude CLI format with diffs and line numbers
+func formatToolOutput(toolName, content string) string {
+	var sb strings.Builder
+
+	// Parse the tool input JSON
+	var input map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &input); err != nil {
+		// Not JSON, just show raw content
+		sb.WriteString(fmt.Sprintf("● %s\n", toolName))
+		if content != "" {
+			sb.WriteString(fmt.Sprintf("  ⎿  %s\n", truncateForDisplay(content, 100)))
+		}
+		return sb.String()
+	}
+
+	switch toolName {
+	case "Read":
+		// Read tool: show file path and line count estimate
+		filePath, _ := input["file_path"].(string)
+		if filePath == "" {
+			filePath, _ = input["path"].(string)
+		}
+		fileName := filepath.Base(filePath)
+		sb.WriteString(fmt.Sprintf("● Read(%s)\n", fileName))
+		// Estimate lines from content or show generic message
+		if limit, ok := input["limit"].(float64); ok {
+			sb.WriteString(fmt.Sprintf("  ⎿  Read %d lines\n", int(limit)))
+		} else {
+			sb.WriteString("  ⎿  Read file\n")
+		}
+
+	case "Edit":
+		// Edit tool: show file path and diff
+		filePath, _ := input["file_path"].(string)
+		fileName := filepath.Base(filePath)
+		oldStr, _ := input["old_string"].(string)
+		newStr, _ := input["new_string"].(string)
+
+		sb.WriteString(fmt.Sprintf("● Update(%s)\n", fileName))
+
+		// Count lines changed
+		oldLines := strings.Count(oldStr, "\n") + 1
+		newLines := strings.Count(newStr, "\n") + 1
+		addedLines := 0
+		removedLines := 0
+
+		if newLines > oldLines {
+			addedLines = newLines - oldLines
+		} else if oldLines > newLines {
+			removedLines = oldLines - newLines
+		}
+
+		// Summary line
+		summary := ""
+		if addedLines > 0 && removedLines > 0 {
+			summary = fmt.Sprintf("Added %d lines, removed %d lines", addedLines, removedLines)
+		} else if addedLines > 0 {
+			summary = fmt.Sprintf("Added %d lines", addedLines)
+		} else if removedLines > 0 {
+			summary = fmt.Sprintf("Removed %d lines", removedLines)
+		} else {
+			summary = "Modified"
+		}
+		sb.WriteString(fmt.Sprintf("  ⎿  %s\n", summary))
+
+		// Show diff with context
+		sb.WriteString(formatDiff(oldStr, newStr, 2))
+
+	case "Write":
+		// Write tool: show file path and size
+		filePath, _ := input["file_path"].(string)
+		fileName := filepath.Base(filePath)
+		contentStr, _ := input["content"].(string)
+		lines := strings.Count(contentStr, "\n") + 1
+
+		sb.WriteString(fmt.Sprintf("● Write(%s)\n", fileName))
+		sb.WriteString(fmt.Sprintf("  ⎿  Wrote %d lines\n", lines))
+
+	case "Bash":
+		// Bash command: show command
+		cmd, _ := input["command"].(string)
+		desc, _ := input["description"].(string)
+		if desc != "" {
+			sb.WriteString(fmt.Sprintf("● Bash(%s)\n", desc))
+		} else {
+			// Truncate command for display
+			cmdDisplay := truncateForDisplay(cmd, 50)
+			sb.WriteString(fmt.Sprintf("● Bash(%s)\n", cmdDisplay))
+		}
+		sb.WriteString("  ⎿  (running...)\n")
+
+	case "Glob", "Grep":
+		// Search tools
+		pattern, _ := input["pattern"].(string)
+		sb.WriteString(fmt.Sprintf("● %s(%s)\n", toolName, truncateForDisplay(pattern, 40)))
+		sb.WriteString("  ⎿  Searching...\n")
+
+	default:
+		// Generic tool display
+		sb.WriteString(fmt.Sprintf("● %s\n", toolName))
+		if content != "" && len(content) < 200 {
+			sb.WriteString(fmt.Sprintf("  ⎿  %s\n", truncateForDisplay(content, 100)))
+		}
+	}
+
+	return sb.String()
+}
+
+// formatDiff creates a simple diff display with context
+// Uses markers {{-...}} for removed and {{+...}} for added lines
+// These markers are interpreted by the view layer for coloring
+func formatDiff(oldStr, newStr string, contextLines int) string {
+	var sb strings.Builder
+
+	oldLines := strings.Split(oldStr, "\n")
+	newLines := strings.Split(newStr, "\n")
+
+	// Find common prefix (lines that are identical at the start)
+	commonPrefix := 0
+	minLen := len(oldLines)
+	if len(newLines) < minLen {
+		minLen = len(newLines)
+	}
+	for i := 0; i < minLen && oldLines[i] == newLines[i]; i++ {
+		commonPrefix++
+	}
+
+	// Find common suffix (lines that are identical at the end)
+	commonSuffix := 0
+	for i := 0; i < minLen-commonPrefix && oldLines[len(oldLines)-1-i] == newLines[len(newLines)-1-i]; i++ {
+		commonSuffix++
+	}
+
+	// Show context before change
+	startContext := commonPrefix - contextLines
+	if startContext < 0 {
+		startContext = 0
+	}
+
+	lineNum := startContext + 1 // 1-based line numbers
+
+	// Context before
+	for i := startContext; i < commonPrefix && i < len(oldLines); i++ {
+		sb.WriteString(fmt.Sprintf("      %3d   %s\n", lineNum, oldLines[i]))
+		lineNum++
+	}
+
+	// Show removed lines (from old) with {{-...}} marker
+	removedEnd := len(oldLines) - commonSuffix
+	for i := commonPrefix; i < removedEnd; i++ {
+		sb.WriteString(fmt.Sprintf("{{-   %3d - %s}}\n", lineNum, oldLines[i]))
+		lineNum++
+	}
+
+	// Reset line number for new lines at same position
+	lineNum = commonPrefix + 1
+
+	// Show added lines (from new) with {{+...}} marker
+	addedEnd := len(newLines) - commonSuffix
+	for i := commonPrefix; i < addedEnd; i++ {
+		sb.WriteString(fmt.Sprintf("{{+   %3d + %s}}\n", lineNum, newLines[i]))
+		lineNum++
+	}
+
+	// Context after (if any)
+	if commonSuffix > 0 && commonSuffix <= contextLines {
+		contextStart := len(newLines) - commonSuffix
+		lineNum = contextStart + 1
+		for i := contextStart; i < len(newLines); i++ {
+			sb.WriteString(fmt.Sprintf("      %3d   %s\n", lineNum, newLines[i]))
+			lineNum++
+		}
+	}
+
+	return sb.String()
+}
+
+// truncateForDisplay truncates a string for display
+func truncateForDisplay(s string, maxLen int) string {
+	// Remove newlines for single-line display
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", "")
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }
 
 func (p *AppPresenter) messagesToVM(messages []claude.Message) []ClaudeMessageVM {

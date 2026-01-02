@@ -621,6 +621,22 @@ func (m *Model) renderChatMessages(width, height int) string {
 		Foreground(ColorMuted).
 		Padding(0, 1)
 
+	// Show loading state
+	if m.claudeSessionLoading {
+		loadingStyle := lipgloss.NewStyle().
+			Foreground(ColorMuted).
+			Align(lipgloss.Center).
+			Width(width - 4)
+		lines = append(lines, "")
+		lines = append(lines, "")
+		lines = append(lines, loadingStyle.Render(m.spinner.View()+" Loading session..."))
+		content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+		return lipgloss.NewStyle().
+			Width(width).
+			Height(height).
+			Render(content)
+	}
+
 	if m.state.Claude == nil || len(m.state.Claude.Messages) == 0 {
 		if m.claudeActiveSession == "" {
 			// No session selected
@@ -630,7 +646,7 @@ func (m *Model) renderChatMessages(width, height int) string {
 				Width(width - 4)
 			lines = append(lines, "")
 			lines = append(lines, emptyStyle.Render("No session selected"))
-			lines = append(lines, emptyStyle.Render("Go to Sessions tab (1) to select or create one"))
+			lines = append(lines, emptyStyle.Render("Select a session in the right panel"))
 		} else {
 			// Session selected but no messages
 			emptyStyle := lipgloss.NewStyle().
@@ -849,10 +865,20 @@ func (m *Model) renderChatMessage(msg core.ClaudeMessageVM, width int) []string 
 		// Show thinking indicator for empty partial messages
 		lines = append(lines, indent+"...")
 	} else {
-		// Split content into wrapped lines
-		wrapped := wrapText(msg.Content, contentWidth)
-		for _, line := range wrapped {
-			lines = append(lines, indent+contentStyle.Render(line))
+		// Split content into lines and apply styling
+		// Handle diff markers {{-...}} and {{+...}}
+		contentLines := strings.Split(msg.Content, "\n")
+		for _, line := range contentLines {
+			styledLine := m.styleDiffLine(line, contentStyle)
+			// Wrap long lines
+			if len(line) > contentWidth {
+				wrapped := wrapText(line, contentWidth)
+				for _, wl := range wrapped {
+					lines = append(lines, indent+m.styleDiffLine(wl, contentStyle))
+				}
+			} else {
+				lines = append(lines, indent+styledLine)
+			}
 		}
 	}
 
@@ -860,6 +886,36 @@ func (m *Model) renderChatMessage(msg core.ClaudeMessageVM, width int) []string 
 	lines = append(lines, "")
 
 	return lines
+}
+
+// styleDiffLine applies colors to diff lines
+// Handles markers: {{-...}} for removed (red), {{+...}} for added (green)
+// Also styles lines starting with ● for tool names
+func (m *Model) styleDiffLine(line string, defaultStyle lipgloss.Style) string {
+	// Check for diff markers
+	if strings.HasPrefix(line, "{{-") && strings.HasSuffix(line, "}}") {
+		// Removed line - red
+		content := line[3 : len(line)-2]
+		return lipgloss.NewStyle().Foreground(ColorError).Render(content)
+	}
+	if strings.HasPrefix(line, "{{+") && strings.HasSuffix(line, "}}") {
+		// Added line - green
+		content := line[3 : len(line)-2]
+		return lipgloss.NewStyle().Foreground(ColorSuccess).Render(content)
+	}
+
+	// Check for tool header (● ToolName(...))
+	if strings.HasPrefix(line, "●") {
+		return lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary).Render(line)
+	}
+
+	// Check for tree connector (⎿)
+	if strings.Contains(line, "⎿") {
+		return lipgloss.NewStyle().Foreground(ColorMuted).Render(line)
+	}
+
+	// Default styling
+	return defaultStyle.Render(line)
 }
 
 // renderChatInput renders the chat input area

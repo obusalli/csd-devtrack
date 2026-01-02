@@ -2099,6 +2099,11 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 	// Update Claude tree for navigation (must persist across Update calls)
 	m.updateClaudeTree()
 
+	// Clear session loading state when Claude data is received
+	if m.claudeSessionLoading && m.state.Claude != nil {
+		m.claudeSessionLoading = false
+	}
+
 	// Auto-exit input mode when Claude is waiting for interactive response
 	// This allows y/n/1-9 keys to work for permission/question/plan dialogs
 	if m.state.Claude != nil && m.state.Claude.WaitingForInput && m.claudeInputActive {
