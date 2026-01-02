@@ -229,18 +229,25 @@ func (m *Model) renderFooter() string {
 
 	shortcuts = append(shortcuts, navHint, tabHint)
 
-	// View-specific shortcuts
-	switch m.currentView {
-	case core.VMDashboard, core.VMProjects:
+	// Sidebar-specific shortcuts
+	if m.focusArea == FocusSidebar {
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
-			HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
-			HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
-			HelpKeyStyle.Render("p")+HelpDescStyle.Render(" pause  "),
-			HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
-			HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
+			HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" select  "),
+			HelpKeyStyle.Render("D P B")+HelpDescStyle.Render(" views  "),
 		)
-	case core.VMBuild:
+	} else {
+		// View-specific shortcuts (only when not on sidebar)
+		switch m.currentView {
+		case core.VMDashboard, core.VMProjects:
+			shortcuts = append(shortcuts,
+				HelpKeyStyle.Render("b")+HelpDescStyle.Render(" build  "),
+				HelpKeyStyle.Render("r")+HelpDescStyle.Render(" run  "),
+				HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
+				HelpKeyStyle.Render("p")+HelpDescStyle.Render(" pause  "),
+				HelpKeyStyle.Render("k")+HelpDescStyle.Render(" kill  "),
+				HelpKeyStyle.Render("l")+HelpDescStyle.Render(" logs  "),
+			)
+		case core.VMBuild:
 		if m.state.Builds != nil && m.state.Builds.IsBuilding {
 			shortcuts = append(shortcuts,
 				HelpKeyStyle.Render("C-c")+HelpDescStyle.Render(" cancel  "),
@@ -327,6 +334,7 @@ func (m *Model) renderFooter() string {
 				HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" scroll  "),
 			)
 		}
+		}
 	}
 
 	// Always show help and quit
@@ -412,33 +420,92 @@ func (m *Model) renderDashboard(width, height int) string {
 	)
 
 	// Calculate panel sizes
-	// Left: Projects + Processes stacked (narrow)
-	// Right: Logs (wide)
+	// Left: Projects + Processes + Git stacked (narrow, 1/3)
+	// Right: Logs (wide, 2/3)
+	hGap := 1 // Horizontal gap between left and right panes
 	panelHeight := height - 8
 	leftWidth := width / 3
 	if leftWidth < 30 {
 		leftWidth = 30
 	}
-	rightWidth := width - leftWidth - 2
+	rightWidth := width - leftWidth - hGap
 
-	// Left: Projects (top) + Processes (bottom)
-	projectsHeight := panelHeight / 2
-	processesHeight := panelHeight - projectsHeight
+	// Left: Projects (top) + Processes (middle) + Git (bottom)
+	// Each panel gets 1/3 of the height
+	thirdHeight := panelHeight / 3
 
-	projectsPanel := m.renderProjectsList(vm.Projects, leftWidth, projectsHeight, m.focusArea == FocusMain)
-	processesPanel := m.renderProcessesList(vm.RunningProcesses, leftWidth, processesHeight, false)
+	projectsPanel := m.renderProjectsList(vm.Projects, leftWidth, thirdHeight, m.focusArea == FocusMain)
+	processesPanel := m.renderProcessesList(vm.RunningProcesses, leftWidth, thirdHeight, false)
+	gitPanel := m.renderMiniGit(vm.GitSummary, leftWidth, thirdHeight)
 
-	leftPane := lipgloss.JoinVertical(lipgloss.Left, projectsPanel, processesPanel)
+	// Stack left panels - they will naturally align since each has same width
+	leftPane := lipgloss.JoinVertical(lipgloss.Left, projectsPanel, processesPanel, gitPanel)
 
-	// Right: Logs (full height)
-	logsPanel := m.renderMiniLogs(rightWidth, panelHeight)
+	// Right: Logs - use 3x thirdHeight to match left pane total height
+	logsPanel := m.renderMiniLogs(rightWidth, thirdHeight*3)
 
-	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, logsPanel)
+	// Combine with horizontal gap
+	panels := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftPane,
+		strings.Repeat(" ", hGap),
+		logsPanel,
+	)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		stats,
 		"",
 		panels,
+	)
+}
+
+// renderMiniGit renders a compact git status panel for dashboard
+func (m *Model) renderMiniGit(gitSummary []core.GitStatusVM, width, height int) string {
+	header := SubtitleStyle.Render("─ Git Changes ─")
+
+	var rows []string
+	for _, g := range gitSummary {
+		if g.IsClean {
+			continue // Skip clean repos
+		}
+
+		// Count changes
+		changes := len(g.Modified) + len(g.Untracked) + len(g.Staged) + len(g.Deleted)
+		if changes == 0 {
+			continue
+		}
+
+		// Format: projectName M:x U:y S:z
+		var parts []string
+		if len(g.Modified) > 0 {
+			parts = append(parts, StatusWarning.Render(fmt.Sprintf("M:%d", len(g.Modified))))
+		}
+		if len(g.Untracked) > 0 {
+			parts = append(parts, SubtitleStyle.Render(fmt.Sprintf("?:%d", len(g.Untracked))))
+		}
+		if len(g.Staged) > 0 {
+			parts = append(parts, StatusSuccess.Render(fmt.Sprintf("S:%d", len(g.Staged))))
+		}
+		if len(g.Deleted) > 0 {
+			parts = append(parts, StatusError.Render(fmt.Sprintf("D:%d", len(g.Deleted))))
+		}
+
+		row := fmt.Sprintf("  %-12s %s", truncate(g.ProjectName, 12), strings.Join(parts, " "))
+		rows = append(rows, row)
+
+		if len(rows) >= height-3 {
+			rows = append(rows, SubtitleStyle.Render(fmt.Sprintf("  ... and %d more", len(gitSummary)-len(rows))))
+			break
+		}
+	}
+
+	if len(rows) == 0 {
+		rows = append(rows, SubtitleStyle.Render("  All clean ✓"))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+
+	return UnfocusedBorderStyle.Width(width).Height(height).Render(
+		lipgloss.JoinVertical(lipgloss.Left, header, content),
 	)
 }
 

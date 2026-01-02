@@ -1131,7 +1131,7 @@ func (m *Model) handleLogsShortcuts(msg tea.KeyMsg) bool {
 		m.logScrollOffset = 999999 // Will be clamped in render
 		m.logAutoScroll = false
 		return true
-	case "end", "G":
+	case "end":
 		// Go to bottom (resume auto-scroll)
 		m.logScrollOffset = 0
 		m.logAutoScroll = true

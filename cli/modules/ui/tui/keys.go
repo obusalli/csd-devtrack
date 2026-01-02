@@ -79,8 +79,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("Home", "go to start"),
 		),
 		End: key.NewBinding(
-			key.WithKeys("end", "G"),
-			key.WithHelp("End/G", "go to end"),
+			key.WithKeys("end"),
+			key.WithHelp("End", "go to end"),
 		),
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
