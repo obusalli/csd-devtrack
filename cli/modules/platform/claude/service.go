@@ -42,6 +42,158 @@ func isValidUUID(s string) bool {
 	return uuidRegex.MatchString(s)
 }
 
+// formatToolUseForDisplay formats a tool use block for display (Claude CLI style)
+func formatToolUseForDisplay(toolName string, input map[string]interface{}) string {
+	var sb strings.Builder
+
+	switch toolName {
+	case "Read":
+		filePath, _ := input["file_path"].(string)
+		if filePath == "" {
+			filePath, _ = input["path"].(string)
+		}
+		fileName := filepath.Base(filePath)
+		sb.WriteString(fmt.Sprintf("● Read(%s)\n", fileName))
+		if limit, ok := input["limit"].(float64); ok {
+			sb.WriteString(fmt.Sprintf("  ⎿  Read %d lines\n", int(limit)))
+		} else {
+			sb.WriteString("  ⎿  Read file\n")
+		}
+
+	case "Edit":
+		filePath, _ := input["file_path"].(string)
+		fileName := filepath.Base(filePath)
+		oldStr, _ := input["old_string"].(string)
+		newStr, _ := input["new_string"].(string)
+
+		sb.WriteString(fmt.Sprintf("● Update(%s)\n", fileName))
+
+		// Count lines changed
+		oldLines := strings.Count(oldStr, "\n") + 1
+		newLines := strings.Count(newStr, "\n") + 1
+		addedLines := 0
+		removedLines := 0
+
+		if newLines > oldLines {
+			addedLines = newLines - oldLines
+		} else if oldLines > newLines {
+			removedLines = oldLines - newLines
+		}
+
+		// Summary
+		if addedLines > 0 && removedLines > 0 {
+			sb.WriteString(fmt.Sprintf("  ⎿  Added %d lines, removed %d lines\n", addedLines, removedLines))
+		} else if addedLines > 0 {
+			sb.WriteString(fmt.Sprintf("  ⎿  Added %d lines\n", addedLines))
+		} else if removedLines > 0 {
+			sb.WriteString(fmt.Sprintf("  ⎿  Removed %d lines\n", removedLines))
+		} else {
+			sb.WriteString("  ⎿  Modified\n")
+		}
+
+		// Format diff with markers
+		sb.WriteString(formatDiffWithMarkers(oldStr, newStr, 2))
+
+	case "Write":
+		filePath, _ := input["file_path"].(string)
+		fileName := filepath.Base(filePath)
+		contentStr, _ := input["content"].(string)
+		lines := strings.Count(contentStr, "\n") + 1
+		sb.WriteString(fmt.Sprintf("● Write(%s)\n", fileName))
+		sb.WriteString(fmt.Sprintf("  ⎿  Wrote %d lines\n", lines))
+
+	case "Bash":
+		cmd, _ := input["command"].(string)
+		desc, _ := input["description"].(string)
+		if desc != "" {
+			sb.WriteString(fmt.Sprintf("● Bash(%s)\n", desc))
+		} else {
+			cmdDisplay := cmd
+			if len(cmdDisplay) > 50 {
+				cmdDisplay = cmdDisplay[:50] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("● Bash(%s)\n", cmdDisplay))
+		}
+		sb.WriteString("  ⎿  Executed\n")
+
+	case "Glob", "Grep":
+		pattern, _ := input["pattern"].(string)
+		if len(pattern) > 40 {
+			pattern = pattern[:40] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("● %s(%s)\n", toolName, pattern))
+		sb.WriteString("  ⎿  Searched\n")
+
+	default:
+		sb.WriteString(fmt.Sprintf("● %s\n", toolName))
+	}
+
+	return sb.String()
+}
+
+// formatDiffWithMarkers creates a diff with {{-...}} and {{+...}} markers
+func formatDiffWithMarkers(oldStr, newStr string, contextLines int) string {
+	var sb strings.Builder
+
+	oldLines := strings.Split(oldStr, "\n")
+	newLines := strings.Split(newStr, "\n")
+
+	// Find common prefix
+	commonPrefix := 0
+	minLen := len(oldLines)
+	if len(newLines) < minLen {
+		minLen = len(newLines)
+	}
+	for i := 0; i < minLen && oldLines[i] == newLines[i]; i++ {
+		commonPrefix++
+	}
+
+	// Find common suffix
+	commonSuffix := 0
+	for i := 0; i < minLen-commonPrefix && oldLines[len(oldLines)-1-i] == newLines[len(newLines)-1-i]; i++ {
+		commonSuffix++
+	}
+
+	// Context before
+	startContext := commonPrefix - contextLines
+	if startContext < 0 {
+		startContext = 0
+	}
+
+	lineNum := startContext + 1
+	for i := startContext; i < commonPrefix && i < len(oldLines); i++ {
+		sb.WriteString(fmt.Sprintf("      %3d   %s\n", lineNum, oldLines[i]))
+		lineNum++
+	}
+
+	// Removed lines
+	removedEnd := len(oldLines) - commonSuffix
+	for i := commonPrefix; i < removedEnd; i++ {
+		sb.WriteString(fmt.Sprintf("{{-   %3d - %s}}\n", lineNum, oldLines[i]))
+		lineNum++
+	}
+
+	// Added lines
+	lineNum = commonPrefix + 1
+	addedEnd := len(newLines) - commonSuffix
+	for i := commonPrefix; i < addedEnd; i++ {
+		sb.WriteString(fmt.Sprintf("{{+   %3d + %s}}\n", lineNum, newLines[i]))
+		lineNum++
+	}
+
+	// Context after
+	if commonSuffix > 0 && commonSuffix <= contextLines {
+		contextStart := len(newLines) - commonSuffix
+		lineNum = contextStart + 1
+		for i := contextStart; i < len(newLines); i++ {
+			sb.WriteString(fmt.Sprintf("      %3d   %s\n", lineNum, newLines[i]))
+			lineNum++
+		}
+	}
+
+	return sb.String()
+}
+
 // persistentProcess holds a running Claude process for a session
 type persistentProcess struct {
 	cmd      *exec.Cmd
@@ -305,20 +457,30 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 						role = r
 					}
 
-					content := ""
+					var contentBuilder strings.Builder
 					if c, ok := msg["content"].([]interface{}); ok {
 						for _, item := range c {
-							if textItem, ok := item.(map[string]interface{}); ok {
-								if textItem["type"] == "text" {
-									if text, ok := textItem["text"].(string); ok {
-										content = text
-										break
+							if block, ok := item.(map[string]interface{}); ok {
+								blockType, _ := block["type"].(string)
+
+								switch blockType {
+								case "text":
+									if text, ok := block["text"].(string); ok {
+										contentBuilder.WriteString(text)
 									}
+
+								case "tool_use":
+									// Format tool usage like Claude CLI
+									toolName, _ := block["name"].(string)
+									input, _ := block["input"].(map[string]interface{})
+									contentBuilder.WriteString("\n")
+									contentBuilder.WriteString(formatToolUseForDisplay(toolName, input))
 								}
 							}
 						}
 					}
 
+					content := contentBuilder.String()
 					if role != "" && content != "" {
 						session.Messages = append(session.Messages, Message{
 							ID:        fmt.Sprintf("%s-%d", sessionID, len(session.Messages)),
