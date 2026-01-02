@@ -889,19 +889,25 @@ func (m *Model) renderChatMessage(msg core.ClaudeMessageVM, width int) []string 
 }
 
 // styleDiffLine applies colors to diff lines
-// Handles markers: {{-...}} for removed (red), {{+...}} for added (green)
+// Handles markers: {{-...}} for removed (red bg), {{+...}} for added (green bg)
 // Also styles lines starting with ● for tool names
 func (m *Model) styleDiffLine(line string, defaultStyle lipgloss.Style) string {
 	// Check for diff markers
 	if strings.HasPrefix(line, "{{-") && strings.HasSuffix(line, "}}") {
-		// Removed line - red
+		// Removed line - red background
 		content := line[3 : len(line)-2]
-		return lipgloss.NewStyle().Foreground(ColorError).Render(content)
+		return lipgloss.NewStyle().
+			Background(lipgloss.Color("#5c1a1a")).
+			Foreground(lipgloss.Color("#ff9999")).
+			Render(content)
 	}
 	if strings.HasPrefix(line, "{{+") && strings.HasSuffix(line, "}}") {
-		// Added line - green
+		// Added line - green background
 		content := line[3 : len(line)-2]
-		return lipgloss.NewStyle().Foreground(ColorSuccess).Render(content)
+		return lipgloss.NewStyle().
+			Background(lipgloss.Color("#1a3d1a")).
+			Foreground(lipgloss.Color("#99ff99")).
+			Render(content)
 	}
 
 	// Check for tool header (● ToolName(...))
