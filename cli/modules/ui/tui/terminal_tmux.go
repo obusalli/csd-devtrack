@@ -45,12 +45,16 @@ type TerminalTmux struct {
 
 // NewTerminalTmux creates a new tmux-based terminal for Claude
 func NewTerminalTmux(sessionID, workDir, claudePath string) *TerminalTmux {
-	// Generate unique tmux session name with csd-dt- prefix
+	return NewTerminalTmuxWithPrefix(sessionID, workDir, claudePath, TmuxPrefixClaude)
+}
+
+// NewTerminalTmuxWithPrefix creates a new tmux-based terminal with a specific prefix
+func NewTerminalTmuxWithPrefix(sessionID, workDir, claudePath, prefix string) *TerminalTmux {
 	shortID := sessionID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
-	tmuxName := fmt.Sprintf("csd-dt-%s", shortID)
+	tmuxName := fmt.Sprintf("%s%s", prefix, shortID)
 
 	return &TerminalTmux{
 		SessionID:  sessionID,
@@ -64,14 +68,18 @@ func NewTerminalTmux(sessionID, workDir, claudePath string) *TerminalTmux {
 	}
 }
 
-// NewTerminalTmuxCommand creates a new tmux-based terminal with a custom command
+// NewTerminalTmuxCommand creates a new tmux-based terminal with a custom command (for database)
 func NewTerminalTmuxCommand(sessionID, command string, args []string) *TerminalTmux {
-	// Generate unique tmux session name with csd-db- prefix for database terminals
+	return NewTerminalTmuxCommandWithPrefix(sessionID, command, args, TmuxPrefixDatabase)
+}
+
+// NewTerminalTmuxCommandWithPrefix creates a new tmux-based terminal with a custom command and prefix
+func NewTerminalTmuxCommandWithPrefix(sessionID, command string, args []string, prefix string) *TerminalTmux {
 	shortID := sessionID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
 	}
-	tmuxName := fmt.Sprintf("csd-db-%s", shortID)
+	tmuxName := fmt.Sprintf("%s%s", prefix, shortID)
 
 	return &TerminalTmux{
 		SessionID:  sessionID,
@@ -672,14 +680,41 @@ func (t *TerminalTmux) GetLines() []string {
 	return strings.Split(t.content, "\n")
 }
 
+// Tmux session prefixes (cdt = csd-devtrack)
+const (
+	TmuxPrefixClaude   = "cdt-cc-" // Claude Code
+	TmuxPrefixCodex    = "cdt-cx-" // Codex
+	TmuxPrefixDatabase = "cdt-db-" // Database clients
+	TmuxPrefixShell    = "cdt-sh-" // Terminal/Shell
+)
+
+// CleanupOrphanTmuxSessions kills all cdt-* tmux sessions
+// Call this on startup to clean up sessions from previous runs
+func CleanupOrphanTmuxSessions() int {
+	cmd := exec.Command("tmux", "ls", "-F", "#{session_name}")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+
+	count := 0
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		// Match any cdt-* session
+		if strings.HasPrefix(line, "cdt-") {
+			if exec.Command("tmux", "kill-session", "-t", line).Run() == nil {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // getClaudeSessionFile returns the path to the Claude session file
 func getClaudeSessionFile(workDir, sessionID string) string {
-	// Claude stores sessions in ~/.claude/projects/<project-name>/<session-id>.jsonl
-	// Project name is derived from workDir (last path component)
+	// Claude stores sessions in ~/.claude/projects/<encoded-path>/<session-id>.jsonl
+	// The path is encoded by replacing / with - (e.g., /data/devel/project -> -data-devel-project)
 	homeDir, _ := os.UserHomeDir()
-	projectName := workDir
-	if idx := strings.LastIndex(workDir, "/"); idx >= 0 {
-		projectName = workDir[idx+1:]
-	}
-	return fmt.Sprintf("%s/.claude/projects/%s/%s.jsonl", homeDir, projectName, sessionID)
+	encodedPath := strings.ReplaceAll(workDir, "/", "-")
+	return fmt.Sprintf("%s/.claude/projects/%s/%s.jsonl", homeDir, encodedPath, sessionID)
 }
