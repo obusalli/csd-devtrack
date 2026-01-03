@@ -1,0 +1,13 @@
+# CSD DevTrack Frontend Configuration
+
+frontend:
+  dev:
+    host: 127.0.0.1
+    port: 4044
+  url: http://127.0.0.1:4044
+
+# Backend GraphQL endpoint
+graphql_url: http://localhost:9094/devtrack/api/latest/query
+
+# CSD-Core GraphQL endpoint (for terminal access, auth, etc.)
+core_graphql_url: http://localhost:8080/core/api/latest/query

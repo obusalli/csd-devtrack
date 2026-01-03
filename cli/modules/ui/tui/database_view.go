@@ -81,8 +81,8 @@ func (m *Model) renderDatabaseSessionInfo(width, height int) string {
 	// Use same border style as TreeMenu for alignment
 	borderStyle := UnfocusedBorderStyle
 
-	// Adjust width for right-side panel border (1 panel = 1 × 2)
-	renderWidth := width - 2
+	// Match TreeMenu width (TreeMenu handles its own borders)
+	renderWidth := width - 5
 	if renderWidth < 20 {
 		renderWidth = 20
 	}
@@ -212,11 +212,11 @@ func (m *Model) renderDatabaseTerminalPanel(width, height int) string {
 	content := lipgloss.NewStyle().
 		Foreground(ColorMuted).
 		Align(lipgloss.Center).
-		Width(width - 4).
+		Width(width - 2).
 		Render(message)
 
 	return style.
-		Width(width - 2).
+		Width(width).
 		Height(height).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(content)

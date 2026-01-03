@@ -1,0 +1,43 @@
+# CSD-DevTrack Backend Configuration
+
+# Shared configuration
+common:
+  csd-core:
+    url: "http://127.0.0.1:9090"
+    graphql-endpoint: "/core/api/latest/query"
+  logging:
+    level: debug
+
+# Backend configuration
+backend:
+  server:
+    host: "0.0.0.0"
+    port: "9094"
+  csd-core:
+    service-token: ""  # Set in local config or env
+  jwt:
+    secret: "dev-secret-key-change-in-production-12345"
+    issuer: "csd-core"
+    expiry-hours: 24
+  cors:
+    allowed-origins:
+      - "http://127.0.0.1:4040"
+      - "http://127.0.0.1:4044"
+    allowed-methods:
+      - "GET"
+      - "POST"
+      - "OPTIONS"
+    allowed-headers:
+      - "Content-Type"
+      - "Authorization"
+      - "X-Requested-With"
+  # Path to CLI data directory
+  cli:
+    data-dir: "~/.csd-devtrack"
+    claude-dir: "~/.claude"
+
+# Frontend configuration (Module Federation remote)
+frontend:
+  url: "http://127.0.0.1:4044"
+  remote-entry-path: "/assets/remoteEntry.js"
+  route-path: "/devtrack"

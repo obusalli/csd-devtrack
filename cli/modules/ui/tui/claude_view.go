@@ -44,15 +44,18 @@ func (m *Model) renderClaude(width, height int) string {
 	contentHeight := height - heightBorders
 	availableWidth := width - widthBorders - GapHorizontal
 
-	// Calculate sessions panel width using TreeMenu
-	sessionsWidth := m.sessionsTreeMenu.CalcWidth()
+	// Fixed sessions panel width for predictable layout
+	sessionsWidth := 35
+	if sessionsWidth > availableWidth/2 {
+		sessionsWidth = availableWidth / 2
+	}
 	chatWidth := availableWidth - sessionsWidth
 
 	// Session info takes some space at bottom
 	infoHeight := 8
 	treeHeight := contentHeight - infoHeight
 
-	// Configure and render TreeMenu
+	// Configure and render TreeMenu (will truncate if too wide for panel)
 	m.sessionsTreeMenu.SetSize(sessionsWidth, treeHeight)
 	m.sessionsTreeMenu.SetFocused(m.focusArea == FocusDetail)
 
@@ -60,7 +63,9 @@ func (m *Model) renderClaude(width, height int) string {
 	chatPanel := m.renderClaudeChatPanel(chatWidth, contentHeight+2)
 	treePanel := m.sessionsTreeMenu.Render()
 	infoPanel := m.renderSessionInfo(sessionsWidth, infoHeight)
-	sessionsPanel := lipgloss.JoinVertical(lipgloss.Left, treePanel, infoPanel)
+	// Wrap in fixed-width container so both panels align
+	sessionsPanel := lipgloss.NewStyle().Width(sessionsWidth).Render(
+		lipgloss.JoinVertical(lipgloss.Left, treePanel, infoPanel))
 
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		chatPanel,
@@ -85,11 +90,8 @@ func (m *Model) renderSessionInfo(width, height int) string {
 	// Use same border style as TreeMenu for alignment
 	borderStyle := UnfocusedBorderStyle
 
-	// Adjust width for right-side panel border (1 panel = 1 × 2)
+	// Match TreeMenu width
 	renderWidth := width - 2
-	if renderWidth < 20 {
-		renderWidth = 20
-	}
 
 	if sess == nil {
 		// No session selected - show placeholder
@@ -260,11 +262,11 @@ func (m *Model) renderClaudeChatPanel(width, height int) string {
 	content := lipgloss.NewStyle().
 		Foreground(ColorMuted).
 		Align(lipgloss.Center).
-		Width(width - 4).
+		Width(width - 2).
 		Render(message)
 
 	return style.
-		Width(width - 2).
+		Width(width).
 		Height(height).
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(content)

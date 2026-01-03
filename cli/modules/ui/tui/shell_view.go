@@ -64,12 +64,22 @@ func (m *Model) renderShellMainPanel(width, height int) string {
 	}
 
 	// No active terminal - show placeholder
-	placeholder := lipgloss.NewStyle().
+	style := UnfocusedBorderStyle
+	if m.focusArea == FocusMain {
+		style = FocusedBorderStyle
+	}
+
+	content := lipgloss.NewStyle().
 		Foreground(ColorMuted).
 		Align(lipgloss.Center).
+		Width(width - 2).
 		Render("Select or create a session to start Shell\n\nn = new | h = home | s = sudo root | e = change shell")
 
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, placeholder)
+	return style.
+		Width(width).
+		Height(height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(content)
 }
 
 // renderShellSessionsPanel renders the sessions panel

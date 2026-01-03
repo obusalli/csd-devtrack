@@ -1,0 +1,7 @@
+# CSD DevTrack Frontend Configuration (production)
+
+frontend:
+  url: /devtrack
+
+graphql_url: /devtrack/api/latest/query
+core_graphql_url: /core/api/latest/query

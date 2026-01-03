@@ -1,0 +1,10 @@
+# CSD DevTrack Frontend Configuration (development)
+
+frontend:
+  dev:
+    host: 127.0.0.1
+    port: 4044
+  url: http://127.0.0.1:4044
+
+graphql_url: http://localhost:9094/devtrack/api/latest/query
+core_graphql_url: http://localhost:8080/core/api/latest/query
