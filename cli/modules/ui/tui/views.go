@@ -793,48 +793,29 @@ func (m *Model) renderFooter() string {
 					HelpKeyStyle.Render("PgUp/Dn")+HelpDescStyle.Render(" scroll  "),
 				)
 			} else {
-				// Claude-specific shortcuts based on current tab
-				shortcuts = append(shortcuts,
-					HelpKeyStyle.Render("1-2")+HelpDescStyle.Render(" tabs  "),
-				)
-				switch m.claudeMode {
-				case ClaudeModeSession:
+				// Sessions panel shortcuts (right side)
+				if m.focusArea == FocusDetail {
 					shortcuts = append(shortcuts,
 						HelpKeyStyle.Render("n")+HelpDescStyle.Render(" new  "),
 						HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" open  "),
 						HelpKeyStyle.Render("r")+HelpDescStyle.Render(" rename  "),
 						HelpKeyStyle.Render("x")+HelpDescStyle.Render(" delete  "),
 					)
-					if m.claudeFilterProject != "" {
-						shortcuts = append(shortcuts,
-							HelpKeyStyle.Render("c")+HelpDescStyle.Render(" clear  "),
-						)
-					}
-				case ClaudeModeChat:
-					// Sessions panel shortcuts (right side)
-					if m.focusArea == FocusDetail {
-						shortcuts = append(shortcuts,
-							HelpKeyStyle.Render("n")+HelpDescStyle.Render(" new  "),
-							HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" open  "),
-							HelpKeyStyle.Render("r")+HelpDescStyle.Render(" rename  "),
-							HelpKeyStyle.Render("x")+HelpDescStyle.Render(" delete  "),
-						)
-					} else if m.claudeInputActive {
-						shortcuts = append(shortcuts,
-							HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" send  "),
-							HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" cancel  "),
-						)
-					} else {
-						shortcuts = append(shortcuts,
-							HelpKeyStyle.Render("i")+HelpDescStyle.Render(" input  "),
-							HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" back  "),
-						)
-					}
-					if m.state.Claude != nil && m.state.Claude.IsProcessing {
-						shortcuts = append(shortcuts,
-							HelpKeyStyle.Render("CTRL+c")+HelpDescStyle.Render(" stop  "),
-						)
-					}
+				} else if m.claudeInputActive {
+					shortcuts = append(shortcuts,
+						HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" send  "),
+						HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" cancel  "),
+					)
+				} else {
+					shortcuts = append(shortcuts,
+						HelpKeyStyle.Render("i")+HelpDescStyle.Render(" input  "),
+						HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" back  "),
+					)
+				}
+				if m.state.Claude != nil && m.state.Claude.IsProcessing {
+					shortcuts = append(shortcuts,
+						HelpKeyStyle.Render("CTRL+c")+HelpDescStyle.Render(" stop  "),
+					)
 				}
 			}
 		}

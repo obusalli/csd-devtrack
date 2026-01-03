@@ -421,7 +421,7 @@ func (tm *TreeMenu) ClearSearch() {
 
 // CalcWidth calculates the optimal width based on item labels
 func (tm *TreeMenu) CalcWidth() int {
-	const minWidth = 30
+	const minWidth = 36
 	const maxWidth = 60
 	const padding = 14 // icons, cursor, borders, count suffix
 
@@ -496,8 +496,8 @@ func (tm *TreeMenu) Render() string {
 
 	items := tm.visibleItems()
 	parent := tm.currentParent()
-	innerWidth := renderWidth - 4 // Account for border
-	contentWidth := innerWidth - 4 // Account for padding
+	innerWidth := renderWidth - 2  // Account for border (1 left + 1 right)
+	contentWidth := innerWidth - 4 // Account for padding (2 left + 2 right)
 
 	var lines []string
 
