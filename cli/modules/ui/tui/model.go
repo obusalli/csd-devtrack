@@ -1470,6 +1470,11 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 	}
 
 	m.state.SetCurrentView(m.currentView)
+
+	// Update sidebar menu items immediately so IsActive is set correctly
+	// (don't wait for async state update from daemon)
+	m.updateSidebarMenu()
+
 	return m.sendEvent(core.NavigateEvent(m.currentView))
 }
 
