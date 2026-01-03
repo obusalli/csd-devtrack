@@ -3436,21 +3436,8 @@ func (m *Model) updateClaudeTree() {
 				}
 			}
 
-			// Sessions not matching any registered project: create pseudo-project
-			if !matched && sess.ProjectName != "" {
-				// Check if we already created a pseudo-project for this
-				pseudoID := "external:" + sess.ProjectName
-				if _, exists := projectMap[pseudoID]; !exists {
-					projectMap[pseudoID] = &projectNode{
-						ID:       pseudoID,
-						Name:     sess.ProjectName + " (external)",
-						Path:     sess.WorkDir,
-						Sessions: []core.ClaudeSessionVM{},
-					}
-					projectOrder = append(projectOrder, pseudoID)
-				}
-				projectMap[pseudoID].Sessions = append(projectMap[pseudoID].Sessions, sess)
-			}
+			// Sessions not matching any registered project are simply ignored
+			// We only show sessions for known projects
 		}
 	}
 
