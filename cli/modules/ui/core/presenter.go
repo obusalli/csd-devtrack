@@ -20,8 +20,8 @@ import (
 	"csd-devtrack/cli/modules/platform/codex"
 	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/platform/database"
-	"csd-devtrack/cli/modules/platform/shell"
 	"csd-devtrack/cli/modules/platform/git"
+	"csd-devtrack/cli/modules/platform/shell"
 	"csd-devtrack/cli/modules/platform/supervisor"
 )
 

@@ -47,3 +47,15 @@ logger.Error("Erreur: %s", value)
 - Module `platform/capabilities/` détecte les outils externes
 - Utilisé pour cacher les fonctionnalités si prérequis manquants
 - Outils détectés: tmux, claude, psql, mysql, sqlite3, git, go, node, npm
+
+## Git
+
+### Push
+Quand l'utilisateur demande "push" ou "commit et push", toujours pousser vers **les deux remotes**:
+```bash
+git push gitlab main && git push github main
+```
+
+### Remotes configurés
+- `gitlab` - git@gitlab.com:ob-infra/dev/csd-devtrack.git
+- `github` - git@github.com:obusalli/csd-devtrack.git

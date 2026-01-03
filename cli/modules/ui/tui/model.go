@@ -12,6 +12,7 @@ import (
 	"csd-devtrack/cli/modules/core/projects"
 	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/platform/daemon"
+	"csd-devtrack/cli/modules/platform/logger"
 	"csd-devtrack/cli/modules/platform/system"
 	"csd-devtrack/cli/modules/ui/core"
 
@@ -3429,7 +3430,14 @@ func (m *Model) sendEvent(event *core.Event) tea.Cmd {
 // handleStateUpdate handles state updates from presenter
 // Returns true if a terminal refresh loop should be started (new session created)
 func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
+	logger.Debug("handleStateUpdate: received update for ViewType=%v", update.ViewType)
 	m.state.UpdateViewModel(update.ViewModel)
+
+	// Debug: log projects state after update
+	if update.ViewType == core.VMProjects && m.state.Projects != nil && len(m.state.Projects.Projects) > 0 {
+		first := m.state.Projects.Projects[0]
+		logger.Debug("handleStateUpdate: first project in state: %s branch=%s dirty=%v", first.Name, first.GitBranch, first.GitDirty)
+	}
 
 	// Sync global state flags from presenter
 	if presenterState := m.presenter.GetState(); presenterState != nil {
