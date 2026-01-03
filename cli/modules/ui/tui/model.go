@@ -172,6 +172,21 @@ type Model struct {
 	terminalMode         bool             // True when in terminal mode (keys go to terminal)
 	terminalRefreshTick  <-chan time.Time // Ticker for terminal refresh
 
+	// Widgets view state
+	widgetsFocusedIndex int    // Currently focused widget index
+	widgetsConfigMode   bool   // True when configuring widgets
+	widgetsConfigStep   string // "grid", "widgets", "filters", "profile_name"
+	widgetsConfigRows   int    // Grid rows being configured
+	widgetsConfigCols   int    // Grid cols being configured
+	widgetsConfigCell   int    // Current cell being configured
+	widgetsGridMenu     *TreeMenu // Menu for grid size selection
+	widgetsTypeMenu     *TreeMenu // Menu for widget type selection
+	widgetsFilterMenu   *TreeMenu // Menu for filter selection
+	widgetsProfileMenu  *TreeMenu // Menu for profile selection
+	widgetsNewName      string    // New profile name being entered
+	widgetsRenaming     bool      // True when renaming profile
+	widgetsCreatingNew  bool      // True when creating new profile
+
 	// Components
 	help     help.Model
 	spinner  spinner.Model
@@ -668,6 +683,13 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 
+	// Handle widgets config mode navigation
+	if m.currentView == core.VMWidgets && m.widgetsConfigMode {
+		if m.handleWidgetsConfigNavigation(msg) {
+			return nil
+		}
+	}
+
 	switch {
 	// Quit
 	case key.Matches(msg, m.keys.Quit):
@@ -950,6 +972,8 @@ func (m *Model) navigateUp() {
 			m.projectsMenu.MoveUp()
 		case core.VMProcesses:
 			m.processesMenu.MoveUp()
+		case core.VMWidgets:
+			m.navigateWidgetUp()
 		default:
 			if m.mainIndex > 0 {
 				m.mainIndex--
@@ -984,6 +1008,8 @@ func (m *Model) navigateDown() {
 			m.projectsMenu.MoveDown()
 		case core.VMProcesses:
 			m.processesMenu.MoveDown()
+		case core.VMWidgets:
+			m.navigateWidgetDown()
 		default:
 			if m.mainIndex < m.maxMainItems-1 {
 				m.mainIndex++
@@ -1007,10 +1033,10 @@ func (m *Model) navigateDown() {
 	}
 }
 
-// navigateLeft moves selection left (Config tabs only)
+// navigateLeft moves selection left (Config tabs or Widgets)
 func (m *Model) navigateLeft() {
-	// Only used for Config tabs - use Tab for panel switching
-	if m.currentView == core.VMConfig {
+	switch m.currentView {
+	case core.VMConfig:
 		switch m.configMode {
 		case "browser":
 			m.configMode = "projects"
@@ -1020,13 +1046,15 @@ func (m *Model) navigateLeft() {
 			m.mainIndex = 0
 			m.loadBrowserEntries()
 		}
+	case core.VMWidgets:
+		m.navigateWidgetLeft()
 	}
 }
 
-// navigateRight moves selection right (Config tabs only)
+// navigateRight moves selection right (Config tabs or Widgets)
 func (m *Model) navigateRight() {
-	// Only used for Config tabs - use Tab for panel switching
-	if m.currentView == core.VMConfig {
+	switch m.currentView {
+	case core.VMConfig:
 		switch m.configMode {
 		case "projects":
 			m.configMode = "browser"
@@ -1036,6 +1064,8 @@ func (m *Model) navigateRight() {
 			m.configMode = "settings"
 			m.mainIndex = 0
 		}
+	case core.VMWidgets:
+		m.navigateWidgetRight()
 	}
 }
 
@@ -1193,6 +1223,11 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 		}
 	}
 
+	// Reset widgets config mode when leaving/entering view
+	if m.currentView != core.VMWidgets {
+		m.widgetsConfigMode = false
+	}
+
 	m.state.SetCurrentView(m.currentView)
 	return m.sendEvent(core.NavigateEvent(m.currentView))
 }
@@ -1287,6 +1322,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		return m.selectViewByType(core.VMLogs)
 	case "G":
 		return m.selectViewByType(core.VMGit)
+	case "W":
+		return m.selectViewByType(core.VMWidgets)
 	case "C":
 		// Claude Code view (only if installed)
 		if m.state.Claude != nil && m.state.Claude.IsInstalled {
@@ -1388,6 +1425,61 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		case "x":
 			m.logSearchText = "" // Clear search
 			return nil
+		}
+	}
+
+	// Widgets view specific keys
+	if m.currentView == core.VMWidgets {
+		switch key {
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			if !m.widgetsConfigMode {
+				m.switchWidgetProfile(key)
+			}
+			return nil
+		case "c":
+			// Enter/exit config mode
+			m.widgetsConfigMode = !m.widgetsConfigMode
+			if m.widgetsConfigMode {
+				m.widgetsConfigStep = "grid"
+				m.initWidgetsConfigMenus()
+			}
+			return nil
+		case "n":
+			// New profile
+			if !m.widgetsConfigMode {
+				m.startNewWidgetProfile()
+			}
+			return nil
+		case "x":
+			// Delete profile (with confirmation)
+			if !m.widgetsConfigMode {
+				cfg := config.GetGlobal()
+				if cfg != nil && len(cfg.WidgetProfiles) > 1 {
+					m.dialogType = "delete_widget_profile"
+					m.dialogMessage = fmt.Sprintf("Delete profile '%s'?", m.getActiveWidgetProfile())
+					m.showDialog = true
+				} else {
+					m.lastError = "Cannot delete the only profile"
+					m.lastErrorTime = time.Now()
+				}
+			}
+			return nil
+		case "r":
+			// Rename profile
+			if !m.widgetsConfigMode {
+				m.startRenameWidgetProfile()
+			}
+			return nil
+		case "enter":
+			if m.widgetsConfigMode {
+				return m.handleWidgetsConfigEnter()
+			}
+			return nil
+		case "esc":
+			if m.widgetsConfigMode {
+				m.widgetsConfigMode = false
+				return nil
+			}
 		}
 	}
 
@@ -2279,6 +2371,10 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 			return m.createClaudeSessionWithName(projectID, sessionName)
 		}
 		return nil
+	case "delete_widget_profile":
+		// Delete the current widget profile
+		m.deleteWidgetProfile()
+		return nil
 	}
 	return nil
 }
@@ -3141,6 +3237,14 @@ func (m *Model) updateItemCounts() {
 			}
 		case ClaudeModeChat:
 			m.maxMainItems = 0 // No list navigation in chat
+		}
+	case core.VMWidgets:
+		// Widgets view - count widgets in active profile
+		profile := m.getWidgetProfile(m.getActiveWidgetProfile())
+		if profile != nil {
+			m.maxMainItems = len(profile.Widgets)
+		} else {
+			m.maxMainItems = 0
 		}
 	}
 }

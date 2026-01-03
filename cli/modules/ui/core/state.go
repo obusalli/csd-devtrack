@@ -21,6 +21,7 @@ type AppState struct {
 	Git        *GitVM
 	Config     *ConfigVM
 	Claude     *ClaudeVM
+	Widgets    *WidgetsVM
 
 	// Global state
 	IsConnected   bool
@@ -43,6 +44,7 @@ func NewAppState() *AppState {
 		Git:          &GitVM{BaseViewModel: BaseViewModel{VMType: VMGit}},
 		Config:       &ConfigVM{BaseViewModel: BaseViewModel{VMType: VMConfig}},
 		Claude:       &ClaudeVM{BaseViewModel: BaseViewModel{VMType: VMClaude}},
+		Widgets:      &WidgetsVM{BaseViewModel: BaseViewModel{VMType: VMWidgets}},
 		Notifications: make([]*Notification, 0),
 	}
 }
@@ -69,6 +71,8 @@ func (s *AppState) GetCurrentViewModel() ViewModel {
 		return s.Config
 	case VMClaude:
 		return s.Claude
+	case VMWidgets:
+		return s.Widgets
 	default:
 		return s.Dashboard
 	}
@@ -103,6 +107,8 @@ func (s *AppState) UpdateViewModel(vm ViewModel) {
 		s.Config = v
 	case *ClaudeVM:
 		s.Claude = v
+	case *WidgetsVM:
+		s.Widgets = v
 	}
 }
 

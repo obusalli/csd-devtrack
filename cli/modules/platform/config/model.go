@@ -6,10 +6,47 @@ import (
 
 // Config represents the main configuration
 type Config struct {
-	Version       string              `yaml:"version"`
-	Settings      *Settings           `yaml:"settings"`
-	Projects      []projects.Project  `yaml:"projects"`
-	BuildProfiles map[string]*BuildProfile `yaml:"build_profiles,omitempty"`
+	Version        string                    `yaml:"version"`
+	Settings       *Settings                 `yaml:"settings"`
+	Projects       []projects.Project        `yaml:"projects"`
+	BuildProfiles  map[string]*BuildProfile  `yaml:"build_profiles,omitempty"`
+	WidgetProfiles map[string]*WidgetProfile `yaml:"widget_profiles,omitempty"`
+}
+
+// WidgetType represents the type of widget
+type WidgetType string
+
+const (
+	WidgetLogs           WidgetType = "logs"
+	WidgetClaudeSessions WidgetType = "claude_sessions"
+	WidgetProcesses      WidgetType = "processes"
+	WidgetBuildStatus    WidgetType = "build_status"
+	WidgetGitStatus      WidgetType = "git_status"
+	WidgetDashStats      WidgetType = "dashboard_stats"
+)
+
+// WidgetConfig represents the configuration for a single widget
+type WidgetConfig struct {
+	ID             string `yaml:"id" json:"id"`
+	Type           string `yaml:"type" json:"type"` // logs, processes, build_status, etc.
+	Title          string `yaml:"title,omitempty" json:"title,omitempty"`
+	Row            int    `yaml:"row" json:"row"`
+	Col            int    `yaml:"col" json:"col"`
+	RowSpan        int    `yaml:"row_span,omitempty" json:"row_span,omitempty"` // Default: 1
+	ColSpan        int    `yaml:"col_span,omitempty" json:"col_span,omitempty"` // Default: 1
+	ProjectFilter  string `yaml:"project_filter,omitempty" json:"project_filter,omitempty"`
+	LogTypeFilter  string `yaml:"log_type_filter,omitempty" json:"log_type_filter,omitempty"`   // build, process
+	LogLevelFilter string `yaml:"log_level_filter,omitempty" json:"log_level_filter,omitempty"` // error, warn, info
+	SessionID      string `yaml:"session_id,omitempty" json:"session_id,omitempty"`             // For Claude sessions widget
+}
+
+// WidgetProfile represents a named layout configuration
+type WidgetProfile struct {
+	Name        string         `yaml:"name" json:"name"`
+	Description string         `yaml:"description,omitempty" json:"description,omitempty"`
+	Rows        int            `yaml:"rows" json:"rows"` // 1-4
+	Cols        int            `yaml:"cols" json:"cols"` // 1-4
+	Widgets     []WidgetConfig `yaml:"widgets" json:"widgets"`
 }
 
 // BuildProfile represents a build configuration profile
@@ -82,6 +119,9 @@ type Settings struct {
 
 	// Claude AI integration
 	Claude *ClaudeConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
+
+	// Widgets view
+	ActiveWidgetProfile string `yaml:"active_widget_profile,omitempty" json:"active_widget_profile,omitempty"`
 }
 
 // ClaudeConfig represents Claude AI integration settings
@@ -206,13 +246,54 @@ func DefaultBuildProfiles() map[string]*BuildProfile {
 	}
 }
 
+// DefaultWidgetProfiles returns the default widget layout profiles
+func DefaultWidgetProfiles() map[string]*WidgetProfile {
+	return map[string]*WidgetProfile{
+		"default": {
+			Name:        "default",
+			Description: "Standard layout with stats, processes and logs",
+			Rows:        2,
+			Cols:        2,
+			Widgets: []WidgetConfig{
+				{ID: "w1", Type: string(WidgetDashStats), Row: 0, Col: 0, ColSpan: 2, Title: "Stats"},
+				{ID: "w2", Type: string(WidgetProcesses), Row: 1, Col: 0, Title: "Processes"},
+				{ID: "w3", Type: string(WidgetLogs), Row: 1, Col: 1, Title: "Logs"},
+			},
+		},
+		"debug": {
+			Name:        "debug",
+			Description: "Focused on logs and build output",
+			Rows:        2,
+			Cols:        2,
+			Widgets: []WidgetConfig{
+				{ID: "w1", Type: string(WidgetLogs), Row: 0, Col: 0, ColSpan: 2, LogLevelFilter: "error", Title: "Errors"},
+				{ID: "w2", Type: string(WidgetBuildStatus), Row: 1, Col: 0, Title: "Build"},
+				{ID: "w3", Type: string(WidgetProcesses), Row: 1, Col: 1, Title: "Processes"},
+			},
+		},
+		"monitoring": {
+			Name:        "monitoring",
+			Description: "System monitoring focus",
+			Rows:        3,
+			Cols:        2,
+			Widgets: []WidgetConfig{
+				{ID: "w1", Type: string(WidgetDashStats), Row: 0, Col: 0, ColSpan: 2, Title: "Dashboard"},
+				{ID: "w2", Type: string(WidgetProcesses), Row: 1, Col: 0, Title: "Processes"},
+				{ID: "w3", Type: string(WidgetGitStatus), Row: 1, Col: 1, Title: "Git"},
+				{ID: "w4", Type: string(WidgetLogs), Row: 2, Col: 0, ColSpan: 2, Title: "All Logs"},
+			},
+		},
+	}
+}
+
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Version:       "1.0",
-		Settings:      DefaultSettings(),
-		Projects:      []projects.Project{},
-		BuildProfiles: DefaultBuildProfiles(),
+		Version:        "1.0",
+		Settings:       DefaultSettings(),
+		Projects:       []projects.Project{},
+		BuildProfiles:  DefaultBuildProfiles(),
+		WidgetProfiles: DefaultWidgetProfiles(),
 	}
 }
 

@@ -21,6 +21,7 @@ const (
 	VMGit       ViewModelType = "git"
 	VMConfig    ViewModelType = "config"
 	VMClaude    ViewModelType = "claude"
+	VMWidgets   ViewModelType = "widgets"
 )
 
 // ViewModel is the base interface for all view models
@@ -260,6 +261,16 @@ type ClaudeInteractiveVM struct {
 	Question    string   `json:"question"`      // Question text
 	Options     []string `json:"options"`       // Available options
 	PlanContent string   `json:"plan_content"`  // Plan content
+}
+
+// WidgetsVM is the view model for the configurable widgets view
+type WidgetsVM struct {
+	BaseViewModel
+	ActiveProfile     string   `json:"active_profile"`
+	AvailableProfiles []string `json:"available_profiles"`
+	ConfigMode        bool     `json:"config_mode"`        // true = editing layout
+	ConfigStep        string   `json:"config_step"`        // "grid", "widgets", "filters"
+	FocusedWidgetIdx  int      `json:"focused_widget_idx"` // Currently focused widget index
 }
 
 // ClaudeVM is the view model for the Claude AI view

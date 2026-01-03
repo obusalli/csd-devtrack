@@ -140,6 +140,7 @@ var baseSidebarViews = []sidebarView{
 	{"Pr[O]cesses", core.VMProcesses},
 	{"[L]ogs", core.VMLogs},
 	{"[G]it", core.VMGit},
+	{"[W]idgets", core.VMWidgets},
 }
 
 // getSidebarViews returns the sidebar views, including Claude Code if installed
@@ -584,6 +585,8 @@ func (m *Model) renderMainContent() string {
 		content = m.renderConfig(width, height)
 	case core.VMClaude:
 		content = m.renderClaude(width, height)
+	case core.VMWidgets:
+		content = m.renderWidgets(width, height)
 	default:
 		content = m.renderDashboard(width, height)
 	}
@@ -817,6 +820,24 @@ func (m *Model) renderFooter() string {
 						HelpKeyStyle.Render("CTRL+c")+HelpDescStyle.Render(" stop  "),
 					)
 				}
+			}
+		case core.VMWidgets:
+			// Widgets view shortcuts
+			if m.widgetsConfigMode {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" select  "),
+					HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" confirm  "),
+					HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" back  "),
+				)
+			} else {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("↑↓←→")+HelpDescStyle.Render(" navigate  "),
+					HelpKeyStyle.Render("1-9")+HelpDescStyle.Render(" profile  "),
+					HelpKeyStyle.Render("c")+HelpDescStyle.Render(" config  "),
+					HelpKeyStyle.Render("n")+HelpDescStyle.Render(" new  "),
+					HelpKeyStyle.Render("r")+HelpDescStyle.Render(" rename  "),
+					HelpKeyStyle.Render("x")+HelpDescStyle.Render(" delete  "),
+				)
 			}
 		}
 	}

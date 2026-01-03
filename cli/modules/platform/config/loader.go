@@ -79,6 +79,16 @@ func (l *Loader) LoadWithCreate(createIfMissing bool) (*Config, error) {
 		}
 	}
 
+	// Apply default widget profiles if missing
+	if config.WidgetProfiles == nil || len(config.WidgetProfiles) == 0 {
+		config.WidgetProfiles = DefaultWidgetProfiles()
+	}
+
+	// Apply default build profiles if missing
+	if config.BuildProfiles == nil || len(config.BuildProfiles) == 0 {
+		config.BuildProfiles = DefaultBuildProfiles()
+	}
+
 	return &config, nil
 }
 
