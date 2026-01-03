@@ -3166,6 +3166,8 @@ func (m *Model) refreshData() tea.Msg {
 func (m *Model) buildSelected() tea.Cmd {
 	projectID := m.getSelectedProjectID()
 	if projectID == "" {
+		m.lastError = "No project selected"
+		m.lastErrorTime = time.Now()
 		return nil
 	}
 
@@ -3189,6 +3191,8 @@ func (m *Model) buildAll() tea.Cmd {
 func (m *Model) runSelected() tea.Cmd {
 	projectID := m.getSelectedProjectID()
 	if projectID == "" {
+		m.lastError = "No project selected"
+		m.lastErrorTime = time.Now()
 		return nil
 	}
 	// Cannot run self (csd-devtrack) - it's already running
@@ -3204,6 +3208,8 @@ func (m *Model) runSelected() tea.Cmd {
 func (m *Model) stopSelected() tea.Cmd {
 	projectID := m.getSelectedProjectID()
 	if projectID == "" {
+		m.lastError = "No project selected"
+		m.lastErrorTime = time.Now()
 		return nil
 	}
 	// Cannot stop self (csd-devtrack)
