@@ -59,6 +59,13 @@ type AppPresenter struct {
 
 	// Self process tracking
 	startTime time.Time // When csd-devtrack started
+
+	// Refresh control (prevents concurrent refreshes)
+	refreshMu      sync.Mutex
+	refreshing     bool
+	refreshPending bool          // True if a refresh was requested while one was in progress
+	lastRefreshReq time.Time     // Last refresh request time (for debounce)
+	debounceTimer  *time.Timer   // Debounce timer
 }
 
 // NewAppPresenter creates a new application presenter
@@ -420,14 +427,93 @@ func (p *AppPresenter) SubscribeNotifications(callback func(*Notification)) {
 }
 
 // Refresh forces a refresh of all data
+// Safe to call from goroutines - uses debouncing and prevents concurrent refreshes
 func (p *AppPresenter) Refresh() error {
+	return p.RefreshDebounced(100 * time.Millisecond)
+}
+
+// RefreshDebounced requests a refresh with debouncing
+// Multiple calls within the debounce period are coalesced into one refresh
+func (p *AppPresenter) RefreshDebounced(debounce time.Duration) error {
+	p.refreshMu.Lock()
+
+	// If already refreshing, mark that another refresh is pending
+	if p.refreshing {
+		p.refreshPending = true
+		p.refreshMu.Unlock()
+		return nil
+	}
+
+	// Debounce: if last request was very recent, delay this one
+	now := time.Now()
+	if !p.lastRefreshReq.IsZero() && now.Sub(p.lastRefreshReq) < debounce {
+		// Cancel existing timer if any
+		if p.debounceTimer != nil {
+			p.debounceTimer.Stop()
+		}
+		// Schedule refresh after debounce period
+		p.debounceTimer = time.AfterFunc(debounce, func() {
+			p.doRefresh()
+		})
+		p.refreshMu.Unlock()
+		return nil
+	}
+
+	p.lastRefreshReq = now
+	p.refreshMu.Unlock()
+
+	return p.doRefresh()
+}
+
+// RefreshNow forces an immediate refresh without debouncing
+func (p *AppPresenter) RefreshNow() error {
+	p.refreshMu.Lock()
+	// Cancel any pending debounced refresh
+	if p.debounceTimer != nil {
+		p.debounceTimer.Stop()
+		p.debounceTimer = nil
+	}
+	p.refreshMu.Unlock()
+
+	return p.doRefresh()
+}
+
+// doRefresh performs the actual refresh
+func (p *AppPresenter) doRefresh() error {
+	p.refreshMu.Lock()
+	if p.refreshing {
+		p.refreshPending = true
+		p.refreshMu.Unlock()
+		return nil
+	}
+	p.refreshing = true
+	p.refreshPending = false
+	p.refreshMu.Unlock()
+
+	// Ensure we clear the flag when done and check for pending refresh
+	defer func() {
+		p.refreshMu.Lock()
+		p.refreshing = false
+		pending := p.refreshPending
+		p.refreshPending = false
+		p.refreshMu.Unlock()
+
+		// If another refresh was requested while we were refreshing, do it now
+		if pending {
+			go p.doRefresh()
+		}
+	}()
+
 	// Refresh projects (will skip git enrichment if git is loading in background)
 	if err := p.refreshProjects(); err != nil {
 		return err
 	}
 
 	// Refresh git status (skip if git is loading in background)
-	if !p.state.GitLoading {
+	p.mu.RLock()
+	gitLoading := p.state.GitLoading
+	p.mu.RUnlock()
+	if !gitLoading {
 		p.refreshGitStatus()
 	}
 
@@ -437,7 +523,9 @@ func (p *AppPresenter) Refresh() error {
 	// Update dashboard
 	p.refreshDashboard()
 
+	p.mu.Lock()
 	p.state.LastRefresh = time.Now()
+	p.mu.Unlock()
 
 	// Broadcast state update to all subscribers
 	p.broadcastFullState()
@@ -445,11 +533,57 @@ func (p *AppPresenter) Refresh() error {
 	return nil
 }
 
+// RefreshCurrentView refreshes only the current view (lightweight)
+// Use this for periodic refreshes instead of full Refresh()
+func (p *AppPresenter) RefreshCurrentView() {
+	p.mu.RLock()
+	currentView := p.state.CurrentView
+	p.mu.RUnlock()
+
+	switch currentView {
+	case VMDashboard:
+		p.refreshDashboard()
+	case VMProjects:
+		p.refreshProjects()
+	case VMProcesses:
+		p.refreshProcesses()
+	case VMGit:
+		p.refreshGitStatus()
+	case VMClaude:
+		p.refreshClaude()
+	case VMDatabase:
+		p.refreshDatabase()
+	case VMShell:
+		p.refreshShell()
+	case VMCodex:
+		p.refreshCodex()
+	case VMConfig:
+		// Config doesn't need refresh
+	case VMCockpit:
+		// Cockpit refreshes via terminal updates
+	case VMLogs:
+		// Logs are pushed via callbacks
+	}
+
+	// Notify only the current view
+	p.mu.RLock()
+	vm := p.state.GetCurrentViewModel()
+	p.mu.RUnlock()
+	p.notifyStateUpdate(currentView, vm)
+}
+
 // Shutdown cleans up resources
 func (p *AppPresenter) Shutdown() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
+
+	// Cancel any pending debounced refresh
+	p.refreshMu.Lock()
+	if p.debounceTimer != nil {
+		p.debounceTimer.Stop()
+	}
+	p.refreshMu.Unlock()
 
 	// Shutdown Claude service
 	if p.claudeService != nil {

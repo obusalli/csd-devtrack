@@ -2,14 +2,27 @@ package git
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
 	"csd-devtrack/cli/modules/core/projects"
 )
+
+// statusCacheEntry holds cached git status with expiry
+type statusCacheEntry struct {
+	status    *Status
+	timestamp time.Time
+}
 
 // Service provides git operations for projects
 type Service struct {
 	projectService *projects.Service
 	repos          map[string]*Repository
+
+	// Status cache with TTL
+	statusCache   map[string]*statusCacheEntry
+	statusCacheMu sync.RWMutex
+	statusTTL     time.Duration // How long status cache is valid
 }
 
 // NewService creates a new git service
@@ -17,6 +30,8 @@ func NewService(projectService *projects.Service) *Service {
 	return &Service{
 		projectService: projectService,
 		repos:          make(map[string]*Repository),
+		statusCache:    make(map[string]*statusCacheEntry),
+		statusTTL:      2 * time.Second, // Cache status for 2 seconds
 	}
 }
 
@@ -45,14 +60,53 @@ func (s *Service) GetRepository(projectID string) (*Repository, error) {
 	return repo, nil
 }
 
-// GetStatus returns the git status for a project
+// GetStatus returns the git status for a project (with caching)
 func (s *Service) GetStatus(projectID string) (*Status, error) {
+	// Check cache first
+	s.statusCacheMu.RLock()
+	if entry, ok := s.statusCache[projectID]; ok {
+		if time.Since(entry.timestamp) < s.statusTTL {
+			s.statusCacheMu.RUnlock()
+			return entry.status, nil
+		}
+	}
+	s.statusCacheMu.RUnlock()
+
+	// Cache miss or expired - fetch fresh status
 	repo, err := s.GetRepository(projectID)
 	if err != nil {
 		return nil, err
 	}
 
-	return repo.GetStatus()
+	status, err := repo.GetStatus()
+	if err != nil {
+		return nil, err
+	}
+
+	// Update cache
+	s.statusCacheMu.Lock()
+	s.statusCache[projectID] = &statusCacheEntry{
+		status:    status,
+		timestamp: time.Now(),
+	}
+	s.statusCacheMu.Unlock()
+
+	return status, nil
+}
+
+// InvalidateStatusCache clears the status cache for a project
+// Call this after git operations that change status (commit, add, etc.)
+func (s *Service) InvalidateStatusCache(projectID string) {
+	s.statusCacheMu.Lock()
+	delete(s.statusCache, projectID)
+	s.statusCacheMu.Unlock()
+}
+
+// InvalidateAllStatusCache clears all status cache
+func (s *Service) InvalidateAllStatusCache() {
+	s.statusCacheMu.Lock()
+	s.statusCache = make(map[string]*statusCacheEntry)
+	s.statusCacheMu.Unlock()
 }
 
 // GetLog returns the git log for a project

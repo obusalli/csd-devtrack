@@ -179,6 +179,12 @@ func (p *ClientPresenter) Refresh() error {
 	return p.client.RequestState()
 }
 
+// RefreshCurrentView requests a state refresh from the daemon
+// For the client, this is the same as Refresh since the daemon handles the optimization
+func (p *ClientPresenter) RefreshCurrentView() {
+	_ = p.client.RequestState()
+}
+
 // Shutdown disconnects from the daemon
 func (p *ClientPresenter) Shutdown() error {
 	if p.cancel != nil {

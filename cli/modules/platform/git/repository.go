@@ -5,16 +5,24 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-// Repository wraps go-git repository
+// Repository wraps go-git repository with caching
 type Repository struct {
 	path string
 	repo *git.Repository
+
+	// Cache for worktree status (expensive operation)
+	statusCache     git.Status
+	statusCacheTime time.Time
+	statusCacheTTL  time.Duration
+	statusMu        sync.RWMutex
 }
 
 // OpenRepository opens a git repository at the given path
@@ -31,19 +39,23 @@ func OpenRepository(path string) (*Repository, error) {
 	}
 
 	return &Repository{
-		path: absPath,
-		repo: repo,
+		path:           absPath,
+		repo:           repo,
+		statusCacheTTL: 1 * time.Second, // Cache worktree status for 1 second
 	}, nil
 }
 
-// IsRepository checks if a path is a git repository
-func IsRepository(path string) bool {
-	_, err := git.PlainOpen(path)
-	return err == nil
-}
+// getWorktreeStatus returns cached worktree status or fetches fresh
+func (r *Repository) getWorktreeStatus() (git.Status, error) {
+	r.statusMu.RLock()
+	if r.statusCache != nil && time.Since(r.statusCacheTime) < r.statusCacheTTL {
+		status := r.statusCache
+		r.statusMu.RUnlock()
+		return status, nil
+	}
+	r.statusMu.RUnlock()
 
-// GetStatus returns the current git status
-func (r *Repository) GetStatus() (*Status, error) {
+	// Cache miss - fetch fresh status
 	worktree, err := r.repo.Worktree()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get worktree: %w", err)
@@ -52,6 +64,35 @@ func (r *Repository) GetStatus() (*Status, error) {
 	status, err := worktree.Status()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
+	}
+
+	// Update cache
+	r.statusMu.Lock()
+	r.statusCache = status
+	r.statusCacheTime = time.Now()
+	r.statusMu.Unlock()
+
+	return status, nil
+}
+
+// InvalidateCache clears the status cache
+func (r *Repository) InvalidateCache() {
+	r.statusMu.Lock()
+	r.statusCache = nil
+	r.statusMu.Unlock()
+}
+
+// IsRepository checks if a path is a git repository
+func IsRepository(path string) bool {
+	_, err := git.PlainOpen(path)
+	return err == nil
+}
+
+// GetStatus returns the current git status (uses cache)
+func (r *Repository) GetStatus() (*Status, error) {
+	status, err := r.getWorktreeStatus()
+	if err != nil {
+		return nil, err
 	}
 
 	result := &Status{
@@ -161,16 +202,11 @@ func (r *Repository) GetLog(opts LogOptions) ([]Commit, error) {
 	return commits, nil
 }
 
-// GetDiff returns the current diff
+// GetDiff returns the current diff (uses cached status)
 func (r *Repository) GetDiff(opts DiffOptions) (*Diff, error) {
-	worktree, err := r.repo.Worktree()
+	status, err := r.getWorktreeStatus()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	status, err := worktree.Status()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get status: %w", err)
+		return nil, err
 	}
 
 	diff := &Diff{

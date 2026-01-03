@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"csd-devtrack/cli/modules/platform/terminal"
 )
 
 // TerminalTmux represents a terminal using tmux
@@ -46,7 +48,7 @@ type TerminalTmux struct {
 
 // NewTerminalTmux creates a new tmux-based terminal for Claude
 func NewTerminalTmux(sessionID, workDir, claudeProjectDir, claudePath string) *TerminalTmux {
-	return NewTerminalTmuxWithPrefix(sessionID, workDir, claudeProjectDir, claudePath, TmuxPrefixClaude)
+	return NewTerminalTmuxWithPrefix(sessionID, workDir, claudeProjectDir, claudePath, terminal.PrefixClaude)
 }
 
 // NewTerminalTmuxWithPrefix creates a new tmux-based terminal with a specific prefix
@@ -72,7 +74,7 @@ func NewTerminalTmuxWithPrefix(sessionID, workDir, claudeProjectDir, claudePath,
 
 // NewTerminalTmuxCommand creates a new tmux-based terminal with a custom command (for database)
 func NewTerminalTmuxCommand(sessionID, command string, args []string) *TerminalTmux {
-	return NewTerminalTmuxCommandWithPrefix(sessionID, command, args, TmuxPrefixDatabase)
+	return NewTerminalTmuxCommandWithPrefix(sessionID, command, args, terminal.PrefixDatabase)
 }
 
 // NewTerminalTmuxCommandWithPrefix creates a new tmux-based terminal with a custom command and prefix
@@ -127,12 +129,12 @@ func (t *TerminalTmux) SetSize(width, height int) {
 		tmuxName := t.tmuxName
 		t.mu.Unlock()
 
-		// Set window-size to manual to allow resize of detached session
-		exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "manual").Run()
-		exec.Command("tmux", "resize-window", "-t", tmuxName, "-x", fmt.Sprintf("%d", width), "-y", fmt.Sprintf("%d", height)).Run()
-
-		// Send SIGWINCH to process inside
-		pidOut, _ := exec.Command("tmux", "display-message", "-t", tmuxName, "-p", "#{pane_pid}").Output()
+		// Batch: set-option + resize-window + display-message in one call
+		pidOut, _ := exec.Command("tmux",
+			"set-option", "-t", tmuxName, "window-size", "manual", ";",
+			"resize-window", "-t", tmuxName, "-x", fmt.Sprintf("%d", width), "-y", fmt.Sprintf("%d", height), ";",
+			"display-message", "-t", tmuxName, "-p", "#{pane_pid}",
+		).Output()
 		if pid := strings.TrimSpace(string(pidOut)); pid != "" {
 			exec.Command("kill", "-WINCH", pid).Run()
 		}
@@ -153,9 +155,11 @@ func (t *TerminalTmux) Start(sessionID string) error {
 	// Check if session already exists
 	checkCmd := exec.Command("tmux", "has-session", "-t", t.tmuxName)
 	if err := checkCmd.Run(); err == nil {
-		// Session exists, reuse it - force resize with proper method
-		exec.Command("tmux", "set-option", "-t", t.tmuxName, "window-size", "manual").Run()
-		exec.Command("tmux", "resize-window", "-t", t.tmuxName, "-x", fmt.Sprintf("%d", t.width), "-y", fmt.Sprintf("%d", t.height)).Run()
+		// Session exists, reuse it - batch: set-option + resize-window
+		exec.Command("tmux",
+			"set-option", "-t", t.tmuxName, "window-size", "manual", ";",
+			"resize-window", "-t", t.tmuxName, "-x", fmt.Sprintf("%d", t.width), "-y", fmt.Sprintf("%d", t.height),
+		).Run()
 		t.state = TerminalRunning
 		t.stopCh = make(chan struct{})
 		t.mu.Unlock()
@@ -241,17 +245,18 @@ func (t *TerminalTmux) doStart(sessionID string) error {
 		return fmt.Errorf("failed to start tmux session: %w", err)
 	}
 
-	// Set window-size to manual and resize
-	exec.Command("tmux", "set-option", "-t", tmuxName, "window-size", "manual").Run()
-	exec.Command("tmux", "resize-window", "-t", tmuxName, "-x", fmt.Sprintf("%d", width), "-y", fmt.Sprintf("%d", height)).Run()
+	// Batch: set-option + resize-window in one call
+	exec.Command("tmux",
+		"set-option", "-t", tmuxName, "window-size", "manual", ";",
+		"resize-window", "-t", tmuxName, "-x", fmt.Sprintf("%d", width), "-y", fmt.Sprintf("%d", height),
+	).Run()
 
-	// Wait for Claude to start, then send SIGWINCH via tmux respawn
+	// Wait for Claude to start, then send SIGWINCH
 	time.Sleep(200 * time.Millisecond)
 
 	// Get pane PID and send SIGWINCH
 	pidOut, _ := exec.Command("tmux", "display-message", "-t", tmuxName, "-p", "#{pane_pid}").Output()
 	if pid := strings.TrimSpace(string(pidOut)); pid != "" {
-		// Send SIGWINCH to the process group
 		exec.Command("kill", "-WINCH", pid).Run()
 	}
 
@@ -683,12 +688,12 @@ func (t *TerminalTmux) GetLines() []string {
 	return strings.Split(t.content, "\n")
 }
 
-// Tmux session prefixes (cdt = csd-devtrack)
+// Tmux session prefixes - re-exported from platform/terminal for backward compatibility
 const (
-	TmuxPrefixClaude   = "cdt-cc-" // Claude Code
-	TmuxPrefixCodex    = "cdt-cx-" // Codex
-	TmuxPrefixDatabase = "cdt-db-" // Database clients
-	TmuxPrefixShell    = "cdt-sh-" // Terminal/Shell
+	TmuxPrefixClaude   = terminal.PrefixClaude   // Claude Code
+	TmuxPrefixCodex    = terminal.PrefixCodex    // Codex
+	TmuxPrefixDatabase = terminal.PrefixDatabase // Database clients
+	TmuxPrefixShell    = terminal.PrefixShell    // Terminal/Shell
 )
 
 // CleanupOrphanTmuxSessions kills all cdt-* tmux sessions

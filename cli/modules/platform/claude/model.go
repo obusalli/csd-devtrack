@@ -36,7 +36,8 @@ type Session struct {
 	ProjectName  string       `json:"project_name"`   // For display
 	WorkDir      string       `json:"work_dir"`       // Working directory for Claude
 	State        SessionState `json:"state"`
-	Messages     []Message    `json:"messages"`       // Loaded from Claude CLI JSONL
+	Messages     []Message    `json:"messages"`       // Loaded from Claude CLI JSONL (lazy loaded)
+	MessageCount int          `json:"message_count"`  // Count without loading all messages
 	CreatedAt    time.Time    `json:"created_at"`
 	LastActiveAt time.Time    `json:"last_active_at"`
 	Error        string       `json:"error,omitempty"`
@@ -45,8 +46,9 @@ type Session struct {
 	Interactive *InteractiveState `json:"interactive,omitempty"`
 
 	// Real Claude CLI session info
-	IsRealSession bool   `json:"is_real_session"` // True if from ~/.claude/projects/
-	SessionFile   string `json:"session_file"`    // Path to JSONL file
+	IsRealSession  bool   `json:"is_real_session"`  // True if from ~/.claude/projects/
+	SessionFile    string `json:"session_file"`     // Path to JSONL file
+	MessagesLoaded bool   `json:"-"`                // True if messages have been fully loaded
 }
 
 // GenerateSessionID generates a new UUID for a Claude session
@@ -85,6 +87,12 @@ func (s *Session) ToSummary() SessionSummary {
 		claudeProjectDir = filepath.Base(filepath.Dir(s.SessionFile))
 	}
 
+	// Use MessageCount if messages not loaded, otherwise use actual count
+	msgCount := s.MessageCount
+	if s.MessagesLoaded && len(s.Messages) > 0 {
+		msgCount = len(s.Messages)
+	}
+
 	return SessionSummary{
 		ID:               s.ID,
 		Name:             s.DisplayName(), // Use custom name if set
@@ -93,7 +101,7 @@ func (s *Session) ToSummary() SessionSummary {
 		WorkDir:          s.WorkDir,
 		ClaudeProjectDir: claudeProjectDir,
 		State:            s.State,
-		MessageCount:     len(s.Messages),
+		MessageCount:     msgCount,
 		CreatedAt:        s.CreatedAt,
 		LastActiveAt:     s.LastActiveAt,
 	}

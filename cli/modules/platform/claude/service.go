@@ -577,10 +577,8 @@ func (s *Service) saveCustomNames() error {
 }
 
 // loadSessions loads sessions from Claude CLI's ~/.claude/projects/ directory
+// Uses parallel loading for faster startup
 func (s *Service) loadSessions() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	projectsDir := claudeProjectsDir()
 
 	// Read all project directories
@@ -589,17 +587,112 @@ func (s *Service) loadSessions() {
 		return // No Claude projects yet
 	}
 
+	// Collect directories to process
+	var dirs []struct{ path, name string }
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if entry.IsDir() {
+			dirs = append(dirs, struct{ path, name string }{
+				path: filepath.Join(projectsDir, entry.Name()),
+				name: entry.Name(),
+			})
+		}
+	}
+
+	if len(dirs) == 0 {
+		return
+	}
+
+	// Load projects in parallel, collect results via mutex (simpler, no channel deadlock)
+	var wg sync.WaitGroup
+	var resultMu sync.Mutex
+	allSessions := make(map[string]*Session)
+
+	for _, dir := range dirs {
+		wg.Add(1)
+		go func(projectPath, projectName string) {
+			defer wg.Done()
+			sessions := s.loadProjectSessionsParallel(projectPath, projectName)
+			resultMu.Lock()
+			for id, sess := range sessions {
+				allSessions[id] = sess
+			}
+			resultMu.Unlock()
+		}(dir.path, dir.name)
+	}
+
+	wg.Wait()
+
+	// Copy to service sessions
+	s.mu.Lock()
+	for id, sess := range allSessions {
+		s.sessions[id] = sess
+	}
+	s.mu.Unlock()
+}
+
+// loadProjectSessionsParallel loads sessions and returns them (thread-safe)
+func (s *Service) loadProjectSessionsParallel(projectPath, projectName string) map[string]*Session {
+	sessions := make(map[string]*Session)
+
+	entries, err := os.ReadDir(projectPath)
+	if err != nil {
+		return sessions
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "agent-") {
 			continue
 		}
 
-		projectPath := filepath.Join(projectsDir, entry.Name())
-		s.loadProjectSessions(projectPath, entry.Name())
+		sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
+		if !isValidUUID(sessionID) {
+			continue
+		}
+
+		sessionFile := filepath.Join(projectPath, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		var session *Session
+		if info.Size() == 0 {
+			session = &Session{
+				ID:             sessionID,
+				Name:           sessionID[:8],
+				ProjectName:    projectName,
+				State:          SessionIdle,
+				Messages:       make([]Message, 0),
+				MessageCount:   0,
+				CreatedAt:      info.ModTime(),
+				LastActiveAt:   info.ModTime(),
+				IsRealSession:  true,
+				SessionFile:    sessionFile,
+				MessagesLoaded: true,
+			}
+		} else {
+			session = s.parseSessionMetadata(sessionID, sessionFile)
+		}
+
+		if session != nil && session.MessageCount > 0 {
+			// Apply custom name (read-only access to customNames is safe)
+			s.mu.RLock()
+			if customName, ok := s.customNames[sessionID]; ok {
+				session.CustomName = customName
+			}
+			s.mu.RUnlock()
+			sessions[sessionID] = session
+		}
 	}
+
+	return sessions
 }
 
 // loadProjectSessions loads sessions from a specific Claude project directory
+// Uses lazy loading - only metadata is loaded, messages are loaded on demand
 func (s *Service) loadProjectSessions(projectPath, projectName string) {
 	entries, err := os.ReadDir(projectPath)
 	if err != nil {
@@ -635,24 +728,26 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 		if info.Size() == 0 {
 			// Create minimal session for empty file
 			session = &Session{
-				ID:            sessionID,
-				Name:          sessionID[:8], // Short ID as default name
-				ProjectName:   projectName,
-				State:         SessionIdle,
-				Messages:      make([]Message, 0),
-				CreatedAt:     info.ModTime(),
-				LastActiveAt:  info.ModTime(),
-				IsRealSession: true,
-				SessionFile:   sessionFile,
+				ID:             sessionID,
+				Name:           sessionID[:8], // Short ID as default name
+				ProjectName:    projectName,
+				State:          SessionIdle,
+				Messages:       make([]Message, 0),
+				MessageCount:   0,
+				CreatedAt:      info.ModTime(),
+				LastActiveAt:   info.ModTime(),
+				IsRealSession:  true,
+				SessionFile:    sessionFile,
+				MessagesLoaded: true, // Empty file = nothing to load
 			}
 		} else {
-			// Load session metadata from JSONL (workDir will be extracted from cwd field)
-			session = s.parseSessionFile(sessionID, sessionFile)
+			// Load only metadata from JSONL (lazy loading - messages loaded on demand)
+			session = s.parseSessionMetadata(sessionID, sessionFile)
 		}
 
 		if session != nil {
 			// Skip sessions with no messages (empty or metadata-only files)
-			if len(session.Messages) == 0 {
+			if session.MessageCount == 0 {
 				continue
 			}
 			// Apply custom name if one exists
@@ -664,8 +759,9 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 	}
 }
 
-// parseSessionFile reads a Claude CLI JSONL session file and extracts metadata
-func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
+// parseSessionMetadata reads only metadata from a JSONL file (fast, for listing)
+// Does not load message content - use loadSessionMessages for that
+func (s *Service) parseSessionMetadata(sessionID, filePath string) *Session {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil
@@ -673,21 +769,23 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 	defer file.Close()
 
 	session := &Session{
-		ID:            sessionID,
-		State:         SessionIdle,
-		Messages:      make([]Message, 0),
-		IsRealSession: true,
-		SessionFile:   filePath,
+		ID:             sessionID,
+		State:          SessionIdle,
+		Messages:       make([]Message, 0),
+		IsRealSession:  true,
+		SessionFile:    filePath,
+		MessagesLoaded: false, // Messages not loaded yet
 	}
 
 	scanner := bufio.NewScanner(file)
-	// Increase buffer size for large lines
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	// Smaller buffer for metadata scan
+	buf := make([]byte, 0, 16*1024)
+	scanner.Buffer(buf, 256*1024)
 
 	var firstTimestamp, lastTimestamp time.Time
 	var sessionName string
 	var workDir string
+	messageCount := 0
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -695,12 +793,40 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 			continue
 		}
 
+		// Quick check for message types without full parse
+		lineStr := string(line)
+		if strings.Contains(lineStr, `"type":"user"`) || strings.Contains(lineStr, `"type":"assistant"`) {
+			messageCount++
+		}
+
+		// Only parse first few lines for metadata (optimization)
+		if workDir != "" && sessionName != "" && messageCount > 0 && !firstTimestamp.IsZero() {
+			// Got all metadata, just count remaining messages quickly
+			for scanner.Scan() {
+				l := string(scanner.Bytes())
+				if strings.Contains(l, `"type":"user"`) || strings.Contains(l, `"type":"assistant"`) {
+					messageCount++
+				}
+				// Update last timestamp from line if present
+				if idx := strings.Index(l, `"timestamp":"`); idx > 0 {
+					// Extract timestamp quickly
+					start := idx + 13
+					if end := strings.Index(l[start:], `"`); end > 0 {
+						if t, err := time.Parse(time.RFC3339, l[start:start+end]); err == nil {
+							lastTimestamp = t
+						}
+					}
+				}
+			}
+			break
+		}
+
 		var entry map[string]interface{}
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue
 		}
 
-		// Get working directory from cwd field (most reliable source)
+		// Get working directory from cwd field
 		if cwd, ok := entry["cwd"].(string); ok && workDir == "" {
 			workDir = cwd
 		}
@@ -719,11 +845,93 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 				lastTimestamp = t
 			}
 		}
+	}
 
-		// Count messages (user and assistant types)
+	session.MessageCount = messageCount
+
+	// Set working directory and extract project info
+	if workDir == "" {
+		dir := filepath.Dir(filePath)
+		projectDirName := filepath.Base(dir)
+		if strings.HasPrefix(projectDirName, "-") {
+			workDir = strings.ReplaceAll(projectDirName, "-", "/")
+		}
+	}
+	session.WorkDir = workDir
+	if workDir != "" {
+		parts := strings.Split(workDir, "/")
+		if len(parts) > 0 {
+			session.ProjectName = parts[len(parts)-1]
+			session.ProjectID = session.ProjectName
+		}
+	}
+
+	// Set session name
+	if sessionName != "" {
+		session.Name = sessionName
+	} else if len(sessionID) >= 8 {
+		session.Name = sessionID[:8]
+	} else {
+		session.Name = sessionID
+	}
+
+	// Set timestamps
+	if !firstTimestamp.IsZero() {
+		session.CreatedAt = firstTimestamp
+	} else {
+		if info, err := os.Stat(filePath); err == nil {
+			session.CreatedAt = info.ModTime()
+		}
+	}
+	if !lastTimestamp.IsZero() {
+		session.LastActiveAt = lastTimestamp
+	} else {
+		session.LastActiveAt = session.CreatedAt
+	}
+
+	return session
+}
+
+// loadSessionMessages loads full message content for a session (lazy loading)
+func (s *Service) loadSessionMessages(session *Session) {
+	if session == nil || session.MessagesLoaded || session.SessionFile == "" {
+		return
+	}
+
+	file, err := os.Open(session.SessionFile)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	session.Messages = make([]Message, 0)
+	var lastTimestamp time.Time
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var entry map[string]interface{}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+
+		// Get timestamp
+		if ts, ok := entry["timestamp"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				lastTimestamp = t
+			}
+		}
+
+		// Extract messages
 		if entryType, ok := entry["type"].(string); ok {
 			if entryType == "user" || entryType == "assistant" {
-				// Extract message content for display
 				if msg, ok := entry["message"].(map[string]interface{}); ok {
 					role := ""
 					if r, ok := msg["role"].(string); ok {
@@ -731,24 +939,18 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 					}
 
 					var contentBuilder strings.Builder
-					// Content can be a string (user messages) or array (assistant messages)
 					if contentStr, ok := msg["content"].(string); ok {
-						// User messages have content as a simple string
 						contentBuilder.WriteString(contentStr)
 					} else if c, ok := msg["content"].([]interface{}); ok {
-						// Assistant messages have content as array of blocks
 						for _, item := range c {
 							if block, ok := item.(map[string]interface{}); ok {
 								blockType, _ := block["type"].(string)
-
 								switch blockType {
 								case "text":
 									if text, ok := block["text"].(string); ok {
 										contentBuilder.WriteString(text)
 									}
-
 								case "tool_use":
-									// Format tool usage like Claude CLI
 									toolName, _ := block["name"].(string)
 									input, _ := block["input"].(map[string]interface{})
 									contentBuilder.WriteString("\n")
@@ -761,7 +963,7 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 					content := contentBuilder.String()
 					if role != "" && content != "" {
 						session.Messages = append(session.Messages, Message{
-							ID:        fmt.Sprintf("%s-%d", sessionID, len(session.Messages)),
+							ID:        fmt.Sprintf("%s-%d", session.ID, len(session.Messages)),
 							Role:      role,
 							Content:   content,
 							Timestamp: lastTimestamp,
@@ -772,52 +974,17 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 		}
 	}
 
-	// Set working directory and extract project info
-	// If workDir not found in JSONL, derive from file path
-	if workDir == "" {
-		// filePath is like ~/.claude/projects/-data-devel-infra-csd-devtrack/session.jsonl
-		// Extract project dir name and convert back to path
-		dir := filepath.Dir(filePath)
-		projectDirName := filepath.Base(dir)
-		if strings.HasPrefix(projectDirName, "-") {
-			// Convert -data-devel-infra-csd-devtrack to /data/devel/infra/csd-devtrack
-			workDir = strings.ReplaceAll(projectDirName, "-", "/")
-		}
-	}
-	session.WorkDir = workDir
-	if workDir != "" {
-		// Extract project name from last path segment
-		parts := strings.Split(workDir, "/")
-		if len(parts) > 0 {
-			session.ProjectName = parts[len(parts)-1]
-			session.ProjectID = session.ProjectName
-		}
-	}
+	session.MessageCount = len(session.Messages)
+	session.MessagesLoaded = true
+}
 
-	// Set session name
-	if sessionName != "" {
-		session.Name = sessionName
-	} else if len(sessionID) >= 8 {
-		session.Name = sessionID[:8] // Use first 8 chars of UUID
-	} else {
-		session.Name = sessionID
+// parseSessionFile reads a Claude CLI JSONL session file and extracts all data
+// This is the full version - use parseSessionMetadata for listing
+func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
+	session := s.parseSessionMetadata(sessionID, filePath)
+	if session != nil {
+		s.loadSessionMessages(session)
 	}
-
-	// Set timestamps
-	if !firstTimestamp.IsZero() {
-		session.CreatedAt = firstTimestamp
-	} else {
-		// Use file mod time as fallback
-		if info, err := os.Stat(filePath); err == nil {
-			session.CreatedAt = info.ModTime()
-		}
-	}
-	if !lastTimestamp.IsZero() {
-		session.LastActiveAt = lastTimestamp
-	} else {
-		session.LastActiveAt = session.CreatedAt
-	}
-
 	return session
 }
 
@@ -889,14 +1056,29 @@ func (s *Service) CreateSession(projectID, projectName, workDir, name string) (*
 }
 
 // GetSession returns a session by ID
+// Loads messages on demand if not already loaded (lazy loading)
 func (s *Service) GetSession(sessionID string) (*Session, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	sess, ok := s.sessions[sessionID]
 	if !ok {
+		s.mu.RUnlock()
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
+
+	// Check if messages need to be loaded
+	needsLoad := !sess.MessagesLoaded
+	s.mu.RUnlock()
+
+	// Load messages if needed (outside of lock to avoid blocking)
+	if needsLoad {
+		s.mu.Lock()
+		// Double-check after acquiring write lock
+		if !sess.MessagesLoaded {
+			s.loadSessionMessages(sess)
+		}
+		s.mu.Unlock()
+	}
+
 	return sess, nil
 }
 

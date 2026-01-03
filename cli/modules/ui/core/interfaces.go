@@ -47,6 +47,9 @@ type Presenter interface {
 	// Refresh forces a refresh of all data
 	Refresh() error
 
+	// RefreshCurrentView refreshes only the current view (lightweight)
+	RefreshCurrentView()
+
 	// Shutdown cleans up resources
 	Shutdown() error
 

@@ -165,8 +165,9 @@ type Model struct {
 	claudeSessionScroll  int             // Scroll offset for session list
 	claudeRenameActive   bool            // Renaming a session
 	claudeRenameText     string          // New name for session
-	claudeFilterProject       string // Filter sessions by project ID
-	claudeProjectSelectActive bool   // Project selection mode for new session
+	claudeFilterProject        string // Filter sessions by project ID
+	claudeProjectSelectActive  bool   // Project selection mode for new session
+	pendingDeleteSessionID     string // Session ID to delete (saved at dialog open to avoid race condition)
 	claudeProjectSelectIndex  int    // Selected project index
 	claudeTreeItemCount       int    // Total items in the tree (projects + sessions)
 	claudeTreeItems           []claudeTreeItem // Flattened tree for navigation
@@ -1970,6 +1971,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
 				_, sessionID, isProject, _ := m.getSelectedTreeItem()
 				if !isProject && sessionID != "" {
+					// Save sessionID NOW to avoid race condition when tree updates between dialog open and confirm
+					m.pendingDeleteSessionID = sessionID
 					// Get session name from selected item
 					sessionName := sessionID
 					if item := m.sessionsTreeMenu.SelectedItem(); item != nil {
@@ -3007,6 +3010,22 @@ func (m *Model) toggleLogLevel(level string) {
 
 // handleDialogKey handles keys when a dialog is open
 func (m *Model) handleDialogKey(msg tea.KeyMsg) tea.Cmd {
+	// Allow Ctrl+G to work even in dialogs (for quit)
+	if key.Matches(msg, m.keys.CommandPrefix) {
+		m.commandMode = true
+		m.commandModeTime = time.Now()
+		return nil
+	}
+	// Handle command mode (Ctrl+G followed by command key)
+	if m.commandMode {
+		if time.Since(m.commandModeTime) > 2*time.Second {
+			m.commandMode = false
+		} else {
+			m.commandMode = false
+			return m.handleCommandKey(msg)
+		}
+	}
+
 	// Input dialogs have special handling
 	if m.dialogInputActive {
 		switch msg.Type {
@@ -3020,6 +3039,7 @@ func (m *Model) handleDialogKey(msg tea.KeyMsg) tea.Cmd {
 			m.dialogInputActive = false
 			m.dialogInput.Blur()
 			m.pendingNewSessionProjectID = ""
+			m.pendingDeleteSessionID = "" // Clear pending delete on cancel
 			return nil
 		default:
 			// Pass other keys to the input
@@ -3041,9 +3061,12 @@ func (m *Model) handleDialogKey(msg tea.KeyMsg) tea.Cmd {
 		if m.dialogConfirm {
 			return m.handleDialogConfirm()
 		}
+		// Cancelled - clear pending states
+		m.pendingDeleteSessionID = ""
 		return nil
 	case "n", "N", "esc":
 		m.showDialog = false
+		m.pendingDeleteSessionID = "" // Clear pending delete on cancel
 	case "left", "right", "tab":
 		m.dialogConfirm = !m.dialogConfirm
 	}
@@ -3075,9 +3098,10 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 		}
 		return nil
 	case "delete_claude_session":
-		// Delete the selected Claude session
-		_, sessionID, isProject, _ := m.getSelectedTreeItem()
-		if !isProject && sessionID != "" {
+		// Delete the Claude session saved at dialog open (avoids race condition)
+		sessionID := m.pendingDeleteSessionID
+		m.pendingDeleteSessionID = "" // Clear pending ID
+		if sessionID != "" {
 			// Mark session as deleting for visual feedback
 			m.deletingSessions[sessionID] = true
 
@@ -3417,8 +3441,22 @@ func (m *Model) handleFilterInput(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// sendEvent sends an event to the presenter
+// sendEvent sends an event to the presenter (non-blocking, fire-and-forget)
+// Errors are logged but not returned to avoid blocking the UI
 func (m *Model) sendEvent(event *core.Event) tea.Cmd {
+	return func() tea.Msg {
+		go func() {
+			if err := m.presenter.HandleEvent(event); err != nil {
+				logger.Error("Event %s failed: %v", event.Type, err)
+			}
+		}()
+		return nil
+	}
+}
+
+// sendEventSync sends an event synchronously and waits for result
+// Use this only when you need to handle errors or need the result immediately
+func (m *Model) sendEventSync(event *core.Event) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.presenter.HandleEvent(event); err != nil {
 			return errMsg{err}
@@ -4076,10 +4114,20 @@ func (m *Model) handleNotification(n *core.Notification) {
 	}
 }
 
-// refreshData fetches fresh data
+// refreshData fetches fresh data for current view only (non-blocking, lightweight)
 func (m *Model) refreshData() tea.Msg {
 	if m.presenter != nil {
-		_ = m.presenter.Refresh()
+		// Run lightweight refresh in background - only refreshes current view
+		go m.presenter.RefreshCurrentView()
+	}
+	return refreshMsg{}
+}
+
+// refreshDataFull fetches all data (non-blocking, use sparingly)
+func (m *Model) refreshDataFull() tea.Msg {
+	if m.presenter != nil {
+		// Run full refresh in background
+		go m.presenter.Refresh()
 	}
 	return refreshMsg{}
 }
