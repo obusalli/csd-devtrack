@@ -818,10 +818,15 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	// Focus navigation - consistent across all views:
-	// Shift+Tab: always go to sidebar
-	// Tab: cycle between other panels (Main <-> Detail)
+	// Shift+Tab: always go to sidebar (except Cockpit: previous widget)
+	// Tab: cycle between other panels (Main <-> Detail) or widgets in Cockpit
 	case key.Matches(msg, m.keys.ShiftTab):
-		// Shift+Tab always goes to sidebar (from any panel)
+		// Cockpit: Shift+Tab cycles to previous widget
+		if m.currentView == core.VMCockpit && !m.cockpitConfigMode {
+			m.navigateCockpitPrev()
+			return nil
+		}
+		// Other views: Shift+Tab always goes to sidebar (from any panel)
 		if m.focusArea != FocusSidebar {
 			m.focusArea = FocusSidebar
 			m.terminalMode = false
@@ -832,7 +837,12 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	case key.Matches(msg, m.keys.Tab):
-		// Tab cycles between Main and Detail panels (skips sidebar)
+		// Cockpit: Tab cycles between widgets
+		if m.currentView == core.VMCockpit && !m.cockpitConfigMode {
+			m.navigateCockpitNext()
+			return nil
+		}
+		// Other views: Tab cycles between Main and Detail panels (skips sidebar)
 		if m.focusArea == FocusSidebar {
 			// From sidebar, go to main
 			m.focusArea = FocusMain
@@ -1437,43 +1447,30 @@ func (m *Model) handleEnter() tea.Cmd {
 		// Depending on view, enter can mean different things
 		switch m.currentView {
 		case core.VMProjects:
-			// Projects view uses TreeMenu
-			selectedItem := m.projectsMenu.SelectedItem()
-			if selectedItem != nil {
-				// If it's a component (leaf), focus the detail panel
-				if _, ok := selectedItem.Data.(core.ComponentVM); ok {
+			// Projects view uses TreeMenu - Select() handles back item, drill-down, and leaf selection
+			if item := m.projectsMenu.Select(); item != nil {
+				// Leaf item selected (component) - focus detail panel
+				if _, ok := item.Data.(core.ComponentVM); ok {
 					m.focusArea = FocusDetail
-					return nil
 				}
-				// Otherwise drill down (project with children)
-				m.projectsMenu.Select()
 			}
 		case core.VMProcesses:
-			// Processes view uses TreeMenu
-			selectedItem := m.processesMenu.SelectedItem()
-			if selectedItem != nil {
-				// If it's a process (leaf), view logs
-				if proc, ok := selectedItem.Data.(core.ProcessVM); ok {
-					// Set the process ID for log viewing
+			// Processes view uses TreeMenu - Select() handles back item, drill-down, and leaf selection
+			if item := m.processesMenu.Select(); item != nil {
+				// Leaf item selected (process) - focus detail panel
+				if _, ok := item.Data.(core.ProcessVM); ok {
 					m.focusArea = FocusDetail
-					_ = proc // Will be used for log viewing
-					return nil
 				}
-				// Otherwise drill down (project with children)
-				m.processesMenu.Select()
 			}
 		case core.VMGit:
-			// Git view uses TreeMenu
-			selectedItem := m.gitMenu.SelectedItem()
-			if selectedItem != nil {
-				// If it's a file (leaf), focus the detail panel
-				if _, ok := selectedItem.Data.(GitFileEntry); ok {
+			// Git view uses TreeMenu - Select() handles back item, drill-down, and leaf selection
+			if item := m.gitMenu.Select(); item != nil {
+				// Leaf item selected (file) - focus detail panel
+				if _, ok := item.Data.(GitFileEntry); ok {
 					m.focusArea = FocusDetail
-					return nil
 				}
-				// Otherwise drill down (project with children)
-				m.gitMenu.Select() // This handles drill-down
 			}
+			return m.loadGitDiffForSelection()
 		case core.VMConfig:
 			// Config view - depends on current tab
 			if m.configMode == "browser" {

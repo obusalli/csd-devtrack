@@ -930,6 +930,29 @@ func abs(x int) int {
 	return x
 }
 
+// navigateCockpitNext cycles to the next widget (for Tab navigation)
+func (m *Model) navigateCockpitNext() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
+	if profile == nil || len(profile.Widgets) == 0 {
+		return
+	}
+
+	m.cockpitFocusedIndex = (m.cockpitFocusedIndex + 1) % len(profile.Widgets)
+}
+
+// navigateCockpitPrev cycles to the previous widget (for Shift+Tab navigation)
+func (m *Model) navigateCockpitPrev() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
+	if profile == nil || len(profile.Widgets) == 0 {
+		return
+	}
+
+	m.cockpitFocusedIndex--
+	if m.cockpitFocusedIndex < 0 {
+		m.cockpitFocusedIndex = len(profile.Widgets) - 1
+	}
+}
+
 // switchCockpitProfile switches to a widget profile by number key
 func (m *Model) switchCockpitProfile(key string) {
 	cfg := config.GetGlobal()
