@@ -24,6 +24,7 @@ const (
 	VMCodex     ViewModelType = "codex"
 	VMCockpit   ViewModelType = "cockpit"
 	VMDatabase  ViewModelType = "database"
+	VMShell     ViewModelType = "shell"
 )
 
 // ViewModel is the base interface for all view models
@@ -372,6 +373,50 @@ type DatabaseVM struct {
 	FilterProject     string              `json:"filter_project"`
 }
 
+// ShellSessionType represents the type of shell session
+type ShellSessionType string
+
+const (
+	ShellSessionHome    ShellSessionType = "home"    // Home directory session
+	ShellSessionProject ShellSessionType = "project" // Project directory session
+	ShellSessionSudo    ShellSessionType = "sudo"    // Sudo root session
+)
+
+// ShellSessionVM represents a shell session for display
+type ShellSessionVM struct {
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	Type         ShellSessionType `json:"type"`
+	ProjectID    string           `json:"project_id,omitempty"`
+	ProjectName  string           `json:"project_name,omitempty"`
+	WorkDir      string           `json:"work_dir"`
+	Shell        string           `json:"shell,omitempty"` // Shell name (bash, zsh, etc.)
+	State        string           `json:"state"`           // idle, running, error
+	CreatedAt    time.Time        `json:"created_at"`
+	LastActive   string           `json:"last_active"`
+	LastActiveAt time.Time        `json:"last_active_at"`
+	IsActive     bool             `json:"is_active"`
+}
+
+// ShellInfoVM represents an available shell for selection
+type ShellInfoVM struct {
+	Name string `json:"name"` // Shell name (bash, zsh, sh, etc.)
+	Path string `json:"path"` // Full path to the shell
+}
+
+// ShellVM is the view model for the shell view
+type ShellVM struct {
+	BaseViewModel
+	IsInstalled     bool             `json:"is_installed"`
+	ShellPath       string           `json:"shell_path,omitempty"`
+	HasSudo         bool             `json:"has_sudo"`
+	AvailableShells []ShellInfoVM    `json:"available_shells"` // All available shells (bash, zsh, etc.)
+	Sessions        []ShellSessionVM `json:"sessions"`
+	ActiveSessionID string           `json:"active_session_id,omitempty"`
+	ActiveSession   *ShellSessionVM  `json:"active_session,omitempty"`
+	FilterProject   string           `json:"filter_project"`
+}
+
 // CapabilityVM represents a single capability status
 type CapabilityVM struct {
 	Name      string `json:"name"`
@@ -385,6 +430,8 @@ type CapabilitiesVM struct {
 	Tmux   CapabilityVM `json:"tmux"`
 	Claude CapabilityVM `json:"claude"`
 	Codex  CapabilityVM `json:"codex"`
+	Shell  CapabilityVM `json:"shell"`
+	Sudo   CapabilityVM `json:"sudo"`
 	Psql   CapabilityVM `json:"psql"`
 	Mysql  CapabilityVM `json:"mysql"`
 	Sqlite CapabilityVM `json:"sqlite"`
@@ -417,4 +464,14 @@ func (c *CapabilitiesVM) HasDatabase() bool {
 // HasGit returns true if git is available
 func (c *CapabilitiesVM) HasGit() bool {
 	return c.Git.Available
+}
+
+// HasShell returns true if tmux and shell are available
+func (c *CapabilitiesVM) HasShell() bool {
+	return c.Tmux.Available && c.Shell.Available
+}
+
+// HasSudo returns true if sudo is available
+func (c *CapabilitiesVM) HasSudo() bool {
+	return c.Sudo.Available
 }

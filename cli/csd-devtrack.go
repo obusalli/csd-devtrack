@@ -340,6 +340,21 @@ func runAsDaemon() {
 		} else {
 			missing = append(missing, "claude")
 		}
+		if caps.Codex.Available {
+			available = append(available, "codex")
+		} else {
+			missing = append(missing, "codex")
+		}
+		if caps.Shell.Available {
+			available = append(available, "shell")
+		} else {
+			missing = append(missing, "shell")
+		}
+		if caps.Sudo.Available {
+			available = append(available, "sudo")
+		} else {
+			missing = append(missing, "sudo")
+		}
 		if caps.Psql.Available {
 			available = append(available, "psql")
 		} else {

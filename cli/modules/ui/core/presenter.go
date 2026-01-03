@@ -20,6 +20,7 @@ import (
 	"csd-devtrack/cli/modules/platform/codex"
 	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/platform/database"
+	"csd-devtrack/cli/modules/platform/shell"
 	"csd-devtrack/cli/modules/platform/git"
 	"csd-devtrack/cli/modules/platform/supervisor"
 )
@@ -36,6 +37,7 @@ type AppPresenter struct {
 	gitService      *git.Service
 	claudeService   *claude.Service
 	codexService    *codex.Service
+	shellService    *shell.Service
 	databaseService *database.Service
 	capService      *capabilities.Service
 	config          *config.Config
@@ -87,7 +89,30 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 	p.ctx, p.cancel = context.WithCancel(ctx)
 
 	// Initialize capabilities detection (before other services)
-	p.capService = capabilities.NewService()
+	// Use configured paths from config if available
+	var configuredPaths *capabilities.ConfiguredPaths
+	if p.config != nil && p.config.Settings != nil && p.config.Settings.Executables != nil {
+		exec := p.config.Settings.Executables
+		configuredPaths = &capabilities.ConfiguredPaths{
+			Shell:  exec.Shell,
+			Claude: exec.Claude,
+			Codex:  exec.Codex,
+			Psql:   exec.Psql,
+			Mysql:  exec.Mysql,
+			Sqlite: exec.Sqlite,
+			Git:    exec.Git,
+			Go:     exec.Go,
+			Node:   exec.Node,
+			Npm:    exec.Npm,
+			Tmux:   exec.Tmux,
+			Sudo:   exec.Sudo,
+		}
+	}
+	if configuredPaths != nil {
+		p.capService = capabilities.NewServiceWithConfig(configuredPaths)
+	} else {
+		p.capService = capabilities.NewService()
+	}
 	p.refreshCapabilities()
 
 	// Initialize build orchestrator
@@ -126,6 +151,24 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 		p.codexService.Initialize(codexPath)
 	}
 	p.refreshCodex()
+
+	// Initialize Shell service
+	p.shellService = shell.NewService()
+	shellPath := p.capService.GetPath(capabilities.CapShell)
+	hasSudo := p.capService.IsAvailable(capabilities.CapSudo)
+	if shellPath != "" {
+		// Get all available shells
+		capShells := p.capService.GetAvailableShells()
+		availableShells := make([]shell.ShellInfo, len(capShells))
+		for i, cs := range capShells {
+			availableShells[i] = shell.ShellInfo{
+				Name: cs.Name,
+				Path: cs.Path,
+			}
+		}
+		p.shellService.Initialize(shellPath, hasSudo, availableShells)
+	}
+	p.refreshShell()
 
 	// Initialize Database service
 	p.databaseService = database.NewService(func() []projects.Project {
@@ -315,6 +358,18 @@ func (p *AppPresenter) HandleEvent(event *Event) error {
 		return p.handleDatabaseStopSession(event)
 	case EventDatabaseRefresh:
 		return p.handleDatabaseRefresh(event)
+
+	// Shell events
+	case EventShellCreateSession:
+		return p.handleShellCreateSession(event)
+	case EventShellDeleteSession:
+		return p.handleShellDeleteSession(event)
+	case EventShellStopSession:
+		return p.handleShellStopSession(event)
+	case EventShellCycleShell:
+		return p.handleShellCycleShell(event)
+	case EventShellRefresh:
+		return p.handleShellRefresh(event)
 
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
@@ -2166,6 +2221,8 @@ func (p *AppPresenter) refreshCapabilities() {
 		Tmux:   toVM(capabilities.CapTmux),
 		Claude: toVM(capabilities.CapClaude),
 		Codex:  toVM(capabilities.CapCodex),
+		Shell:  toVM(capabilities.CapShell),
+		Sudo:   toVM(capabilities.CapSudo),
 		Psql:   toVM(capabilities.CapPsql),
 		Mysql:  toVM(capabilities.CapMysql),
 		Sqlite: toVM(capabilities.CapSqlite),
@@ -2174,4 +2231,149 @@ func (p *AppPresenter) refreshCapabilities() {
 		Node:   toVM(capabilities.CapNode),
 		Npm:    toVM(capabilities.CapNpm),
 	}
+}
+
+// refreshShell updates the Shell view model from the service
+func (p *AppPresenter) refreshShell() {
+	if p.shellService == nil {
+		return
+	}
+
+	p.mu.Lock()
+
+	// Update installation status
+	p.state.Shell.IsInstalled = p.shellService.GetPath() != ""
+	p.state.Shell.ShellPath = p.shellService.GetPath()
+	p.state.Shell.HasSudo = p.shellService.HasSudo()
+
+	// Get available shells
+	availShells := p.shellService.GetAvailableShells()
+	p.state.Shell.AvailableShells = make([]ShellInfoVM, len(availShells))
+	for i, s := range availShells {
+		p.state.Shell.AvailableShells[i] = ShellInfoVM{
+			Name: s.Name,
+			Path: s.Path,
+		}
+	}
+
+	// Get all sessions
+	sessions := p.shellService.GetSessions()
+	p.state.Shell.Sessions = make([]ShellSessionVM, len(sessions))
+	for i, s := range sessions {
+		p.state.Shell.Sessions[i] = ShellSessionVM{
+			ID:           s.ID,
+			Name:         s.DisplayName(),
+			Type:         ShellSessionType(s.Type),
+			ProjectID:    s.ProjectID,
+			ProjectName:  s.ProjectName,
+			WorkDir:      s.WorkDir,
+			Shell:        s.Shell,
+			State:        string(s.State),
+			CreatedAt:    s.CreatedAt,
+			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
+			LastActiveAt: s.LastActiveAt,
+			IsActive:     s.ID == p.state.Shell.ActiveSessionID,
+		}
+	}
+
+	// Sort sessions by LastActiveAt descending (most recent first)
+	sort.Slice(p.state.Shell.Sessions, func(i, j int) bool {
+		return p.state.Shell.Sessions[i].LastActiveAt.After(p.state.Shell.Sessions[j].LastActiveAt)
+	})
+
+	p.mu.Unlock()
+
+	// Notify UI of the update
+	p.notifyStateUpdate(VMShell, p.state.Shell)
+}
+
+// ============================================
+// Shell handlers
+// ============================================
+
+func (p *AppPresenter) handleShellCreateSession(event *Event) error {
+	sessionType := shell.SessionType(event.Data["session_type"])
+	projectID := event.ProjectID
+	projectName := event.Data["project_name"]
+	workDir := event.Data["work_dir"]
+
+	session, err := p.shellService.CreateSession(sessionType, projectID, projectName, workDir)
+	if err != nil {
+		p.setHeaderEvent(HeaderEventError, "Shell session creation failed")
+		return err
+	}
+
+	// Update state
+	p.mu.Lock()
+	p.state.Shell.ActiveSessionID = session.ID
+	p.mu.Unlock()
+
+	p.refreshShell()
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Shell session '%s' created", session.DisplayName()))
+	return nil
+}
+
+func (p *AppPresenter) handleShellDeleteSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	session := p.shellService.GetSession(sessionID)
+	name := "session"
+	if session != nil {
+		name = session.DisplayName()
+	}
+
+	if err := p.shellService.DeleteSession(sessionID); err != nil {
+		p.setHeaderEvent(HeaderEventError, "Shell session deletion failed")
+		return err
+	}
+
+	// Clear active session if it was deleted
+	p.mu.Lock()
+	if p.state.Shell.ActiveSessionID == sessionID {
+		p.state.Shell.ActiveSessionID = ""
+		p.state.Shell.ActiveSession = nil
+	}
+	p.mu.Unlock()
+
+	p.refreshShell()
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Shell session '%s' deleted", name))
+	return nil
+}
+
+func (p *AppPresenter) handleShellStopSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Shell.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	p.shellService.UpdateSessionState(sessionID, shell.SessionIdle)
+	p.refreshShell()
+	return nil
+}
+
+func (p *AppPresenter) handleShellCycleShell(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	newShell := p.shellService.CycleSessionShell(sessionID)
+	if newShell == "" {
+		return fmt.Errorf("no available shells to cycle through")
+	}
+
+	p.refreshShell()
+	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Shell changed to %s", newShell))
+	return nil
+}
+
+func (p *AppPresenter) handleShellRefresh(event *Event) error {
+	p.refreshShell()
+	return nil
 }

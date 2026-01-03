@@ -121,8 +121,37 @@ type Settings struct {
 	// Claude AI integration
 	Claude *ClaudeConfig `yaml:"claude,omitempty" json:"claude,omitempty"`
 
+	// External executables configuration
+	Executables *ExecutablesConfig `yaml:"executables,omitempty" json:"executables,omitempty"`
+
 	// Widgets view
 	ActiveWidgetProfile string `yaml:"active_widget_profile,omitempty" json:"active_widget_profile,omitempty"`
+}
+
+// ExecutablesConfig allows overriding auto-detected executable paths
+// Empty string = auto-detect, explicit path = use that path
+type ExecutablesConfig struct {
+	// Shell: bash, zsh, sh (Unix) or pwsh, powershell, cmd (Windows)
+	Shell string `yaml:"shell,omitempty" json:"shell,omitempty"`
+
+	// AI assistants
+	Claude string `yaml:"claude,omitempty" json:"claude,omitempty"`
+	Codex  string `yaml:"codex,omitempty" json:"codex,omitempty"`
+
+	// Database clients
+	Psql   string `yaml:"psql,omitempty" json:"psql,omitempty"`
+	Mysql  string `yaml:"mysql,omitempty" json:"mysql,omitempty"`
+	Sqlite string `yaml:"sqlite,omitempty" json:"sqlite,omitempty"`
+
+	// Development tools
+	Git  string `yaml:"git,omitempty" json:"git,omitempty"`
+	Go   string `yaml:"go,omitempty" json:"go,omitempty"`
+	Node string `yaml:"node,omitempty" json:"node,omitempty"`
+	Npm  string `yaml:"npm,omitempty" json:"npm,omitempty"`
+
+	// System tools
+	Tmux string `yaml:"tmux,omitempty" json:"tmux,omitempty"`
+	Sudo string `yaml:"sudo,omitempty" json:"sudo,omitempty"`
 }
 
 // ClaudeConfig represents Claude AI integration settings

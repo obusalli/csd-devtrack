@@ -24,6 +24,7 @@ type AppState struct {
 	Codex        *CodexVM
 	Cockpit      *CockpitVM
 	Database     *DatabaseVM
+	Shell        *ShellVM
 	Capabilities *CapabilitiesVM
 
 	// Global state
@@ -53,6 +54,7 @@ func NewAppState() *AppState {
 		Codex:        &CodexVM{BaseViewModel: BaseViewModel{VMType: VMCodex}},
 		Cockpit:       &CockpitVM{BaseViewModel: BaseViewModel{VMType: VMCockpit}},
 		Database:      &DatabaseVM{BaseViewModel: BaseViewModel{VMType: VMDatabase}},
+		Shell:         &ShellVM{BaseViewModel: BaseViewModel{VMType: VMShell}},
 		Capabilities:  &CapabilitiesVM{},
 		Notifications: make([]*Notification, 0),
 	}
@@ -86,6 +88,8 @@ func (s *AppState) GetCurrentViewModel() ViewModel {
 		return s.Cockpit
 	case VMDatabase:
 		return s.Database
+	case VMShell:
+		return s.Shell
 	default:
 		return s.Dashboard
 	}
@@ -126,6 +130,8 @@ func (s *AppState) UpdateViewModel(vm ViewModel) {
 		s.Cockpit = v
 	case *DatabaseVM:
 		s.Database = v
+	case *ShellVM:
+		s.Shell = v
 	}
 }
 

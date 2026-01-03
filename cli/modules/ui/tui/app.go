@@ -159,9 +159,17 @@ func (v *TUIView) Run(ctx context.Context) error {
 		if finalModel, ok := result.model.(Model); ok {
 			v.model = &finalModel
 			v.detached = finalModel.detached
+			// Cleanup tmux sessions if quitting (not detaching)
+			if !finalModel.detached {
+				v.model.Cleanup()
+			}
 		} else if finalModelPtr, ok := result.model.(*Model); ok {
 			v.model = finalModelPtr
 			v.detached = finalModelPtr.detached
+			// Cleanup tmux sessions if quitting (not detaching)
+			if !finalModelPtr.detached {
+				finalModelPtr.Cleanup()
+			}
 		} else {
 			// Type assertion failed - default to not detached (quit)
 			v.detached = false

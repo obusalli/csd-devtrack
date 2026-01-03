@@ -67,6 +67,13 @@ const (
 	EventDatabaseStopSession    EventType = "database_stop_session"
 	EventDatabaseRefresh        EventType = "database_refresh"
 
+	// Shell events
+	EventShellCreateSession EventType = "shell_create_session"
+	EventShellDeleteSession EventType = "shell_delete_session"
+	EventShellStopSession   EventType = "shell_stop_session"
+	EventShellCycleShell    EventType = "shell_cycle_shell"
+	EventShellRefresh       EventType = "shell_refresh"
+
 	// UI state events
 	EventFilter          EventType = "filter"
 	EventSort            EventType = "sort"

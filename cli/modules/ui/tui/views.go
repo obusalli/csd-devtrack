@@ -254,6 +254,11 @@ func (m *Model) getSidebarViews() []sidebarView {
 		views = append(views, sidebarView{"[D]atabases", core.VMDatabase})
 	}
 
+	// Add Shell view if capabilities available (tmux + shell)
+	if m.state.Capabilities != nil && m.state.Capabilities.HasShell() {
+		views = append(views, sidebarView{"[T]erminal", core.VMShell})
+	}
+
 	// Settings always last
 	views = append(views, sidebarView{"[S]ettings", core.VMConfig})
 
@@ -700,6 +705,8 @@ func (m *Model) renderMainContent() string {
 		content = m.renderCockpit(width, height)
 	case core.VMDatabase:
 		content = m.renderDatabase(width, height)
+	case core.VMShell:
+		content = m.renderShell(width, height)
 	default:
 		content = m.renderDashboard(width, height)
 	}

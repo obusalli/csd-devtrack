@@ -39,6 +39,11 @@ func NewTerminalManager(claudePath string) *TerminalManager {
 
 // GetOrCreate gets an existing terminal or creates a new one (for Claude)
 func (tm *TerminalManager) GetOrCreate(sessionID, workDir string) TerminalInterface {
+	return tm.GetOrCreateWithPrefix(sessionID, workDir, TmuxPrefixClaude)
+}
+
+// GetOrCreateWithPrefix gets an existing terminal or creates a new one with a specific prefix
+func (tm *TerminalManager) GetOrCreateWithPrefix(sessionID, workDir, prefix string) TerminalInterface {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -47,13 +52,18 @@ func (tm *TerminalManager) GetOrCreate(sessionID, workDir string) TerminalInterf
 	}
 
 	// Use tmux-based terminal (persistent, captures ANSI colors with capture-pane -e)
-	t := NewTerminalTmux(sessionID, workDir, tm.claudePath)
+	t := NewTerminalTmuxWithPrefix(sessionID, workDir, tm.claudePath, prefix)
 	tm.terminals[sessionID] = t
 	return t
 }
 
-// GetOrCreateWithCommand gets an existing terminal or creates a new one with a custom command
+// GetOrCreateWithCommand gets an existing terminal or creates a new one with a custom command (for database)
 func (tm *TerminalManager) GetOrCreateWithCommand(sessionID, command string, args []string) TerminalInterface {
+	return tm.GetOrCreateCommandWithPrefix(sessionID, command, args, TmuxPrefixDatabase)
+}
+
+// GetOrCreateCommandWithPrefix gets an existing terminal or creates a new one with a custom command and prefix
+func (tm *TerminalManager) GetOrCreateCommandWithPrefix(sessionID, command string, args []string, prefix string) TerminalInterface {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -62,7 +72,7 @@ func (tm *TerminalManager) GetOrCreateWithCommand(sessionID, command string, arg
 	}
 
 	// Use generic tmux-based terminal with custom command
-	t := NewTerminalTmuxCommand(sessionID, command, args)
+	t := NewTerminalTmuxCommandWithPrefix(sessionID, command, args, prefix)
 	tm.terminals[sessionID] = t
 	return t
 }
