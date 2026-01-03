@@ -42,6 +42,9 @@ type TreeMenu struct {
 	height          int
 	rightSidePanel  bool // If true, apply width adjustment to prevent right border cutoff
 
+	// Scrolling
+	scrollOffset int // First visible item index
+
 	// Animation
 	blinkState bool // Toggles for blinking items
 }
@@ -69,6 +72,8 @@ func (tm *TreeMenu) SetItems(items []TreeMenuItem) {
 	if tm.selectedIndex >= total {
 		tm.selectedIndex = max(0, total-1)
 	}
+	// Ensure scroll is valid
+	tm.ensureSelectionVisible()
 }
 
 // Items returns the root menu items
@@ -296,6 +301,8 @@ func (tm *TreeMenu) MoveUp() {
 		if tm.isIndexDisabled(tm.selectedIndex) {
 			tm.moveToNextEnabled(1)
 		}
+		// Adjust scroll to keep selection visible
+		tm.ensureSelectionVisible()
 	}
 }
 
@@ -312,7 +319,49 @@ func (tm *TreeMenu) MoveDown() {
 		if tm.isIndexDisabled(tm.selectedIndex) {
 			tm.moveToNextEnabled(-1)
 		}
+		// Adjust scroll to keep selection visible
+		tm.ensureSelectionVisible()
 	}
+}
+
+// ensureSelectionVisible adjusts scrollOffset to keep selectedIndex visible
+func (tm *TreeMenu) ensureSelectionVisible() {
+	visibleRows := tm.visibleRowCount()
+	if visibleRows <= 0 {
+		return
+	}
+
+	// Scroll up if selection is above visible area
+	if tm.selectedIndex < tm.scrollOffset {
+		tm.scrollOffset = tm.selectedIndex
+	}
+
+	// Scroll down if selection is below visible area
+	if tm.selectedIndex >= tm.scrollOffset+visibleRows {
+		tm.scrollOffset = tm.selectedIndex - visibleRows + 1
+	}
+
+	// Clamp scrollOffset
+	if tm.scrollOffset < 0 {
+		tm.scrollOffset = 0
+	}
+}
+
+// visibleRowCount returns the number of item rows that can be displayed
+func (tm *TreeMenu) visibleRowCount() int {
+	if tm.height <= 0 {
+		return 100 // No limit if height not set
+	}
+	// Account for: header (1) + separator (1) + search bar (2 if active) + border (2)
+	overhead := 4
+	if tm.searchActive || tm.searchQuery != "" {
+		overhead += 2
+	}
+	rows := tm.height - overhead
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
 }
 
 // isIndexDisabled checks if the item at the given index is disabled
@@ -371,6 +420,7 @@ func (tm *TreeMenu) DrillDown() bool {
 	}
 	tm.drillDownPath = append(tm.drillDownPath, item.ID)
 	tm.selectedIndex = 0
+	tm.scrollOffset = 0 // Reset scroll when drilling down
 	tm.searchQuery = "" // Clear search when drilling down
 	return true
 }
@@ -383,6 +433,7 @@ func (tm *TreeMenu) DrillUp() bool {
 	}
 	tm.drillDownPath = tm.drillDownPath[:len(tm.drillDownPath)-1]
 	tm.selectedIndex = 0
+	tm.scrollOffset = 0 // Reset scroll when drilling up
 	tm.searchQuery = "" // Clear search when drilling up
 	return true
 }
@@ -562,6 +613,31 @@ func (tm *TreeMenu) Render() string {
 		lines = append(lines, backStyle.Render(backLine))
 	}
 
+	// Calculate visible range for scrolling
+	totalItems := len(items)
+	if parent != nil {
+		totalItems++ // Account for back item
+	}
+	visibleRows := tm.visibleRowCount()
+
+	// Ensure scrollOffset is valid
+	if tm.scrollOffset < 0 {
+		tm.scrollOffset = 0
+	}
+	maxScroll := totalItems - visibleRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if tm.scrollOffset > maxScroll {
+		tm.scrollOffset = maxScroll
+	}
+
+	// Show scroll-up indicator
+	if tm.scrollOffset > 0 {
+		scrollUpStyle := lipgloss.NewStyle().Foreground(ColorMuted).Padding(0, 2).Width(innerWidth).Align(lipgloss.Center)
+		lines = append(lines, scrollUpStyle.Render("▲ more"))
+	}
+
 	// Items
 	if len(items) == 0 && parent == nil {
 		emptyStyle := lipgloss.NewStyle().Foreground(ColorMuted).Padding(0, 2).Width(innerWidth)
@@ -571,12 +647,33 @@ func (tm *TreeMenu) Render() string {
 			lines = append(lines, emptyStyle.Render("No items"))
 		}
 	} else {
-		for i, item := range items {
-			// Adjust index for back item
-			displayIndex := i
-			if parent != nil {
-				displayIndex = i + 1
+		// Determine which items to render based on scroll
+		startIdx := tm.scrollOffset
+		endIdx := tm.scrollOffset + visibleRows
+		if tm.scrollOffset > 0 {
+			endIdx-- // Account for scroll-up indicator
+		}
+		if endIdx > totalItems {
+			endIdx = totalItems
+		}
+
+		for displayIndex := startIdx; displayIndex < endIdx; displayIndex++ {
+			// Handle back item at index 0
+			if parent != nil && displayIndex == 0 {
+				// Back item is handled above, skip if in scroll range
+				continue
 			}
+
+			// Convert displayIndex to item index
+			itemIndex := displayIndex
+			if parent != nil {
+				itemIndex = displayIndex - 1
+			}
+			if itemIndex < 0 || itemIndex >= len(items) {
+				continue
+			}
+
+			item := items[itemIndex]
 			isSelected := displayIndex == tm.selectedIndex
 			hasChildren := len(item.Children) > 0
 
@@ -688,6 +785,12 @@ func (tm *TreeMenu) Render() string {
 			}
 
 			lines = append(lines, style.Render(line))
+		}
+
+		// Show scroll-down indicator
+		if endIdx < totalItems {
+			scrollDownStyle := lipgloss.NewStyle().Foreground(ColorMuted).Padding(0, 2).Width(innerWidth).Align(lipgloss.Center)
+			lines = append(lines, scrollDownStyle.Render("▼ more"))
 		}
 	}
 
