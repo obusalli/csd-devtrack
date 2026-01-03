@@ -241,41 +241,100 @@ func (m *Model) renderWidgetGrid(layouts []WidgetLayout, profile *config.WidgetP
 
 	gap := GapHorizontal
 	rows := profile.Rows
+	cols := profile.Cols
 	if rows < 1 {
 		rows = 1
 	}
+	if cols < 1 {
+		cols = 1
+	}
 
-	// Group layouts by row
-	rowLayouts := make([][]WidgetLayout, rows)
-	layoutIndex := make([][]int, rows) // Track original index for focus check
+	// Calculate row height (same for all rows)
+	totalGapV := gap * (rows + 1)
+	rowHeight := (height - totalGapV) / rows
+	if rowHeight < 5 {
+		rowHeight = 5
+	}
+
+	// Group layouts by row and track original indices
+	type widgetWithIndex struct {
+		Layout WidgetLayout
+		Index  int
+	}
+	rowWidgets := make([][]widgetWithIndex, rows)
 	for i, layout := range layouts {
 		row := layout.Widget.Row
 		if row >= rows {
 			row = rows - 1
 		}
-		rowLayouts[row] = append(rowLayouts[row], layout)
-		layoutIndex[row] = append(layoutIndex[row], i)
+		rowWidgets[row] = append(rowWidgets[row], widgetWithIndex{layout, i})
+	}
+
+	// Sort widgets in each row by column
+	for rowNum := range rowWidgets {
+		widgets := rowWidgets[rowNum]
+		// Simple bubble sort by column
+		for i := 0; i < len(widgets); i++ {
+			for j := i + 1; j < len(widgets); j++ {
+				if widgets[j].Layout.Widget.Col < widgets[i].Layout.Widget.Col {
+					widgets[i], widgets[j] = widgets[j], widgets[i]
+				}
+			}
+		}
 	}
 
 	// Render each row
 	var rowStrings []string
 	for rowNum := 0; rowNum < rows; rowNum++ {
-		if len(rowLayouts[rowNum]) == 0 {
-			// Empty row - add spacer
-			rowStrings = append(rowStrings, "")
+		widgets := rowWidgets[rowNum]
+		if len(widgets) == 0 {
+			// Empty row - skip
 			continue
 		}
 
-		// Sort widgets in this row by column
-		rowWidgets := rowLayouts[rowNum]
-		indices := layoutIndex[rowNum]
+		// Calculate total colSpan for this row
+		totalColSpan := 0
+		for _, w := range widgets {
+			colSpan := w.Layout.Widget.ColSpan
+			if colSpan < 1 {
+				colSpan = 1
+			}
+			totalColSpan += colSpan
+		}
 
-		// Render each widget in the row
+		// Calculate widths for this row
+		// Available width = total - gaps between widgets
+		numWidgets := len(widgets)
+		gapsWidth := (numWidgets - 1) * gap
+		availableWidth := width - gapsWidth
+		if availableWidth < numWidgets*10 {
+			availableWidth = numWidgets * 10
+		}
+
+		// Render each widget with calculated width
 		var widgetStrings []string
-		for i, layout := range rowWidgets {
-			originalIndex := indices[i]
-			focused := m.focusArea == FocusMain && m.cockpitFocusedIndex == originalIndex
-			content := m.renderWidgetContent(layout, focused)
+		for _, w := range widgets {
+			colSpan := w.Layout.Widget.ColSpan
+			if colSpan < 1 {
+				colSpan = 1
+			}
+			// Width proportional to colSpan
+			widgetWidth := (availableWidth * colSpan) / totalColSpan
+			if widgetWidth < 10 {
+				widgetWidth = 10
+			}
+
+			// Create adjusted layout with new width
+			adjustedLayout := WidgetLayout{
+				Widget: w.Layout.Widget,
+				X:      w.Layout.X,
+				Y:      w.Layout.Y,
+				Width:  widgetWidth,
+				Height: rowHeight,
+			}
+
+			focused := m.focusArea == FocusMain && m.cockpitFocusedIndex == w.Index
+			content := m.renderWidgetContent(adjustedLayout, focused)
 			widgetStrings = append(widgetStrings, content)
 		}
 
@@ -292,17 +351,11 @@ func (m *Model) renderWidgetGrid(layouts []WidgetLayout, profile *config.WidgetP
 		rowStrings = append(rowStrings, rowContent)
 	}
 
-	// Join rows vertically with gap
-	gapLine := ""
-	var result []string
-	for i, row := range rowStrings {
-		result = append(result, row)
-		if i < len(rowStrings)-1 {
-			result = append(result, gapLine)
-		}
+	// Join rows vertically using lipgloss
+	if len(rowStrings) == 0 {
+		return ""
 	}
-
-	return strings.Join(result, "\n")
+	return lipgloss.JoinVertical(lipgloss.Left, rowStrings...)
 }
 
 // renderWidgetContent renders a single widget's content
