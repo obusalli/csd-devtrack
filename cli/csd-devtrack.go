@@ -326,6 +326,74 @@ func runAsDaemon() {
 		// Don't exit - server is running, just log the error
 	}
 
+	// Log capabilities summary
+	if state := presenter.GetState(); state != nil && state.Capabilities != nil {
+		caps := state.Capabilities
+		var available, missing []string
+		if caps.Tmux.Available {
+			available = append(available, "tmux")
+		} else {
+			missing = append(missing, "tmux")
+		}
+		if caps.Claude.Available {
+			available = append(available, "claude")
+		} else {
+			missing = append(missing, "claude")
+		}
+		if caps.Psql.Available {
+			available = append(available, "psql")
+		} else {
+			missing = append(missing, "psql")
+		}
+		if caps.Mysql.Available {
+			available = append(available, "mysql")
+		} else {
+			missing = append(missing, "mysql")
+		}
+		if caps.Sqlite.Available {
+			available = append(available, "sqlite3")
+		} else {
+			missing = append(missing, "sqlite3")
+		}
+		if caps.Git.Available {
+			available = append(available, "git")
+		} else {
+			missing = append(missing, "git")
+		}
+		if caps.Go.Available {
+			available = append(available, "go")
+		} else {
+			missing = append(missing, "go")
+		}
+		if caps.Node.Available {
+			available = append(available, "node")
+		} else {
+			missing = append(missing, "node")
+		}
+		if caps.Npm.Available {
+			available = append(available, "npm")
+		} else {
+			missing = append(missing, "npm")
+		}
+		if len(available) > 0 {
+			log.Info("External tools available: %s", strings.Join(available, ", "))
+		}
+		if len(missing) > 0 {
+			log.Warn("External tools not found: %s", strings.Join(missing, ", "))
+		}
+
+		// Log databases found
+		if state.Database != nil && len(state.Database.Databases) > 0 {
+			var dbNames []string
+			for _, db := range state.Database.Databases {
+				dbNames = append(dbNames, fmt.Sprintf("%s/%s", db.ProjectName, db.DatabaseName))
+			}
+			log.Info("Databases found: %s", strings.Join(dbNames, ", "))
+		} else {
+			log.Info("No databases configured")
+		}
+	}
+
 	// Handle shutdown signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)

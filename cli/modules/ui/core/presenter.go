@@ -15,7 +15,9 @@ import (
 	"csd-devtrack/cli/modules/core/processes"
 	"csd-devtrack/cli/modules/core/projects"
 	"csd-devtrack/cli/modules/platform/builder"
+	"csd-devtrack/cli/modules/platform/capabilities"
 	"csd-devtrack/cli/modules/platform/claude"
+	"csd-devtrack/cli/modules/platform/codex"
 	"csd-devtrack/cli/modules/platform/config"
 	"csd-devtrack/cli/modules/platform/database"
 	"csd-devtrack/cli/modules/platform/git"
@@ -33,7 +35,9 @@ type AppPresenter struct {
 	processMgr      *supervisor.Manager
 	gitService      *git.Service
 	claudeService   *claude.Service
+	codexService    *codex.Service
 	databaseService *database.Service
+	capService      *capabilities.Service
 	config          *config.Config
 
 	// State
@@ -82,6 +86,10 @@ func NewPresenter(
 func (p *AppPresenter) Initialize(ctx context.Context) error {
 	p.ctx, p.cancel = context.WithCancel(ctx)
 
+	// Initialize capabilities detection (before other services)
+	p.capService = capabilities.NewService()
+	p.refreshCapabilities()
+
 	// Initialize build orchestrator
 	parallelBuilds := 4
 	if p.config != nil && p.config.Settings != nil {
@@ -111,6 +119,13 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 
 	// Initialize Claude state
 	p.refreshClaude()
+
+	// Initialize Codex service
+	p.codexService = codex.NewService()
+	if codexPath := p.capService.GetPath(capabilities.CapCodex); codexPath != "" {
+		p.codexService.Initialize(codexPath)
+	}
+	p.refreshCodex()
 
 	// Initialize Database service
 	p.databaseService = database.NewService(func() []projects.Project {
@@ -150,7 +165,7 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 
 // loadGitInBackground loads git info for all projects in background
 func (p *AppPresenter) loadGitInBackground() {
-	p.setHeaderEvent(HeaderEventInfo, "Loading git info...")
+	p.setPersistentHeaderEvent(HeaderEventInfo, "Loading git info...")
 
 	// Enrich all projects with git info (slow operation)
 	p.gitService.EnrichAllProjects()
@@ -439,7 +454,7 @@ func (p *AppPresenter) handleAddProject(event *Event) error {
 		return fmt.Errorf("invalid path")
 	}
 
-	p.setHeaderEvent(HeaderEventInfo, "Adding project...")
+	p.setPersistentHeaderEvent(HeaderEventInfo, "Adding project...")
 
 	project, err := p.projectService.AddProject(path)
 	if err != nil {
@@ -470,11 +485,11 @@ func (p *AppPresenter) handleStartBuild(event *Event) error {
 	// Create a new cancellable context for this build
 	p.buildCtx, p.buildCancel = context.WithCancel(p.ctx)
 
-	// Show build starting in header
+	// Show build starting in header (persistent until build completes)
 	if event.Component != "" {
-		p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Building %s/%s...", event.ProjectID, event.Component))
+		p.setPersistentHeaderEvent(HeaderEventInfo, fmt.Sprintf("Building %s/%s...", event.ProjectID, event.Component))
 	} else {
-		p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Building %s...", event.ProjectID))
+		p.setPersistentHeaderEvent(HeaderEventInfo, fmt.Sprintf("Building %s...", event.ProjectID))
 	}
 
 	go func() {
@@ -515,7 +530,7 @@ func (p *AppPresenter) handleBuildAll(event *Event) error {
 	// Create a new cancellable context for this build
 	p.buildCtx, p.buildCancel = context.WithCancel(p.ctx)
 
-	p.setHeaderEvent(HeaderEventInfo, "Building all projects...")
+	p.setPersistentHeaderEvent(HeaderEventInfo, "Building all projects...")
 
 	go func() {
 		buildCtx := p.buildCtx // Capture context
@@ -566,7 +581,7 @@ func (p *AppPresenter) handleCancelBuild(event *Event) error {
 
 func (p *AppPresenter) handleStartProcess(event *Event) error {
 	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
-	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Starting %s...", processID))
+	p.setPersistentHeaderEvent(HeaderEventInfo, fmt.Sprintf("Starting %s...", processID))
 	go func() {
 		err := p.processService.StartComponent(p.ctx, event.ProjectID, event.Component, p.processMgr)
 		if err != nil {
@@ -581,7 +596,7 @@ func (p *AppPresenter) handleStartProcess(event *Event) error {
 
 func (p *AppPresenter) handleStopProcess(event *Event) error {
 	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
-	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Stopping %s...", processID))
+	p.setPersistentHeaderEvent(HeaderEventInfo, fmt.Sprintf("Stopping %s...", processID))
 	go func() {
 		err := p.processService.StopProcess(p.ctx, processID, p.processMgr, false)
 		if err != nil {
@@ -596,7 +611,7 @@ func (p *AppPresenter) handleStopProcess(event *Event) error {
 
 func (p *AppPresenter) handleRestartProcess(event *Event) error {
 	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
-	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Restarting %s...", processID))
+	p.setPersistentHeaderEvent(HeaderEventInfo, fmt.Sprintf("Restarting %s...", processID))
 	go func() {
 		err := p.processService.RestartProcess(p.ctx, processID, p.processMgr)
 		if err != nil {
@@ -611,7 +626,7 @@ func (p *AppPresenter) handleRestartProcess(event *Event) error {
 
 func (p *AppPresenter) handleKillProcess(event *Event) error {
 	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
-	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Killing %s...", processID))
+	p.setPersistentHeaderEvent(HeaderEventInfo, fmt.Sprintf("Killing %s...", processID))
 	go func() {
 		err := p.processService.KillProcess(processID, p.processMgr)
 		if err != nil {
@@ -981,9 +996,15 @@ func (p *AppPresenter) notify(ntype NotificationType, title, message string) {
 	}
 }
 
-// setHeaderEvent sets a transient header event message
+// setHeaderEvent sets a transient header event message (auto-expires after 3s)
 func (p *AppPresenter) setHeaderEvent(etype HeaderEventType, message string) {
 	event := NewHeaderEvent(etype, message)
+	p.state.SetHeaderEvent(event)
+}
+
+// setPersistentHeaderEvent sets a persistent header event (stays until replaced)
+func (p *AppPresenter) setPersistentHeaderEvent(etype HeaderEventType, message string) {
+	event := NewPersistentHeaderEvent(etype, message)
 	p.state.SetHeaderEvent(event)
 }
 
@@ -1660,6 +1681,48 @@ func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
 	}
 }
 
+// refreshCodex updates the Codex view model from the service
+func (p *AppPresenter) refreshCodex() {
+	if p.codexService == nil {
+		return
+	}
+
+	p.mu.Lock()
+
+	// Update installation status
+	p.state.Codex.IsInstalled = p.codexService.GetPath() != ""
+	p.state.Codex.CodexPath = p.codexService.GetPath()
+
+	// Get all sessions
+	sessions := p.codexService.GetSessions()
+	p.state.Codex.Sessions = make([]CodexSessionVM, len(sessions))
+	for i, s := range sessions {
+		p.state.Codex.Sessions[i] = CodexSessionVM{
+			ID:           s.ID,
+			Name:         s.DisplayName(),
+			ProjectID:    s.ProjectID,
+			ProjectName:  s.ProjectName,
+			WorkDir:      s.WorkDir,
+			State:        string(s.State),
+			MessageCount: len(s.Messages),
+			CreatedAt:    s.CreatedAt,
+			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
+			LastActiveAt: s.LastActiveAt,
+			IsActive:     s.ID == p.state.Codex.ActiveSessionID,
+		}
+	}
+
+	// Sort sessions by LastActiveAt descending (most recent first)
+	sort.Slice(p.state.Codex.Sessions, func(i, j int) bool {
+		return p.state.Codex.Sessions[i].LastActiveAt.After(p.state.Codex.Sessions[j].LastActiveAt)
+	})
+
+	p.mu.Unlock()
+
+	// Notify UI of the update
+	p.notifyStateUpdate(VMCodex, p.state.Codex)
+}
+
 // formatToolOutput formats tool usage for display in chat
 // Mimics Claude CLI format with diffs and line numbers
 func formatToolOutput(toolName, content string) string {
@@ -1877,7 +1940,7 @@ func (p *AppPresenter) handleDatabaseCreateSession(event *Event) error {
 	projectID := event.ProjectID
 	projectName := event.Data["project_name"]
 
-	p.setHeaderEvent(HeaderEventInfo, "Creating database session...")
+	p.setPersistentHeaderEvent(HeaderEventInfo, "Creating database session...")
 
 	session, err := p.databaseService.CreateSession(databaseID, projectID, projectName)
 	if err != nil {
@@ -2014,6 +2077,7 @@ func (p *AppPresenter) refreshDatabase() {
 			Host:         db.Host,
 			Port:         db.Port,
 			User:         db.User,
+			URL:          db.URL,
 		}
 	}
 
@@ -2041,22 +2105,63 @@ func (p *AppPresenter) databaseSessionToVM(session *database.Session) *DatabaseS
 
 	dbName := ""
 	dbType := ""
+	dbURL := ""
 	if session.DatabaseInfo != nil {
 		dbName = session.DatabaseInfo.DatabaseName
 		dbType = string(session.DatabaseInfo.Type)
+		dbURL = session.DatabaseInfo.URL
 	}
 
 	return &DatabaseSessionVM{
 		ID:           session.ID,
 		Name:         session.DisplayName(),
+		DatabaseID:   session.DatabaseID,
 		ProjectID:    session.ProjectID,
 		ProjectName:  session.ProjectName,
 		DatabaseName: dbName,
 		DatabaseType: dbType,
+		DatabaseURL:  dbURL,
 		State:        string(session.State),
 		CreatedAt:    session.CreatedAt,
 		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
 		LastActiveAt: session.LastActiveAt,
 		IsActive:     session.ID == p.state.Database.ActiveSessionID,
+	}
+}
+
+// refreshCapabilities updates the capabilities view model from the service
+func (p *AppPresenter) refreshCapabilities() {
+	if p.capService == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Helper to convert capability info
+	toVM := func(cap capabilities.Capability) CapabilityVM {
+		info := p.capService.Get(cap)
+		if info == nil {
+			return CapabilityVM{Name: string(cap), Available: false}
+		}
+		return CapabilityVM{
+			Name:      string(cap),
+			Available: info.Available,
+			Path:      info.Path,
+			Version:   info.Version,
+		}
+	}
+
+	p.state.Capabilities = &CapabilitiesVM{
+		Tmux:   toVM(capabilities.CapTmux),
+		Claude: toVM(capabilities.CapClaude),
+		Codex:  toVM(capabilities.CapCodex),
+		Psql:   toVM(capabilities.CapPsql),
+		Mysql:  toVM(capabilities.CapMysql),
+		Sqlite: toVM(capabilities.CapSqlite),
+		Git:    toVM(capabilities.CapGit),
+		Go:     toVM(capabilities.CapGo),
+		Node:   toVM(capabilities.CapNode),
+		Npm:    toVM(capabilities.CapNpm),
 	}
 }

@@ -44,7 +44,10 @@ type KeyMap struct {
 	Quit   key.Binding
 	Filter key.Binding
 	Cancel key.Binding // Ctrl+C to cancel current build/process
-	Detach key.Binding // Ctrl+D to detach from TUI (daemon mode only)
+
+	// Command mode (like screen/tmux)
+	CommandPrefix key.Binding // Ctrl+Space to enter command mode
+	ExitTerminal  key.Binding // Ctrl+Tab to exit terminal mode
 }
 
 // DefaultKeyMap returns the default key bindings
@@ -165,7 +168,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q"),
-			key.WithHelp("q", "quit"),
+			key.WithHelp("^G q", "quit"),
 		),
 		Filter: key.NewBinding(
 			key.WithKeys("/"),
@@ -175,9 +178,16 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+c"),
 			key.WithHelp("CTRL+c", "cancel build/process"),
 		),
-		Detach: key.NewBinding(
-			key.WithKeys("ctrl+d"),
-			key.WithHelp("CTRL+d", "detach"),
+
+		// Command mode (like screen Ctrl+A or tmux Ctrl+B)
+		CommandPrefix: key.NewBinding(
+			key.WithKeys("ctrl+g"),
+			key.WithHelp("^G", "command mode"),
+		),
+		// Exit terminal mode (^G Esc)
+		ExitTerminal: key.NewBinding(
+			key.WithKeys("esc"),
+			key.WithHelp("^G Esc", "exit terminal"),
 		),
 	}
 }
@@ -203,6 +213,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		// Git
 		{k.GitStatus, k.GitDiff, k.GitLog},
 		// Other
-		{k.Filter, k.Cancel, k.Help, k.Quit},
+		{k.Filter, k.Cancel, k.CommandPrefix, k.Help, k.Quit},
 	}
 }

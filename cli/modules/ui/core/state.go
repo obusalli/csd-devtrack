@@ -21,6 +21,7 @@ type AppState struct {
 	Git          *GitVM
 	Config       *ConfigVM
 	Claude       *ClaudeVM
+	Codex        *CodexVM
 	Cockpit      *CockpitVM
 	Database     *DatabaseVM
 	Capabilities *CapabilitiesVM
@@ -49,6 +50,7 @@ func NewAppState() *AppState {
 		Git:          &GitVM{BaseViewModel: BaseViewModel{VMType: VMGit}},
 		Config:       &ConfigVM{BaseViewModel: BaseViewModel{VMType: VMConfig}},
 		Claude:       &ClaudeVM{BaseViewModel: BaseViewModel{VMType: VMClaude}},
+		Codex:        &CodexVM{BaseViewModel: BaseViewModel{VMType: VMCodex}},
 		Cockpit:       &CockpitVM{BaseViewModel: BaseViewModel{VMType: VMCockpit}},
 		Database:      &DatabaseVM{BaseViewModel: BaseViewModel{VMType: VMDatabase}},
 		Capabilities:  &CapabilitiesVM{},
@@ -78,6 +80,8 @@ func (s *AppState) GetCurrentViewModel() ViewModel {
 		return s.Config
 	case VMClaude:
 		return s.Claude
+	case VMCodex:
+		return s.Codex
 	case VMCockpit:
 		return s.Cockpit
 	case VMDatabase:
@@ -116,6 +120,8 @@ func (s *AppState) UpdateViewModel(vm ViewModel) {
 		s.Config = v
 	case *ClaudeVM:
 		s.Claude = v
+	case *CodexVM:
+		s.Codex = v
 	case *CockpitVM:
 		s.Cockpit = v
 	case *DatabaseVM:

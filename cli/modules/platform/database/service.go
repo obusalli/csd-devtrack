@@ -42,6 +42,7 @@ func (s *Service) DiscoverDatabases() ([]*DatabaseInfo, error) {
 
 	projects := s.projectsFunc()
 	var allDatabases []*DatabaseInfo
+	seenURLs := make(map[string]bool) // Global deduplication by URL
 
 	for _, proj := range projects {
 		// Look for YAML config files in cli/ and backend/ directories
@@ -56,13 +57,19 @@ func (s *Service) DiscoverDatabases() ([]*DatabaseInfo, error) {
 			{filepath.Join(proj.Path, "backend", fmt.Sprintf("%s.yaml", proj.Name)), "backend"},
 		}
 
-		seen := make(map[string]bool) // Track unique config files
+		seenFiles := make(map[string]bool) // Track unique config files per project
 
 		for _, cp := range configPaths {
-			if seen[cp.path] {
+			// Resolve to absolute path for deduplication
+			absPath, err := filepath.Abs(cp.path)
+			if err != nil {
+				absPath = cp.path
+			}
+
+			if seenFiles[absPath] {
 				continue
 			}
-			seen[cp.path] = true
+			seenFiles[absPath] = true
 
 			if _, err := os.Stat(cp.path); os.IsNotExist(err) {
 				continue
@@ -74,6 +81,12 @@ func (s *Service) DiscoverDatabases() ([]*DatabaseInfo, error) {
 			}
 
 			for _, db := range databases {
+				// Global deduplication: skip if URL already seen
+				if seenURLs[db.URL] {
+					continue
+				}
+				seenURLs[db.URL] = true
+
 				s.databases[db.ID] = db
 				allDatabases = append(allDatabases, db)
 			}

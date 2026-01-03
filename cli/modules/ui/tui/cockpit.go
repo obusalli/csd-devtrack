@@ -57,7 +57,7 @@ func (m *Model) renderCockpit(width, height int) string {
 
 	// Add config overlay if in config mode
 	if m.cockpitConfigMode {
-		content = m.renderCockpitConfigOverlay(content, width, height)
+		return m.renderCockpitConfigOverlay(width, height)
 	}
 
 	return content
@@ -67,12 +67,7 @@ func (m *Model) renderCockpit(width, height int) string {
 func (m *Model) renderCockpitEmpty(width, height int) string {
 	// Check for config overlay first (e.g., creating new profile)
 	if m.cockpitConfigMode {
-		// Render empty background with overlay
-		emptyBg := lipgloss.NewStyle().
-			Width(width).
-			Height(height).
-			Render("")
-		return m.renderCockpitConfigOverlay(emptyBg, width, height)
+		return m.renderCockpitConfigOverlay(width, height)
 	}
 
 	titleStyle := lipgloss.NewStyle().
@@ -570,10 +565,24 @@ func (m *Model) renderWidgetGit(widget *config.WidgetConfig, width, height int) 
 
 // renderWidgetClaude renders Claude sessions
 func (m *Model) renderWidgetClaude(widget *config.WidgetConfig, width, height int) string {
-	if m.state.Claude == nil || !m.state.Claude.IsInstalled {
+	// Check capabilities
+	if m.state.Capabilities != nil {
+		if !m.state.Capabilities.Tmux.Available {
+			return lipgloss.NewStyle().
+				Foreground(ColorWarning).
+				Render("tmux not installed")
+		}
+		if !m.state.Capabilities.Claude.Available {
+			return lipgloss.NewStyle().
+				Foreground(ColorWarning).
+				Render("claude CLI not found")
+		}
+	}
+
+	if m.state.Claude == nil {
 		return lipgloss.NewStyle().
 			Foreground(ColorMuted).
-			Render("Claude not installed")
+			Render("Claude not available")
 	}
 
 	if len(m.state.Claude.Sessions) == 0 {
@@ -628,10 +637,24 @@ func (m *Model) renderWidgetClaude(widget *config.WidgetConfig, width, height in
 
 // renderWidgetDatabase renders database sessions
 func (m *Model) renderWidgetDatabase(widget *config.WidgetConfig, width, height int) string {
+	// Check capabilities
+	if m.state.Capabilities != nil {
+		if !m.state.Capabilities.Tmux.Available {
+			return lipgloss.NewStyle().
+				Foreground(ColorWarning).
+				Render("tmux not installed")
+		}
+		if !m.state.Capabilities.HasDatabase() {
+			return lipgloss.NewStyle().
+				Foreground(ColorWarning).
+				Render("No DB client (psql/mysql/sqlite3)")
+		}
+	}
+
 	if m.state.Database == nil || len(m.state.Database.Databases) == 0 {
 		return lipgloss.NewStyle().
 			Foreground(ColorMuted).
-			Render("No databases found")
+			Render("No databases configured")
 	}
 
 	var lines []string

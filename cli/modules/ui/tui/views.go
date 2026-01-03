@@ -243,6 +243,11 @@ func (m *Model) getSidebarViews() []sidebarView {
 		views = append(views, sidebarView{"[C]laude Code", core.VMClaude})
 	}
 
+	// Add Codex view if capabilities available (tmux + codex)
+	if m.state.Capabilities != nil && m.state.Capabilities.HasCodex() {
+		views = append(views, sidebarView{"Code[X]", core.VMCodex})
+	}
+
 	// Add Database view if capabilities available (tmux + db client) and databases configured
 	if m.state.Capabilities != nil && m.state.Capabilities.HasDatabase() &&
 		m.state.Database != nil && len(m.state.Database.Databases) > 0 {
@@ -689,6 +694,8 @@ func (m *Model) renderMainContent() string {
 		content = m.renderConfig(width, height)
 	case core.VMClaude:
 		content = m.renderClaude(width, height)
+	case core.VMCodex:
+		content = m.renderCodex(width, height)
 	case core.VMCockpit:
 		content = m.renderCockpit(width, height)
 	case core.VMDatabase:
@@ -717,6 +724,12 @@ func (m *Model) renderMainContent() string {
 
 // renderFooter renders the bottom help bar
 func (m *Model) renderFooter() string {
+	// If in command mode, show command prompt
+	if m.commandMode {
+		cmdPrompt := StatusWarning.Render(" ^G... ") + HelpDescStyle.Render(" q=quit d=detach ?=help ")
+		return lipgloss.NewStyle().Width(m.width).Background(ColorBgAlt).Render(cmdPrompt)
+	}
+
 	// Context-sensitive shortcuts based on current view and focus
 	var shortcuts []string
 
@@ -898,17 +911,22 @@ func (m *Model) renderFooter() string {
 			// Terminal mode has its own shortcuts
 			if m.terminalMode {
 				shortcuts = append(shortcuts,
-					HelpKeyStyle.Render("⇧Tab")+HelpDescStyle.Render(" sidebar  "),
+					HelpKeyStyle.Render("^G Esc")+HelpDescStyle.Render(" exit  "),
 					HelpKeyStyle.Render("PgUp/Dn")+HelpDescStyle.Render(" scroll  "),
 				)
 			} else {
 				// Sessions panel shortcuts (right side)
 				if m.focusArea == FocusDetail {
+					allLabel := "all"
+					if m.showAllClaudeSessions {
+						allLabel = "less"
+					}
 					shortcuts = append(shortcuts,
 						HelpKeyStyle.Render("n")+HelpDescStyle.Render(" new  "),
 						HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" open  "),
 						HelpKeyStyle.Render("r")+HelpDescStyle.Render(" rename  "),
 						HelpKeyStyle.Render("x")+HelpDescStyle.Render(" delete  "),
+						HelpKeyStyle.Render("a")+HelpDescStyle.Render(" "+allLabel+"  "),
 					)
 				} else if m.claudeInputActive {
 					shortcuts = append(shortcuts,
@@ -949,8 +967,8 @@ func (m *Model) renderFooter() string {
 			// Database view shortcuts
 			if m.terminalMode {
 				shortcuts = append(shortcuts,
-					HelpKeyStyle.Render("⇧Tab")+HelpDescStyle.Render(" sidebar  "),
-					HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" exit  "),
+					HelpKeyStyle.Render("^G Esc")+HelpDescStyle.Render(" exit  "),
+					HelpKeyStyle.Render("PgUp/Dn")+HelpDescStyle.Render(" scroll  "),
 				)
 			} else if m.focusArea == FocusDetail {
 				shortcuts = append(shortcuts,
@@ -969,17 +987,18 @@ func (m *Model) renderFooter() string {
 		}
 	}
 
-	// Show detach if in daemon mode
+	// Show command mode hint (^G for commands)
+	// In daemon mode, also hint at detach command
 	if m.detachable {
 		shortcuts = append(shortcuts,
-			HelpKeyStyle.Render("CTRL+d")+HelpDescStyle.Render(" detach  "),
+			HelpKeyStyle.Render("^G d")+HelpDescStyle.Render(" detach  "),
 		)
 	}
 
 	// Always show help and quit
 	shortcuts = append(shortcuts,
 		HelpKeyStyle.Render("?")+HelpDescStyle.Render(" help  "),
-		HelpKeyStyle.Render("q")+HelpDescStyle.Render(" quit"),
+		HelpKeyStyle.Render("^G q")+HelpDescStyle.Render(" quit"),
 	)
 
 	left := " " + strings.Join(shortcuts, "")

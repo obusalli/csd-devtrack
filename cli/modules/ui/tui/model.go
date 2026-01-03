@@ -153,8 +153,9 @@ type Model struct {
 	claudeMode           string            // "sessions", "chat", "settings"
 	claudeActiveSession  string            // Active session ID
 	claudeSessionLoading bool              // Loading session data
-	deletingSessions     map[string]bool   // Sessions being deleted (for visual feedback)
-	claudeInputText      string          // Current input text (deprecated, use claudeTextInput)
+	deletingSessions       map[string]bool // Sessions being deleted (for visual feedback)
+	showAllClaudeSessions  bool            // Show all sessions (default: only 10 most recent per project)
+	claudeInputText        string          // Current input text (deprecated, use claudeTextInput)
 	claudeInputActive    bool            // User is typing
 	claudeChatScroll     int             // Scroll offset for chat messages
 	claudeSessionScroll  int             // Scroll offset for session list
@@ -504,11 +505,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.terminalMode && activeTerminalSession != "" {
 			keyStr := msg.String()
 
-			// Ctrl+Tab exits terminal mode (universal exit key)
-			if key.Matches(msg, m.keys.ExitTerminal) {
-				m.terminalMode = false
-				m.focusArea = FocusDetail // Go to sessions panel
+			// ^G enters command mode (even in terminal mode)
+			if key.Matches(msg, m.keys.CommandPrefix) {
+				m.commandMode = true
+				m.commandModeTime = time.Now()
 				return m, nil
+			}
+
+			// If in command mode, handle command key
+			if m.commandMode {
+				if time.Since(m.commandModeTime) > 2*time.Second {
+					m.commandMode = false
+					// Fall through to send key to terminal
+				} else {
+					m.commandMode = false
+					// Handle escape to exit terminal mode
+					if keyStr == "esc" || keyStr == "escape" {
+						m.terminalMode = false
+						m.focusArea = FocusDetail
+						return m, nil
+					}
+					// Other commands work too (q for quit, d for detach)
+					return m, m.handleCommandKey(msg)
+				}
 			}
 
 			// Tab and Shift+Tab are handled by the global focus navigation
@@ -767,10 +786,6 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch {
-	// Quit
-	case key.Matches(msg, m.keys.Quit):
-		return tea.Quit
-
 	// Cancel current build/process (Ctrl+C)
 	case key.Matches(msg, m.keys.Cancel):
 		return m.cancelCurrent()
@@ -1371,7 +1386,7 @@ func (m *Model) handleCommandKey(msg tea.KeyMsg) tea.Cmd {
 
 	default:
 		// Unknown command
-		m.lastError = fmt.Sprintf("Unknown command: ^Space %s", keyStr)
+		m.lastError = fmt.Sprintf("Unknown command: ^G %s", keyStr)
 		m.lastErrorTime = time.Now()
 		return nil
 	}
@@ -1870,6 +1885,11 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 		switch key {
+		case "a":
+			// Toggle show all sessions (vs 10 most recent per project)
+			m.showAllClaudeSessions = !m.showAllClaudeSessions
+			m.updateClaudeTree()
+			return nil
 		case "n":
 			// New session - when focused on sessions panel and on/in a project
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
@@ -3363,10 +3383,14 @@ func (m *Model) updateClaudeTree() {
 	}
 
 	// Add sessions to their matching projects
+	// Sessions in subdirectories should be matched to their parent project
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
 			// Try to match session with a registered project
 			matched := false
+			var bestMatch *projectNode
+			bestMatchLen := 0
+
 			for _, node := range projectMap {
 				// First, try exact ProjectID match (most reliable)
 				if sess.ProjectID != "" && sess.ProjectID == node.ID {
@@ -3374,21 +3398,59 @@ func (m *Model) updateClaudeTree() {
 					matched = true
 					break
 				}
-				// Fallback: Match if project path ends with session's project name
-				if sess.ProjectName != "" && strings.HasSuffix(node.Path, "/"+sess.ProjectName) {
-					node.Sessions = append(node.Sessions, sess)
-					matched = true
-					break
-				}
-				// Fallback: Match if project name equals session's project name
-				if node.Name == sess.ProjectName {
-					node.Sessions = append(node.Sessions, sess)
-					matched = true
-					break
+
+				// Check if session WorkDir is under project path (handles subdirectories)
+				// e.g., session in /data/project/cli matches project at /data/project
+				if sess.WorkDir != "" && node.Path != "" {
+					if strings.HasPrefix(sess.WorkDir, node.Path+"/") || sess.WorkDir == node.Path {
+						// Keep the longest matching path (most specific parent)
+						if len(node.Path) > bestMatchLen {
+							bestMatch = node
+							bestMatchLen = len(node.Path)
+						}
+					}
 				}
 			}
-			// Sessions not matching any registered project are ignored
-			_ = matched
+
+			// Use best path match if no exact ProjectID match
+			if !matched && bestMatch != nil {
+				bestMatch.Sessions = append(bestMatch.Sessions, sess)
+				matched = true
+			}
+
+			// Fallback: try name-based matching
+			if !matched {
+				for _, node := range projectMap {
+					// Match if project path ends with session's project name
+					if sess.ProjectName != "" && strings.HasSuffix(node.Path, "/"+sess.ProjectName) {
+						node.Sessions = append(node.Sessions, sess)
+						matched = true
+						break
+					}
+					// Match if project name equals session's project name
+					if node.Name == sess.ProjectName {
+						node.Sessions = append(node.Sessions, sess)
+						matched = true
+						break
+					}
+				}
+			}
+
+			// Sessions not matching any registered project: create pseudo-project
+			if !matched && sess.ProjectName != "" {
+				// Check if we already created a pseudo-project for this
+				pseudoID := "external:" + sess.ProjectName
+				if _, exists := projectMap[pseudoID]; !exists {
+					projectMap[pseudoID] = &projectNode{
+						ID:       pseudoID,
+						Name:     sess.ProjectName + " (external)",
+						Path:     sess.WorkDir,
+						Sessions: []core.ClaudeSessionVM{},
+					}
+					projectOrder = append(projectOrder, pseudoID)
+				}
+				projectMap[pseudoID].Sessions = append(projectMap[pseudoID].Sessions, sess)
+			}
 		}
 	}
 
@@ -3432,12 +3494,21 @@ func (m *Model) updateClaudeTree() {
 	tmuxSessions := ListTmuxSessions()
 
 	var treeItems []TreeMenuItem
+	const maxSessionsPerProject = 10
 	for _, projID := range projectOrder {
 		node := projectMap[projID]
 
+		// Limit sessions unless showAllClaudeSessions is enabled
+		sessionsToShow := node.Sessions
+		hiddenCount := 0
+		if !m.showAllClaudeSessions && len(node.Sessions) > maxSessionsPerProject {
+			sessionsToShow = node.Sessions[:maxSessionsPerProject]
+			hiddenCount = len(node.Sessions) - maxSessionsPerProject
+		}
+
 		// Build session children for this project
 		var sessionItems []TreeMenuItem
-		for _, sess := range node.Sessions {
+		for _, sess := range sessionsToShow {
 			// Get display name (remove project prefix if present)
 			displayName := sess.Name
 			if idx := strings.Index(displayName, "-"); idx > 0 && strings.HasPrefix(displayName, sess.ProjectID) {
@@ -3492,9 +3563,19 @@ func (m *Model) updateClaudeTree() {
 			sessionItems = append(sessionItems, item)
 		}
 
+		// Add "show more" indicator if sessions are hidden
+		if hiddenCount > 0 {
+			sessionItems = append(sessionItems, TreeMenuItem{
+				ID:       "more:" + node.ID,
+				Label:    fmt.Sprintf("+%d more (press 'a' to show all)", hiddenCount),
+				Icon:     "…",
+				Disabled: true,
+			})
+		}
+
 		// Add project with its sessions as children
 		projIcon := "📁"
-		if len(sessionItems) > 0 {
+		if len(node.Sessions) > 0 {
 			projIcon = "📂"
 		}
 
@@ -3503,8 +3584,8 @@ func (m *Model) updateClaudeTree() {
 			Label:    node.Name,
 			Icon:     projIcon,
 			Children: sessionItems,
-			Count:    len(sessionItems),
-			Data:     "project", // Mark as project for identification
+			Count:    len(node.Sessions), // Total count, not just visible
+			Data:     "project",          // Mark as project for identification
 		})
 	}
 

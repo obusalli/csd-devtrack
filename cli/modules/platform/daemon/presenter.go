@@ -122,6 +122,10 @@ func (p *ClientPresenter) GetViewModel(viewType core.ViewModelType) (core.ViewMo
 		return p.state.Config, nil
 	case core.VMClaude:
 		return p.state.Claude, nil
+	case core.VMDatabase:
+		return p.state.Database, nil
+	case core.VMCockpit:
+		return p.state.Cockpit, nil
 	default:
 		return nil, fmt.Errorf("unknown view type: %s", viewType)
 	}
@@ -149,6 +153,8 @@ func (p *ClientPresenter) Subscribe(callback func(core.StateUpdate)) {
 			{core.VMLogs, state.Logs},
 			{core.VMConfig, state.Config},
 			{core.VMClaude, state.Claude},
+			{core.VMDatabase, state.Database},
+			{core.VMCockpit, state.Cockpit},
 		}
 		for _, v := range viewModels {
 			if v.vm != nil {
@@ -221,6 +227,8 @@ func (p *ClientPresenter) handleStateUpdate(state *core.AppState) {
 		{core.VMLogs, state.Logs},
 		{core.VMConfig, state.Config},
 		{core.VMClaude, state.Claude},
+		{core.VMDatabase, state.Database},
+		{core.VMCockpit, state.Cockpit},
 	}
 
 	for _, v := range viewModels {

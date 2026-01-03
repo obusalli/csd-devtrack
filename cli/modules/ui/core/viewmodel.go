@@ -21,6 +21,7 @@ const (
 	VMGit       ViewModelType = "git"
 	VMConfig    ViewModelType = "config"
 	VMClaude    ViewModelType = "claude"
+	VMCodex     ViewModelType = "codex"
 	VMCockpit   ViewModelType = "cockpit"
 	VMDatabase  ViewModelType = "database"
 )
@@ -303,6 +304,32 @@ type ClaudeVM struct {
 	Usage           *ClaudeUsageVM    `json:"usage,omitempty"`
 }
 
+// CodexSessionVM represents a Codex session for display
+type CodexSessionVM struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	ProjectID    string    `json:"project_id"`
+	ProjectName  string    `json:"project_name"`
+	WorkDir      string    `json:"work_dir"`
+	State        string    `json:"state"` // idle, running, waiting, error
+	MessageCount int       `json:"message_count"`
+	CreatedAt    time.Time `json:"created_at"`
+	LastActive   string    `json:"last_active"`
+	LastActiveAt time.Time `json:"last_active_at"`
+	IsActive     bool      `json:"is_active"`
+}
+
+// CodexVM is the view model for the Codex AI view
+type CodexVM struct {
+	BaseViewModel
+	IsInstalled     bool              `json:"is_installed"`
+	CodexPath       string            `json:"codex_path,omitempty"`
+	Sessions        []CodexSessionVM  `json:"sessions"`
+	ActiveSessionID string            `json:"active_session_id,omitempty"`
+	ActiveSession   *CodexSessionVM   `json:"active_session,omitempty"`
+	FilterProject   string            `json:"filter_project"`
+}
+
 // DatabaseInfoVM represents a database connection info for display
 type DatabaseInfoVM struct {
 	ID           string `json:"id"`
@@ -314,17 +341,20 @@ type DatabaseInfoVM struct {
 	Host         string `json:"host"`
 	Port         int    `json:"port"`
 	User         string `json:"user"`
+	URL          string `json:"url"` // Full connection URL for CLI
 }
 
 // DatabaseSessionVM represents a database session for display
 type DatabaseSessionVM struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
+	DatabaseID   string    `json:"database_id"` // Associated database info ID
 	ProjectID    string    `json:"project_id"`
 	ProjectName  string    `json:"project_name"`
 	DatabaseName string    `json:"database_name"`
 	DatabaseType string    `json:"database_type"`
-	State        string    `json:"state"` // idle, running, error
+	DatabaseURL  string    `json:"database_url"` // Full connection URL for CLI
+	State        string    `json:"state"`        // idle, running, error
 	CreatedAt    time.Time `json:"created_at"`
 	LastActive   string    `json:"last_active"`   // Formatted date string
 	LastActiveAt time.Time `json:"last_active_at"`
@@ -339,4 +369,51 @@ type DatabaseVM struct {
 	ActiveSessionID   string              `json:"active_session_id,omitempty"`
 	ActiveSession     *DatabaseSessionVM  `json:"active_session,omitempty"`
 	FilterProject     string              `json:"filter_project"`
+}
+
+// CapabilityVM represents a single capability status
+type CapabilityVM struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"`
+	Path      string `json:"path,omitempty"`
+	Version   string `json:"version,omitempty"`
+}
+
+// CapabilitiesVM represents external tool capabilities
+type CapabilitiesVM struct {
+	Tmux   CapabilityVM `json:"tmux"`
+	Claude CapabilityVM `json:"claude"`
+	Codex  CapabilityVM `json:"codex"`
+	Psql   CapabilityVM `json:"psql"`
+	Mysql  CapabilityVM `json:"mysql"`
+	Sqlite CapabilityVM `json:"sqlite"`
+	Git    CapabilityVM `json:"git"`
+	Go     CapabilityVM `json:"go"`
+	Node   CapabilityVM `json:"node"`
+	Npm    CapabilityVM `json:"npm"`
+}
+
+// HasTerminal returns true if tmux is available (required for Claude/Database views)
+func (c *CapabilitiesVM) HasTerminal() bool {
+	return c.Tmux.Available
+}
+
+// HasClaude returns true if both tmux and claude are available
+func (c *CapabilitiesVM) HasClaude() bool {
+	return c.Tmux.Available && c.Claude.Available
+}
+
+// HasCodex returns true if both tmux and codex are available
+func (c *CapabilitiesVM) HasCodex() bool {
+	return c.Tmux.Available && c.Codex.Available
+}
+
+// HasDatabase returns true if tmux and at least one database client is available
+func (c *CapabilitiesVM) HasDatabase() bool {
+	return c.Tmux.Available && (c.Psql.Available || c.Mysql.Available || c.Sqlite.Available)
+}
+
+// HasGit returns true if git is available
+func (c *CapabilitiesVM) HasGit() bool {
+	return c.Git.Available
 }
