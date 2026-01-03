@@ -505,7 +505,8 @@ func (m *Model) renderProfileNameInput() string {
 	return inputStyle.Render(display)
 }
 
-// handleCockpitConfigNavigation handles navigation in config mode
+// handleCockpitConfigNavigation handles special keys in config mode (Enter, Esc, text input)
+// Up/Down navigation is handled by getActiveTreeMenu() in the standard navigation flow
 func (m *Model) handleCockpitConfigNavigation(msg tea.KeyMsg) bool {
 	if !m.cockpitConfigMode {
 		return false
@@ -552,28 +553,8 @@ func (m *Model) handleCockpitConfigNavigation(msg tea.KeyMsg) bool {
 		return false
 	}
 
-	// Handle menu navigation
-	var menu *TreeMenu
-	switch m.cockpitConfigStep {
-	case "grid":
-		menu = m.cockpitGridMenu
-	case "widgets":
-		menu = m.cockpitTypeMenu
-	case "filters":
-		menu = m.cockpitFilterMenu
-	}
-
-	if menu == nil {
-		return false
-	}
-
+	// Handle Enter and Esc for menu navigation (Up/Down handled by getActiveTreeMenu)
 	switch key {
-	case "up", "k":
-		menu.MoveUp()
-		return true
-	case "down", "j":
-		menu.MoveDown()
-		return true
 	case "enter":
 		// Handle menu selection
 		m.handleCockpitConfigEnter()

@@ -180,8 +180,9 @@ type Model struct {
 	terminalRefreshTick  <-chan time.Time // Ticker for terminal refresh
 
 	// Cockpit view state
-	cockpitFocusedIndex int    // Currently focused widget index
-	cockpitConfigMode   bool   // True when configuring cockpit
+	cockpitFocusedIndex int  // Currently focused widget index
+	cockpitWidgetActive bool // True when inside a widget (tmux session active)
+	cockpitConfigMode   bool // True when configuring cockpit
 	cockpitConfigStep   string // "grid", "widgets", "filters", "profile_name"
 	cockpitConfigRows   int    // Grid rows being configured
 	cockpitConfigCols   int    // Grid cols being configured
@@ -856,105 +857,47 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	// Directional navigation
-	// Claude view has special up/down handling for tree and chat scroll
 	case key.Matches(msg, m.keys.Up):
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && !m.claudeInputActive {
-			if m.focusArea == FocusDetail {
-				// Sessions panel: navigate tree using TreeMenu
-				m.sessionsTreeMenu.MoveUp()
-				return nil
-			} else if m.focusArea == FocusMain {
-				// Chat panel: scroll up
-				m.claudeChatScroll++
-				return nil
-			}
+		// Special: Claude chat scroll
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
+			m.claudeChatScroll++
+			return nil
 		}
-		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
-			m.databaseTreeMenu.MoveUp()
+		// TreeMenu navigation
+		if tm := m.getActiveTreeMenu(); tm != nil {
+			tm.MoveUp()
+			if m.currentView == core.VMGit && m.focusArea == FocusMain {
+				return m.loadGitDiffForSelection()
+			}
 			return nil
 		}
 		m.navigateUp()
-		// Git view: auto-load diff when selection changes
-		if m.currentView == core.VMGit && m.focusArea == FocusMain {
-			return m.loadGitDiffForSelection()
-		}
 		return nil
+
 	case key.Matches(msg, m.keys.Down):
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && !m.claudeInputActive {
-			if m.focusArea == FocusDetail {
-				// Sessions panel: navigate tree using TreeMenu
-				m.sessionsTreeMenu.MoveDown()
-				return nil
-			} else if m.focusArea == FocusMain {
-				// Chat panel: scroll down
-				if m.claudeChatScroll > 0 {
-					m.claudeChatScroll--
-				}
-				return nil
+		// Special: Claude chat scroll
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusMain && !m.claudeInputActive {
+			if m.claudeChatScroll > 0 {
+				m.claudeChatScroll--
 			}
+			return nil
 		}
-		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
-			m.databaseTreeMenu.MoveDown()
+		// TreeMenu navigation
+		if tm := m.getActiveTreeMenu(); tm != nil {
+			tm.MoveDown()
+			if m.currentView == core.VMGit && m.focusArea == FocusMain {
+				return m.loadGitDiffForSelection()
+			}
 			return nil
 		}
 		m.navigateDown()
-		// Git view: auto-load diff when selection changes
-		if m.currentView == core.VMGit && m.focusArea == FocusMain {
-			return m.loadGitDiffForSelection()
-		}
 		return nil
+
 	case key.Matches(msg, m.keys.Left):
-		// Claude sessions panel: drill up
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
-			m.sessionsTreeMenu.DrillUp()
-			return nil
-		}
-		// Database panel: drill up
-		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
-			m.databaseTreeMenu.DrillUp()
-			return nil
-		}
-		// TreeMenu views: drill up in project tree
-		if m.focusArea == FocusMain {
-			switch m.currentView {
-			case core.VMGit:
-				m.gitMenu.DrillUp()
-				return m.loadGitDiffForSelection()
-			case core.VMProjects:
-				m.projectsMenu.DrillUp()
-				return nil
-			case core.VMProcesses:
-				m.processesMenu.DrillUp()
-				return nil
-			}
-		}
 		m.navigateLeft()
 		return nil
+
 	case key.Matches(msg, m.keys.Right):
-		// Claude sessions panel: drill down
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
-			m.sessionsTreeMenu.DrillDown()
-			return nil
-		}
-		// Database panel: drill down
-		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
-			m.databaseTreeMenu.DrillDown()
-			return nil
-		}
-		// TreeMenu views: drill down in project tree
-		if m.focusArea == FocusMain {
-			switch m.currentView {
-			case core.VMGit:
-				m.gitMenu.DrillDown()
-				return m.loadGitDiffForSelection()
-			case core.VMProjects:
-				m.projectsMenu.DrillDown()
-				return nil
-			case core.VMProcesses:
-				m.processesMenu.DrillDown()
-				return nil
-			}
-		}
 		m.navigateRight()
 		return nil
 
@@ -1022,6 +965,30 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			// If Select() returned nil, it drilled down - nothing more to do
 			return nil
 		}
+		// Shell sessions panel: use TreeMenu to select/drill-down
+		if m.currentView == core.VMShell && m.focusArea == FocusDetail && m.shellTreeMenu != nil {
+			if item := m.shellTreeMenu.Select(); item != nil {
+				// Leaf item selected (session) - connect to it via ID
+				if len(item.Children) == 0 && strings.HasPrefix(item.ID, "shell-") {
+					m.shellActiveSession = item.ID
+					return nil
+				}
+			}
+			// If Select() returned nil, it drilled down/up - nothing more to do
+			return nil
+		}
+		// Codex sessions panel: use TreeMenu to select/drill-down
+		if m.currentView == core.VMCodex && m.focusArea == FocusDetail && m.codexTreeMenu != nil {
+			if item := m.codexTreeMenu.Select(); item != nil {
+				// Leaf item selected (session) - connect to it via ID
+				if len(item.Children) == 0 && strings.HasPrefix(item.ID, "codex-") {
+					m.codexActiveSession = item.ID
+					return nil
+				}
+			}
+			// If Select() returned nil, it drilled down/up - nothing more to do
+			return nil
+		}
 		return m.handleEnter()
 
 	// Refresh
@@ -1072,6 +1039,51 @@ func (m *Model) hasDetailPanel() bool {
 	default:
 		return false
 	}
+}
+
+// getActiveTreeMenu returns the TreeMenu that should handle navigation for current view/focus
+// Returns nil if no TreeMenu is active for the current context
+func (m *Model) getActiveTreeMenu() *TreeMenu {
+	// Cockpit config mode has priority - uses its own menus
+	if m.currentView == core.VMCockpit && m.cockpitConfigMode {
+		switch m.cockpitConfigStep {
+		case "grid":
+			return m.cockpitGridMenu
+		case "widgets":
+			return m.cockpitTypeMenu
+		case "filters":
+			return m.cockpitFilterMenu
+		case "profile":
+			return m.cockpitProfileMenu
+		}
+		return nil
+	}
+
+	switch m.focusArea {
+	case FocusMain:
+		switch m.currentView {
+		case core.VMProjects:
+			return m.projectsMenu
+		case core.VMProcesses:
+			return m.processesMenu
+		case core.VMGit:
+			return m.gitMenu
+		}
+	case FocusDetail:
+		switch m.currentView {
+		case core.VMClaude:
+			if m.claudeMode == ClaudeModeChat && !m.claudeInputActive {
+				return m.sessionsTreeMenu
+			}
+		case core.VMDatabase:
+			return m.databaseTreeMenu
+		case core.VMShell:
+			return m.shellTreeMenu
+		case core.VMCodex:
+			return m.codexTreeMenu
+		}
+	}
+	return nil
 }
 
 // gitDiffPageUp scrolls the git diff view up by a page

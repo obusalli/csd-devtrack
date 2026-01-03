@@ -438,6 +438,10 @@ func (p *AppPresenter) Refresh() error {
 	p.refreshDashboard()
 
 	p.state.LastRefresh = time.Now()
+
+	// Broadcast state update to all subscribers
+	p.broadcastFullState()
+
 	return nil
 }
 
