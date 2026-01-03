@@ -460,6 +460,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		m.refreshData,
+		tickCmd(), // Start the refresh tick cycle
 		tea.WindowSize(),
 	)
 }
