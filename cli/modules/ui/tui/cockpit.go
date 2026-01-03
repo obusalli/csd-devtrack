@@ -19,34 +19,34 @@ type WidgetLayout struct {
 	Height int
 }
 
-// renderWidgets renders the configurable widgets view
-func (m *Model) renderWidgets(width, height int) string {
+// renderCockpit renders the configurable widgets view
+func (m *Model) renderCockpit(width, height int) string {
 	cfg := config.GetGlobal()
 	if cfg == nil {
-		return m.renderWidgetsPlaceholder(width, height, "No configuration loaded")
+		return m.renderCockpitPlaceholder(width, height, "No configuration loaded")
 	}
 
 	// Check if there are any profiles
 	if cfg.WidgetProfiles == nil || len(cfg.WidgetProfiles) == 0 {
-		return m.renderWidgetsEmpty(width, height)
+		return m.renderCockpitEmpty(width, height)
 	}
 
 	// Get active profile
-	profileName := m.getActiveWidgetProfile()
-	profile := m.getWidgetProfile(profileName)
+	profileName := m.getActiveCockpitProfile()
+	profile := m.getCockpitProfile(profileName)
 	if profile == nil {
-		return m.renderWidgetsEmpty(width, height)
+		return m.renderCockpitEmpty(width, height)
 	}
 
 	// Render header
-	header := m.renderWidgetsHeader(width)
+	header := m.renderCockpitHeader(width)
 	headerHeight := 2 // header + gap
 
 	// Calculate grid layout for remaining space
 	gridHeight := height - headerHeight
 	layouts := m.calculateWidgetLayouts(profile, width, gridHeight)
 	if len(layouts) == 0 {
-		return m.renderWidgetsPlaceholder(width, height, "No widgets in profile")
+		return m.renderCockpitPlaceholder(width, height, "No widgets in profile")
 	}
 
 	// Render grid
@@ -56,15 +56,25 @@ func (m *Model) renderWidgets(width, height int) string {
 	content := lipgloss.JoinVertical(lipgloss.Left, header, "", grid)
 
 	// Add config overlay if in config mode
-	if m.widgetsConfigMode {
-		content = m.renderWidgetsConfigOverlay(content, width, height)
+	if m.cockpitConfigMode {
+		content = m.renderCockpitConfigOverlay(content, width, height)
 	}
 
 	return content
 }
 
-// renderWidgetsEmpty renders the empty state when no profiles exist
-func (m *Model) renderWidgetsEmpty(width, height int) string {
+// renderCockpitEmpty renders the empty state when no profiles exist
+func (m *Model) renderCockpitEmpty(width, height int) string {
+	// Check for config overlay first (e.g., creating new profile)
+	if m.cockpitConfigMode {
+		// Render empty background with overlay
+		emptyBg := lipgloss.NewStyle().
+			Width(width).
+			Height(height).
+			Render("")
+		return m.renderCockpitConfigOverlay(emptyBg, width, height)
+	}
+
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(ColorSecondary)
@@ -78,7 +88,7 @@ func (m *Model) renderWidgetsEmpty(width, height int) string {
 		Foreground(ColorPrimary)
 
 	content := lipgloss.JoinVertical(lipgloss.Center,
-		titleStyle.Render("≡ WIDGETS"),
+		titleStyle.Render("≡ COCKPIT"),
 		"",
 		"",
 		messageStyle.Render("No widget profiles configured"),
@@ -93,8 +103,8 @@ func (m *Model) renderWidgetsEmpty(width, height int) string {
 		Render(content)
 }
 
-// getActiveWidgetProfile returns the active widget profile name
-func (m *Model) getActiveWidgetProfile() string {
+// getActiveCockpitProfile returns the active widget profile name
+func (m *Model) getActiveCockpitProfile() string {
 	cfg := config.GetGlobal()
 	if cfg != nil && cfg.Settings != nil && cfg.Settings.ActiveWidgetProfile != "" {
 		return cfg.Settings.ActiveWidgetProfile
@@ -102,8 +112,8 @@ func (m *Model) getActiveWidgetProfile() string {
 	return "default"
 }
 
-// getWidgetProfile returns the widget profile by name
-func (m *Model) getWidgetProfile(name string) *config.WidgetProfile {
+// getCockpitProfile returns the widget profile by name
+func (m *Model) getCockpitProfile(name string) *config.WidgetProfile {
 	cfg := config.GetGlobal()
 	if cfg == nil || cfg.WidgetProfiles == nil {
 		// Return default profile
@@ -193,9 +203,9 @@ func (m *Model) calculateWidgetLayouts(profile *config.WidgetProfile, width, hei
 	return layouts
 }
 
-// renderWidgetsHeader renders the header showing active profile
-func (m *Model) renderWidgetsHeader(width int) string {
-	profileName := m.getActiveWidgetProfile()
+// renderCockpitHeader renders the header showing active profile
+func (m *Model) renderCockpitHeader(width int) string {
+	profileName := m.getActiveCockpitProfile()
 	profiles := m.getAvailableProfiles()
 
 	// Find profile number for hint
@@ -218,7 +228,7 @@ func (m *Model) renderWidgetsHeader(width int) string {
 	hintStyle := lipgloss.NewStyle().
 		Foreground(ColorMuted)
 
-	header := titleStyle.Render("≡ WIDGETS") + "  " +
+	header := titleStyle.Render("≡ COCKPIT") + "  " +
 		profileStyle.Render(profileName)
 
 	if profileNum > 0 && profileNum <= 9 {
@@ -241,7 +251,7 @@ func (m *Model) renderWidgetGrid(layouts []WidgetLayout, profile *config.WidgetP
 
 	// Render each widget and place on canvas
 	for i, layout := range layouts {
-		focused := m.focusArea == FocusMain && m.widgetsFocusedIndex == i
+		focused := m.focusArea == FocusMain && m.cockpitFocusedIndex == i
 		content := m.renderWidgetContent(layout, focused)
 
 		// Place content on canvas (line by line)
@@ -320,6 +330,8 @@ func (m *Model) renderWidgetContent(layout WidgetLayout, focused bool) string {
 		content = m.renderWidgetGit(widget, contentWidth, contentHeight)
 	case config.WidgetClaudeSessions:
 		content = m.renderWidgetClaude(widget, contentWidth, contentHeight)
+	case config.WidgetDatabaseSessions:
+		content = m.renderWidgetDatabase(widget, contentWidth, contentHeight)
 	case config.WidgetDashStats:
 		content = m.renderWidgetDashStats(widget, contentWidth, contentHeight)
 	default:
@@ -614,6 +626,80 @@ func (m *Model) renderWidgetClaude(widget *config.WidgetConfig, width, height in
 	return strings.Join(lines, "\n")
 }
 
+// renderWidgetDatabase renders database sessions
+func (m *Model) renderWidgetDatabase(widget *config.WidgetConfig, width, height int) string {
+	if m.state.Database == nil || len(m.state.Database.Databases) == 0 {
+		return lipgloss.NewStyle().
+			Foreground(ColorMuted).
+			Render("No databases found")
+	}
+
+	var lines []string
+
+	// Show databases and sessions
+	for i, db := range m.state.Database.Databases {
+		if i >= height {
+			break
+		}
+
+		// Filter by project
+		if widget.ProjectFilter != "" && db.ProjectID != widget.ProjectFilter {
+			continue
+		}
+
+		// Database type icon
+		var icon string
+		switch db.Type {
+		case "postgres":
+			icon = lipgloss.NewStyle().Foreground(ColorSecondary).Render("🐘")
+		case "mysql":
+			icon = lipgloss.NewStyle().Foreground(ColorSecondary).Render("🐬")
+		case "sqlite":
+			icon = lipgloss.NewStyle().Foreground(ColorSecondary).Render("📦")
+		default:
+			icon = lipgloss.NewStyle().Foreground(ColorMuted).Render("○")
+		}
+
+		line := fmt.Sprintf("%s %s (%s)",
+			icon,
+			truncate(db.DatabaseName, width-15),
+			db.ProjectName)
+		lines = append(lines, line)
+	}
+
+	// Add sessions
+	for i, sess := range m.state.Database.Sessions {
+		if len(lines)+i >= height {
+			break
+		}
+
+		// Filter by project
+		if widget.ProjectFilter != "" && sess.ProjectID != widget.ProjectFilter {
+			continue
+		}
+
+		// State indicator
+		var indicator string
+		switch sess.State {
+		case "running":
+			indicator = lipgloss.NewStyle().Foreground(ColorSuccess).Render("●")
+		default:
+			indicator = lipgloss.NewStyle().Foreground(ColorMuted).Render("○")
+		}
+
+		line := fmt.Sprintf("  %s %s", indicator, truncate(sess.Name, width-6))
+		lines = append(lines, line)
+	}
+
+	if len(lines) == 0 {
+		return lipgloss.NewStyle().
+			Foreground(ColorMuted).
+			Render("No matching databases")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 // renderWidgetDashStats renders dashboard statistics
 func (m *Model) renderWidgetDashStats(widget *config.WidgetConfig, width, height int) string {
 	if m.state.Dashboard == nil {
@@ -657,8 +743,8 @@ func (m *Model) renderWidgetDashStats(widget *config.WidgetConfig, width, height
 	)
 }
 
-// renderWidgetsPlaceholder renders a placeholder when widgets can't be shown
-func (m *Model) renderWidgetsPlaceholder(width, height int, message string) string {
+// renderCockpitPlaceholder renders a placeholder when widgets can't be shown
+func (m *Model) renderCockpitPlaceholder(width, height int, message string) string {
 	style := lipgloss.NewStyle().
 		Width(width).
 		Height(height).
@@ -669,20 +755,20 @@ func (m *Model) renderWidgetsPlaceholder(width, height int, message string) stri
 	return style.Render(content)
 }
 
-// navigateWidgetUp moves to the widget above the current one
-func (m *Model) navigateWidgetUp() {
-	profile := m.getWidgetProfile(m.getActiveWidgetProfile())
+// navigateCockpitUp moves to the widget above the current one
+func (m *Model) navigateCockpitUp() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 	if profile == nil || len(profile.Widgets) == 0 {
 		return
 	}
 
 	// Find current widget's row/col
-	if m.widgetsFocusedIndex < 0 || m.widgetsFocusedIndex >= len(profile.Widgets) {
-		m.widgetsFocusedIndex = 0
+	if m.cockpitFocusedIndex < 0 || m.cockpitFocusedIndex >= len(profile.Widgets) {
+		m.cockpitFocusedIndex = 0
 		return
 	}
 
-	currentWidget := profile.Widgets[m.widgetsFocusedIndex]
+	currentWidget := profile.Widgets[m.cockpitFocusedIndex]
 	currentRow := currentWidget.Row
 	currentCol := currentWidget.Col
 
@@ -706,23 +792,23 @@ func (m *Model) navigateWidgetUp() {
 	}
 
 	if bestIdx >= 0 {
-		m.widgetsFocusedIndex = bestIdx
+		m.cockpitFocusedIndex = bestIdx
 	}
 }
 
-// navigateWidgetDown moves to the widget below the current one
-func (m *Model) navigateWidgetDown() {
-	profile := m.getWidgetProfile(m.getActiveWidgetProfile())
+// navigateCockpitDown moves to the widget below the current one
+func (m *Model) navigateCockpitDown() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 	if profile == nil || len(profile.Widgets) == 0 {
 		return
 	}
 
-	if m.widgetsFocusedIndex < 0 || m.widgetsFocusedIndex >= len(profile.Widgets) {
-		m.widgetsFocusedIndex = 0
+	if m.cockpitFocusedIndex < 0 || m.cockpitFocusedIndex >= len(profile.Widgets) {
+		m.cockpitFocusedIndex = 0
 		return
 	}
 
-	currentWidget := profile.Widgets[m.widgetsFocusedIndex]
+	currentWidget := profile.Widgets[m.cockpitFocusedIndex]
 	currentRow := currentWidget.Row
 	currentCol := currentWidget.Col
 
@@ -743,23 +829,23 @@ func (m *Model) navigateWidgetDown() {
 	}
 
 	if bestIdx >= 0 {
-		m.widgetsFocusedIndex = bestIdx
+		m.cockpitFocusedIndex = bestIdx
 	}
 }
 
-// navigateWidgetLeft moves to the widget to the left of the current one
-func (m *Model) navigateWidgetLeft() {
-	profile := m.getWidgetProfile(m.getActiveWidgetProfile())
+// navigateCockpitLeft moves to the widget to the left of the current one
+func (m *Model) navigateCockpitLeft() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 	if profile == nil || len(profile.Widgets) == 0 {
 		return
 	}
 
-	if m.widgetsFocusedIndex < 0 || m.widgetsFocusedIndex >= len(profile.Widgets) {
-		m.widgetsFocusedIndex = 0
+	if m.cockpitFocusedIndex < 0 || m.cockpitFocusedIndex >= len(profile.Widgets) {
+		m.cockpitFocusedIndex = 0
 		return
 	}
 
-	currentWidget := profile.Widgets[m.widgetsFocusedIndex]
+	currentWidget := profile.Widgets[m.cockpitFocusedIndex]
 	currentRow := currentWidget.Row
 	currentCol := currentWidget.Col
 
@@ -776,23 +862,23 @@ func (m *Model) navigateWidgetLeft() {
 	}
 
 	if bestIdx >= 0 {
-		m.widgetsFocusedIndex = bestIdx
+		m.cockpitFocusedIndex = bestIdx
 	}
 }
 
-// navigateWidgetRight moves to the widget to the right of the current one
-func (m *Model) navigateWidgetRight() {
-	profile := m.getWidgetProfile(m.getActiveWidgetProfile())
+// navigateCockpitRight moves to the widget to the right of the current one
+func (m *Model) navigateCockpitRight() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 	if profile == nil || len(profile.Widgets) == 0 {
 		return
 	}
 
-	if m.widgetsFocusedIndex < 0 || m.widgetsFocusedIndex >= len(profile.Widgets) {
-		m.widgetsFocusedIndex = 0
+	if m.cockpitFocusedIndex < 0 || m.cockpitFocusedIndex >= len(profile.Widgets) {
+		m.cockpitFocusedIndex = 0
 		return
 	}
 
-	currentWidget := profile.Widgets[m.widgetsFocusedIndex]
+	currentWidget := profile.Widgets[m.cockpitFocusedIndex]
 	currentRow := currentWidget.Row
 	currentCol := currentWidget.Col
 
@@ -809,7 +895,7 @@ func (m *Model) navigateWidgetRight() {
 	}
 
 	if bestIdx >= 0 {
-		m.widgetsFocusedIndex = bestIdx
+		m.cockpitFocusedIndex = bestIdx
 	}
 }
 
@@ -821,8 +907,8 @@ func abs(x int) int {
 	return x
 }
 
-// switchWidgetProfile switches to a widget profile by number key
-func (m *Model) switchWidgetProfile(key string) {
+// switchCockpitProfile switches to a widget profile by number key
+func (m *Model) switchCockpitProfile(key string) {
 	cfg := config.GetGlobal()
 	if cfg == nil || cfg.WidgetProfiles == nil {
 		return
@@ -851,7 +937,7 @@ func (m *Model) switchWidgetProfile(key string) {
 		if cfg.Settings != nil {
 			cfg.Settings.ActiveWidgetProfile = profileNames[idx]
 			// Reset focused index when switching profiles
-			m.widgetsFocusedIndex = 0
+			m.cockpitFocusedIndex = 0
 			// Save config to persist the change
 			_ = config.SaveGlobal()
 		}

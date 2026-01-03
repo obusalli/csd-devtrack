@@ -17,6 +17,7 @@ import (
 	"csd-devtrack/cli/modules/platform/builder"
 	"csd-devtrack/cli/modules/platform/claude"
 	"csd-devtrack/cli/modules/platform/config"
+	"csd-devtrack/cli/modules/platform/database"
 	"csd-devtrack/cli/modules/platform/git"
 	"csd-devtrack/cli/modules/platform/supervisor"
 )
@@ -26,13 +27,14 @@ type AppPresenter struct {
 	mu sync.RWMutex
 
 	// Services
-	projectService *projects.Service
-	buildOrch      *builder.Orchestrator
-	processService *processes.Service
-	processMgr     *supervisor.Manager
-	gitService     *git.Service
-	claudeService  *claude.Service
-	config         *config.Config
+	projectService  *projects.Service
+	buildOrch       *builder.Orchestrator
+	processService  *processes.Service
+	processMgr      *supervisor.Manager
+	gitService      *git.Service
+	claudeService   *claude.Service
+	databaseService *database.Service
+	config          *config.Config
 
 	// State
 	state *AppState
@@ -110,6 +112,19 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 	// Initialize Claude state
 	p.refreshClaude()
 
+	// Initialize Database service
+	p.databaseService = database.NewService(func() []projects.Project {
+		projectPtrs := p.projectService.ListProjects()
+		result := make([]projects.Project, len(projectPtrs))
+		for i, ptr := range projectPtrs {
+			result[i] = *ptr
+		}
+		return result
+	})
+
+	// Discover databases from project configs
+	p.refreshDatabase()
+
 	// Set up event handlers
 	p.setupEventHandlers()
 
@@ -135,6 +150,8 @@ func (p *AppPresenter) Initialize(ctx context.Context) error {
 
 // loadGitInBackground loads git info for all projects in background
 func (p *AppPresenter) loadGitInBackground() {
+	p.setHeaderEvent(HeaderEventInfo, "Loading git info...")
+
 	// Enrich all projects with git info (slow operation)
 	p.gitService.EnrichAllProjects()
 
@@ -153,6 +170,8 @@ func (p *AppPresenter) loadGitInBackground() {
 	p.state.LastRefresh = time.Now()
 	p.mu.Unlock()
 
+	p.setHeaderEvent(HeaderEventSuccess, "Git info loaded")
+
 	// Broadcast full state update
 	p.broadcastFullState()
 }
@@ -164,7 +183,7 @@ func (p *AppPresenter) broadcastFullState() {
 	p.mu.RUnlock()
 
 	// Notify all view updates to refresh the entire UI
-	for _, viewType := range []ViewModelType{VMDashboard, VMProjects, VMBuild, VMProcesses, VMLogs, VMGit, VMConfig, VMClaude} {
+	for _, viewType := range []ViewModelType{VMDashboard, VMProjects, VMBuild, VMProcesses, VMLogs, VMGit, VMConfig, VMClaude, VMDatabase} {
 		vm, _ := p.GetViewModel(viewType)
 		if vm != nil {
 			update := StateUpdate{
@@ -268,6 +287,20 @@ func (p *AppPresenter) HandleEvent(event *Event) error {
 	case EventClaudeRejectPlan:
 		return p.handleClaudeRejectPlan(event)
 
+	// Database events
+	case EventDatabaseCreateSession:
+		return p.handleDatabaseCreateSession(event)
+	case EventDatabaseSelectSession:
+		return p.handleDatabaseSelectSession(event)
+	case EventDatabaseDeleteSession:
+		return p.handleDatabaseDeleteSession(event)
+	case EventDatabaseRenameSession:
+		return p.handleDatabaseRenameSession(event)
+	case EventDatabaseStopSession:
+		return p.handleDatabaseStopSession(event)
+	case EventDatabaseRefresh:
+		return p.handleDatabaseRefresh(event)
+
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
 	}
@@ -295,6 +328,8 @@ func (p *AppPresenter) GetViewModel(viewType ViewModelType) (ViewModel, error) {
 		return p.state.Config, nil
 	case VMClaude:
 		return p.state.Claude, nil
+	case VMDatabase:
+		return p.state.Database, nil
 	default:
 		return nil, fmt.Errorf("unknown view type: %s", viewType)
 	}
@@ -404,23 +439,25 @@ func (p *AppPresenter) handleAddProject(event *Event) error {
 		return fmt.Errorf("invalid path")
 	}
 
+	p.setHeaderEvent(HeaderEventInfo, "Adding project...")
+
 	project, err := p.projectService.AddProject(path)
 	if err != nil {
-		p.notify(NotifyError, "Add Project Failed", err.Error())
+		p.setHeaderEvent(HeaderEventError, "Add project failed")
 		return err
 	}
 
-	p.notify(NotifySuccess, "Project Added", fmt.Sprintf("Added %s", project.Name))
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Project '%s' added", project.Name))
 	return p.refreshProjects()
 }
 
 func (p *AppPresenter) handleRemoveProject(event *Event) error {
 	if err := p.projectService.RemoveProject(event.ProjectID); err != nil {
-		p.notify(NotifyError, "Remove Failed", err.Error())
+		p.setHeaderEvent(HeaderEventError, "Remove project failed")
 		return err
 	}
 
-	p.notify(NotifySuccess, "Project Removed", fmt.Sprintf("Removed %s", event.ProjectID))
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Project '%s' removed", event.ProjectID))
 	return p.refreshProjects()
 }
 
@@ -432,6 +469,13 @@ func (p *AppPresenter) handleStartBuild(event *Event) error {
 
 	// Create a new cancellable context for this build
 	p.buildCtx, p.buildCancel = context.WithCancel(p.ctx)
+
+	// Show build starting in header
+	if event.Component != "" {
+		p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Building %s/%s...", event.ProjectID, event.Component))
+	} else {
+		p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Building %s...", event.ProjectID))
+	}
 
 	go func() {
 		var err error
@@ -448,14 +492,14 @@ func (p *AppPresenter) handleStartBuild(event *Event) error {
 
 		// Check if cancelled
 		if buildCtx.Err() == context.Canceled {
-			p.notify(NotifyWarning, "Build Cancelled", fmt.Sprintf("%s build was cancelled", event.ProjectID))
+			p.setHeaderEvent(HeaderEventWarning, fmt.Sprintf("%s build cancelled", event.ProjectID))
 			return
 		}
 
 		if err != nil {
-			p.notify(NotifyError, "Build Failed", err.Error())
+			p.setHeaderEvent(HeaderEventError, fmt.Sprintf("Build failed: %s", event.ProjectID))
 		} else {
-			p.notify(NotifySuccess, "Build Complete", fmt.Sprintf("%s built successfully", event.ProjectID))
+			p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("%s built", event.ProjectID))
 		}
 	}()
 
@@ -471,28 +515,30 @@ func (p *AppPresenter) handleBuildAll(event *Event) error {
 	// Create a new cancellable context for this build
 	p.buildCtx, p.buildCancel = context.WithCancel(p.ctx)
 
+	p.setHeaderEvent(HeaderEventInfo, "Building all projects...")
+
 	go func() {
 		buildCtx := p.buildCtx // Capture context
 		results, err := p.buildOrch.BuildAll(buildCtx)
 
 		// Check if cancelled
 		if buildCtx.Err() == context.Canceled {
-			p.notify(NotifyWarning, "Build Cancelled", "Build all was cancelled")
+			p.setHeaderEvent(HeaderEventWarning, "Build all cancelled")
 			return
 		}
 
 		if err != nil {
-			p.notify(NotifyError, "Build Failed", err.Error())
+			p.setHeaderEvent(HeaderEventError, "Build all failed")
 			return
 		}
 
 		summary := p.buildOrch.Summarize(results)
 		if summary.FailedProjects > 0 {
-			p.notify(NotifyWarning, "Build Complete",
-				fmt.Sprintf("%d/%d projects built with failures", summary.SuccessProjects, summary.TotalProjects))
+			p.setHeaderEvent(HeaderEventWarning,
+				fmt.Sprintf("%d/%d projects failed", summary.FailedProjects, summary.TotalProjects))
 		} else {
-			p.notify(NotifySuccess, "Build Complete",
-				fmt.Sprintf("All %d projects built successfully", summary.TotalProjects))
+			p.setHeaderEvent(HeaderEventSuccess,
+				fmt.Sprintf("All %d projects built", summary.TotalProjects))
 		}
 	}()
 
@@ -513,18 +559,20 @@ func (p *AppPresenter) handleCancelBuild(event *Event) error {
 		p.mu.Unlock()
 
 		p.notifyStateUpdate(VMBuild, p.state.Builds)
-		p.notify(NotifyInfo, "Build Cancelled", "Build was cancelled by user")
+		p.setHeaderEvent(HeaderEventWarning, "Build cancelled")
 	}
 	return nil
 }
 
 func (p *AppPresenter) handleStartProcess(event *Event) error {
+	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
+	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Starting %s...", processID))
 	go func() {
 		err := p.processService.StartComponent(p.ctx, event.ProjectID, event.Component, p.processMgr)
 		if err != nil {
-			p.notify(NotifyError, "Start Failed", err.Error())
+			p.setHeaderEvent(HeaderEventError, fmt.Sprintf("Start failed: %s", processID))
 		} else {
-			p.notify(NotifySuccess, "Started", fmt.Sprintf("%s/%s started", event.ProjectID, event.Component))
+			p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("%s started", processID))
 		}
 		p.refreshProcesses()
 	}()
@@ -533,10 +581,13 @@ func (p *AppPresenter) handleStartProcess(event *Event) error {
 
 func (p *AppPresenter) handleStopProcess(event *Event) error {
 	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
+	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Stopping %s...", processID))
 	go func() {
 		err := p.processService.StopProcess(p.ctx, processID, p.processMgr, false)
 		if err != nil {
-			p.notify(NotifyError, "Stop Failed", err.Error())
+			p.setHeaderEvent(HeaderEventError, fmt.Sprintf("Stop failed: %s", processID))
+		} else {
+			p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("%s stopped", processID))
 		}
 		p.refreshProcesses()
 	}()
@@ -545,10 +596,13 @@ func (p *AppPresenter) handleStopProcess(event *Event) error {
 
 func (p *AppPresenter) handleRestartProcess(event *Event) error {
 	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
+	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Restarting %s...", processID))
 	go func() {
 		err := p.processService.RestartProcess(p.ctx, processID, p.processMgr)
 		if err != nil {
-			p.notify(NotifyError, "Restart Failed", err.Error())
+			p.setHeaderEvent(HeaderEventError, fmt.Sprintf("Restart failed: %s", processID))
+		} else {
+			p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("%s restarted", processID))
 		}
 		p.refreshProcesses()
 	}()
@@ -557,10 +611,13 @@ func (p *AppPresenter) handleRestartProcess(event *Event) error {
 
 func (p *AppPresenter) handleKillProcess(event *Event) error {
 	processID := fmt.Sprintf("%s/%s", event.ProjectID, event.Component)
+	p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("Killing %s...", processID))
 	go func() {
 		err := p.processService.KillProcess(processID, p.processMgr)
 		if err != nil {
-			p.notify(NotifyError, "Kill Failed", err.Error())
+			p.setHeaderEvent(HeaderEventError, fmt.Sprintf("Kill failed: %s", processID))
+		} else {
+			p.setHeaderEvent(HeaderEventWarning, fmt.Sprintf("%s killed", processID))
 		}
 		p.refreshProcesses()
 	}()
@@ -572,13 +629,13 @@ func (p *AppPresenter) handlePauseProcess(event *Event) error {
 	go func() {
 		err := p.processService.PauseProcess(processID, p.processMgr)
 		if err != nil {
-			p.notify(NotifyError, "Pause/Resume Failed", err.Error())
+			p.setHeaderEvent(HeaderEventError, fmt.Sprintf("Pause/resume failed: %s", processID))
 		} else {
 			proc := p.processService.GetProcess(processID)
 			if proc != nil && proc.IsPaused() {
-				p.notify(NotifyInfo, "Paused", fmt.Sprintf("%s is paused", processID))
+				p.setHeaderEvent(HeaderEventInfo, fmt.Sprintf("%s paused", processID))
 			} else {
-				p.notify(NotifyInfo, "Resumed", fmt.Sprintf("%s is running", processID))
+				p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("%s resumed", processID))
 			}
 		}
 		p.refreshProcesses()
@@ -924,6 +981,12 @@ func (p *AppPresenter) notify(ntype NotificationType, title, message string) {
 	}
 }
 
+// setHeaderEvent sets a transient header event message
+func (p *AppPresenter) setHeaderEvent(etype HeaderEventType, message string) {
+	event := NewHeaderEvent(etype, message)
+	p.state.SetHeaderEvent(event)
+}
+
 func (p *AppPresenter) notifyStateUpdate(viewType ViewModelType, vm ViewModel) {
 	update := StateUpdate{
 		ViewType:  viewType,
@@ -1047,7 +1110,7 @@ func (p *AppPresenter) handleClaudeCreateSession(event *Event) error {
 	// Create session
 	session, err := p.claudeService.CreateSession(projectID, proj.Name, proj.Path, sessionName)
 	if err != nil {
-		p.notify(NotifyError, "Create Session Failed", err.Error())
+		p.setHeaderEvent(HeaderEventError, "Session creation failed")
 		return err
 	}
 
@@ -1057,7 +1120,7 @@ func (p *AppPresenter) handleClaudeCreateSession(event *Event) error {
 	p.state.Claude.NewlyCreatedSessionProjectID = projectID
 	p.mu.Unlock()
 
-	p.notify(NotifySuccess, "Session Created", fmt.Sprintf("Created %s", session.Name))
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Session created: %s", session.Name))
 	p.refreshClaude()
 
 	// Clear after first refresh so it's not sent again
@@ -1106,11 +1169,11 @@ func (p *AppPresenter) handleClaudeDeleteSession(event *Event) error {
 	}
 
 	if err := p.claudeService.DeleteSession(sessionID); err != nil {
-		p.notify(NotifyError, "Delete Failed", err.Error())
+		p.setHeaderEvent(HeaderEventError, "Session deletion failed")
 		return err
 	}
 
-	p.notify(NotifySuccess, "Session Deleted", "Session was deleted")
+	p.setHeaderEvent(HeaderEventSuccess, "Session deleted")
 	p.refreshClaude()
 	return nil
 }
@@ -1531,17 +1594,18 @@ func (p *AppPresenter) refreshClaude() {
 	p.state.Claude.Sessions = make([]ClaudeSessionVM, len(sessions))
 	for i, s := range sessions {
 		p.state.Claude.Sessions[i] = ClaudeSessionVM{
-			ID:              s.ID,
-			Name:            s.Name,
-			ProjectID:       s.ProjectID,
-			ProjectName:     s.ProjectName,
-			WorkDir:         s.WorkDir,
-			State:           string(s.State),
-			MessageCount:    s.MessageCount,
-			LastActive:      s.LastActiveAt.Format("2006-01-02 15:04"),
-			LastActiveAt:    s.LastActiveAt,
-			IsActive:        s.ID == p.state.Claude.ActiveSessionID,
-			IsPersistent:    persistentSessions[s.ID],
+			ID:           s.ID,
+			Name:         s.Name,
+			ProjectID:    s.ProjectID,
+			ProjectName:  s.ProjectName,
+			WorkDir:      s.WorkDir,
+			State:        string(s.State),
+			MessageCount: s.MessageCount,
+			CreatedAt:    s.CreatedAt,
+			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
+			LastActiveAt: s.LastActiveAt,
+			IsActive:     s.ID == p.state.Claude.ActiveSessionID,
+			IsPersistent: persistentSessions[s.ID],
 		}
 	}
 
@@ -1798,4 +1862,201 @@ func (p *AppPresenter) messagesToVM(messages []claude.Message) []ClaudeMessageVM
 		}
 	}
 	return result
+}
+
+// ============================================
+// Database handlers
+// ============================================
+
+func (p *AppPresenter) handleDatabaseCreateSession(event *Event) error {
+	databaseID := event.Data["database_id"]
+	if databaseID == "" {
+		return fmt.Errorf("database ID required")
+	}
+
+	projectID := event.ProjectID
+	projectName := event.Data["project_name"]
+
+	p.setHeaderEvent(HeaderEventInfo, "Creating database session...")
+
+	session, err := p.databaseService.CreateSession(databaseID, projectID, projectName)
+	if err != nil {
+		p.setHeaderEvent(HeaderEventError, "Database session creation failed")
+		return err
+	}
+
+	// Update state
+	p.mu.Lock()
+	p.state.Database.ActiveSessionID = session.ID
+	p.mu.Unlock()
+
+	// Refresh database view
+	p.refreshDatabase()
+
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Database session '%s' created", session.DisplayName()))
+	return nil
+}
+
+func (p *AppPresenter) handleDatabaseSelectSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	p.mu.Lock()
+	p.state.Database.ActiveSessionID = sessionID
+
+	// Update active session details
+	session := p.databaseService.GetSession(sessionID)
+	if session != nil {
+		p.state.Database.ActiveSession = p.databaseSessionToVM(session)
+	}
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMDatabase, p.state.Database)
+	return nil
+}
+
+func (p *AppPresenter) handleDatabaseDeleteSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	session := p.databaseService.GetSession(sessionID)
+	name := "session"
+	if session != nil {
+		name = session.DisplayName()
+	}
+
+	if err := p.databaseService.DeleteSession(sessionID); err != nil {
+		p.setHeaderEvent(HeaderEventError, "Database session deletion failed")
+		return err
+	}
+
+	// Clear active session if it was deleted
+	p.mu.Lock()
+	if p.state.Database.ActiveSessionID == sessionID {
+		p.state.Database.ActiveSessionID = ""
+		p.state.Database.ActiveSession = nil
+	}
+	p.mu.Unlock()
+
+	p.refreshDatabase()
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Database session '%s' deleted", name))
+	return nil
+}
+
+func (p *AppPresenter) handleDatabaseRenameSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	newName := event.Data["new_name"]
+
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+	if newName == "" {
+		return fmt.Errorf("new name required")
+	}
+
+	if err := p.databaseService.RenameSession(sessionID, newName); err != nil {
+		p.setHeaderEvent(HeaderEventError, "Rename failed")
+		return err
+	}
+
+	p.refreshDatabase()
+	p.setHeaderEvent(HeaderEventSuccess, fmt.Sprintf("Renamed to '%s'", newName))
+	return nil
+}
+
+func (p *AppPresenter) handleDatabaseStopSession(event *Event) error {
+	sessionID := event.Data["session_id"]
+	if sessionID == "" {
+		sessionID = p.state.Database.ActiveSessionID
+	}
+	if sessionID == "" {
+		return fmt.Errorf("session ID required")
+	}
+
+	if err := p.databaseService.UpdateSessionState(sessionID, database.SessionIdle); err != nil {
+		return err
+	}
+
+	p.refreshDatabase()
+	return nil
+}
+
+func (p *AppPresenter) handleDatabaseRefresh(event *Event) error {
+	p.refreshDatabase()
+	return nil
+}
+
+// refreshDatabase refreshes the database view model
+func (p *AppPresenter) refreshDatabase() {
+	if p.databaseService == nil {
+		return
+	}
+
+	// Discover databases from project configs
+	databases, _ := p.databaseService.DiscoverDatabases()
+
+	p.mu.Lock()
+
+	// Convert databases to view models
+	p.state.Database.Databases = make([]DatabaseInfoVM, len(databases))
+	for i, db := range databases {
+		p.state.Database.Databases[i] = DatabaseInfoVM{
+			ID:           db.ID,
+			ProjectID:    db.ProjectID,
+			ProjectName:  db.ProjectName,
+			Source:       db.Source,
+			Type:         string(db.Type),
+			DatabaseName: db.DatabaseName,
+			Host:         db.Host,
+			Port:         db.Port,
+			User:         db.User,
+		}
+	}
+
+	// Get sessions
+	sessions := p.databaseService.GetSessions()
+	p.state.Database.Sessions = make([]DatabaseSessionVM, len(sessions))
+	for i, sess := range sessions {
+		p.state.Database.Sessions[i] = *p.databaseSessionToVM(sess)
+	}
+
+	// Sort sessions by LastActiveAt descending
+	sort.Slice(p.state.Database.Sessions, func(i, j int) bool {
+		return p.state.Database.Sessions[i].LastActiveAt.After(p.state.Database.Sessions[j].LastActiveAt)
+	})
+
+	p.mu.Unlock()
+
+	p.notifyStateUpdate(VMDatabase, p.state.Database)
+}
+
+func (p *AppPresenter) databaseSessionToVM(session *database.Session) *DatabaseSessionVM {
+	if session == nil {
+		return nil
+	}
+
+	dbName := ""
+	dbType := ""
+	if session.DatabaseInfo != nil {
+		dbName = session.DatabaseInfo.DatabaseName
+		dbType = string(session.DatabaseInfo.Type)
+	}
+
+	return &DatabaseSessionVM{
+		ID:           session.ID,
+		Name:         session.DisplayName(),
+		ProjectID:    session.ProjectID,
+		ProjectName:  session.ProjectName,
+		DatabaseName: dbName,
+		DatabaseType: dbType,
+		State:        string(session.State),
+		CreatedAt:    session.CreatedAt,
+		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
+		LastActiveAt: session.LastActiveAt,
+		IsActive:     session.ID == p.state.Database.ActiveSessionID,
+	}
 }

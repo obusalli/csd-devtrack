@@ -13,15 +13,16 @@ type AppState struct {
 	CurrentView ViewModelType
 
 	// View models (cached)
-	Dashboard  *DashboardVM
-	Projects   *ProjectsVM
-	Builds     *BuildsVM
-	Processes  *ProcessesVM
-	Logs       *LogsVM
-	Git        *GitVM
-	Config     *ConfigVM
-	Claude     *ClaudeVM
-	Widgets    *WidgetsVM
+	Dashboard *DashboardVM
+	Projects  *ProjectsVM
+	Builds    *BuildsVM
+	Processes *ProcessesVM
+	Logs      *LogsVM
+	Git       *GitVM
+	Config    *ConfigVM
+	Claude    *ClaudeVM
+	Cockpit   *CockpitVM
+	Database  *DatabaseVM
 
 	// Global state
 	IsConnected   bool
@@ -29,6 +30,9 @@ type AppState struct {
 	GitLoading    bool      // True while git info is loading in background
 	LastRefresh   time.Time
 	Notifications []*Notification
+
+	// Header event (transient status message shown in header center)
+	HeaderEvent *HeaderEvent
 }
 
 // NewAppState creates a new application state
@@ -44,7 +48,8 @@ func NewAppState() *AppState {
 		Git:          &GitVM{BaseViewModel: BaseViewModel{VMType: VMGit}},
 		Config:       &ConfigVM{BaseViewModel: BaseViewModel{VMType: VMConfig}},
 		Claude:       &ClaudeVM{BaseViewModel: BaseViewModel{VMType: VMClaude}},
-		Widgets:      &WidgetsVM{BaseViewModel: BaseViewModel{VMType: VMWidgets}},
+		Cockpit:      &CockpitVM{BaseViewModel: BaseViewModel{VMType: VMCockpit}},
+		Database:     &DatabaseVM{BaseViewModel: BaseViewModel{VMType: VMDatabase}},
 		Notifications: make([]*Notification, 0),
 	}
 }
@@ -71,8 +76,10 @@ func (s *AppState) GetCurrentViewModel() ViewModel {
 		return s.Config
 	case VMClaude:
 		return s.Claude
-	case VMWidgets:
-		return s.Widgets
+	case VMCockpit:
+		return s.Cockpit
+	case VMDatabase:
+		return s.Database
 	default:
 		return s.Dashboard
 	}
@@ -107,8 +114,10 @@ func (s *AppState) UpdateViewModel(vm ViewModel) {
 		s.Config = v
 	case *ClaudeVM:
 		s.Claude = v
-	case *WidgetsVM:
-		s.Widgets = v
+	case *CockpitVM:
+		s.Cockpit = v
+	case *DatabaseVM:
+		s.Database = v
 	}
 }
 
@@ -133,6 +142,27 @@ func (s *AppState) ClearNotifications() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Notifications = make([]*Notification, 0)
+}
+
+// SetHeaderEvent sets the current header event
+func (s *AppState) SetHeaderEvent(event *HeaderEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.HeaderEvent = event
+}
+
+// ClearHeaderEvent clears the current header event
+func (s *AppState) ClearHeaderEvent() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.HeaderEvent = nil
+}
+
+// GetHeaderEvent returns the current header event
+func (s *AppState) GetHeaderEvent() *HeaderEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.HeaderEvent
 }
 
 // ============================================

@@ -19,6 +19,10 @@ type TerminalTmux struct {
 	ClaudePath string
 	tmuxName   string
 
+	// Custom command support (for non-Claude terminals like psql)
+	customCmd  string   // Custom command to run (empty = use Claude)
+	customArgs []string // Arguments for custom command
+
 	// Terminal state
 	width        int
 	height       int
@@ -39,7 +43,7 @@ type TerminalTmux struct {
 	stopCh chan struct{}
 }
 
-// NewTerminalTmux creates a new tmux-based terminal
+// NewTerminalTmux creates a new tmux-based terminal for Claude
 func NewTerminalTmux(sessionID, workDir, claudePath string) *TerminalTmux {
 	// Generate unique tmux session name with csd-dt- prefix
 	shortID := sessionID
@@ -53,6 +57,27 @@ func NewTerminalTmux(sessionID, workDir, claudePath string) *TerminalTmux {
 		WorkDir:    workDir,
 		ClaudePath: claudePath,
 		tmuxName:   tmuxName,
+		width:      80,
+		height:     24,
+		state:      TerminalIdle,
+		stopCh:     make(chan struct{}),
+	}
+}
+
+// NewTerminalTmuxCommand creates a new tmux-based terminal with a custom command
+func NewTerminalTmuxCommand(sessionID, command string, args []string) *TerminalTmux {
+	// Generate unique tmux session name with csd-db- prefix for database terminals
+	shortID := sessionID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	tmuxName := fmt.Sprintf("csd-db-%s", shortID)
+
+	return &TerminalTmux{
+		SessionID:  sessionID,
+		tmuxName:   tmuxName,
+		customCmd:  command,
+		customArgs: args,
 		width:      80,
 		height:     24,
 		state:      TerminalIdle,
@@ -151,33 +176,49 @@ func (t *TerminalTmux) doStart(sessionID string) error {
 	tmuxName := t.tmuxName
 	workDir := t.WorkDir
 	claudePath := t.ClaudePath
+	customCmd := t.customCmd
+	customArgs := t.customArgs
 	t.mu.RUnlock()
 
-	// Build command for Claude
-	// Only use --resume if the session file exists and has content
-	claudeArgs := []string{}
-	if sessionID != "" && isValidUUID(sessionID) {
-		// Check if session file exists and has content
-		sessionFile := getClaudeSessionFile(workDir, sessionID)
-		if info, err := os.Stat(sessionFile); err == nil && info.Size() > 0 {
-			// Session has content, resume it
-			claudeArgs = append(claudeArgs, "--resume", sessionID)
+	var args []string
+
+	if customCmd != "" {
+		// Custom command mode (psql, mysql, etc.)
+		args = []string{"new-session", "-d", "-s", tmuxName,
+			"-x", fmt.Sprintf("%d", width),
+			"-y", fmt.Sprintf("%d", height),
+			customCmd}
+		args = append(args, customArgs...)
+	} else {
+		// Claude mode
+		// Build command for Claude
+		// Only use --resume if the session file exists and has content
+		claudeArgs := []string{}
+		if sessionID != "" && isValidUUID(sessionID) {
+			// Check if session file exists and has content
+			sessionFile := getClaudeSessionFile(workDir, sessionID)
+			if info, err := os.Stat(sessionFile); err == nil && info.Size() > 0 {
+				// Session has content, resume it
+				claudeArgs = append(claudeArgs, "--resume", sessionID)
+			}
+			// If file is empty or doesn't exist, start fresh (Claude will use the workDir)
 		}
-		// If file is empty or doesn't exist, start fresh (Claude will use the workDir)
+
+		// Create new tmux session with Claude
+		// -d: detached
+		// -s: session name
+		// -x/-y: dimensions
+		args = []string{"new-session", "-d", "-s", tmuxName,
+			"-x", fmt.Sprintf("%d", width),
+			"-y", fmt.Sprintf("%d", height),
+			claudePath}
+		args = append(args, claudeArgs...)
 	}
 
-	// Create new tmux session with Claude
-	// -d: detached
-	// -s: session name
-	// -x/-y: dimensions
-	args := []string{"new-session", "-d", "-s", tmuxName,
-		"-x", fmt.Sprintf("%d", width),
-		"-y", fmt.Sprintf("%d", height),
-		claudePath}
-	args = append(args, claudeArgs...)
-
 	cmd := exec.Command("tmux", args...)
-	cmd.Dir = workDir
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",

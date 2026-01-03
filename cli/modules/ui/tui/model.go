@@ -172,20 +172,25 @@ type Model struct {
 	terminalMode         bool             // True when in terminal mode (keys go to terminal)
 	terminalRefreshTick  <-chan time.Time // Ticker for terminal refresh
 
-	// Widgets view state
-	widgetsFocusedIndex int    // Currently focused widget index
-	widgetsConfigMode   bool   // True when configuring widgets
-	widgetsConfigStep   string // "grid", "widgets", "filters", "profile_name"
-	widgetsConfigRows   int    // Grid rows being configured
-	widgetsConfigCols   int    // Grid cols being configured
-	widgetsConfigCell   int    // Current cell being configured
-	widgetsGridMenu     *TreeMenu // Menu for grid size selection
-	widgetsTypeMenu     *TreeMenu // Menu for widget type selection
-	widgetsFilterMenu   *TreeMenu // Menu for filter selection
-	widgetsProfileMenu  *TreeMenu // Menu for profile selection
-	widgetsNewName      string    // New profile name being entered
-	widgetsRenaming     bool      // True when renaming profile
-	widgetsCreatingNew  bool      // True when creating new profile
+	// Cockpit view state
+	cockpitFocusedIndex int    // Currently focused widget index
+	cockpitConfigMode   bool   // True when configuring cockpit
+	cockpitConfigStep   string // "grid", "widgets", "filters", "profile_name"
+	cockpitConfigRows   int    // Grid rows being configured
+	cockpitConfigCols   int    // Grid cols being configured
+	cockpitConfigCell   int    // Current cell being configured
+	cockpitGridMenu     *TreeMenu // Menu for grid size selection
+	cockpitTypeMenu     *TreeMenu // Menu for widget type selection
+	cockpitFilterMenu   *TreeMenu // Menu for filter selection
+	cockpitProfileMenu  *TreeMenu // Menu for profile selection
+	cockpitNewName      string    // New profile name being entered
+	cockpitRenaming     bool      // True when renaming profile
+	cockpitCreatingNew  bool      // True when creating new profile
+
+	// Database view state
+	databaseActiveSession string    // Active database session ID
+	databaseTreeMenu      *TreeMenu // Tree menu for database/sessions panel
+	databaseFilterProject string    // Filter by project ID
 
 	// Components
 	help     help.Model
@@ -338,6 +343,11 @@ func NewModel(presenter core.Presenter) *Model {
 	processesMenu := NewTreeMenu(nil)
 	processesMenu.SetTitle("Processes")
 
+	// Create database tree menu
+	databaseMenu := NewTreeMenu(nil)
+	databaseMenu.SetTitle("Databases")
+	databaseMenu.SetRightSidePanel(true)
+
 	model := &Model{
 		presenter:           presenter,
 		state:               state,
@@ -366,6 +376,7 @@ func NewModel(presenter core.Presenter) *Model {
 		gitMenu:             gitMenu,
 		projectsMenu:        projectsMenu,
 		processesMenu:       processesMenu,
+		databaseTreeMenu:    databaseMenu,
 	}
 
 	// Initialize sidebar menu items
@@ -580,6 +591,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastErrorTime = time.Now()
 
 	case tickMsg:
+		// Clear expired header events
+		if event := m.state.GetHeaderEvent(); event != nil && event.IsExpired() {
+			m.state.ClearHeaderEvent()
+		}
 		cmds = append(cmds, m.refreshData, tickCmd())
 
 	case gitDiffMsg:
@@ -661,6 +676,13 @@ func (m Model) renderInitializingView() string {
 
 // handleKeyPress processes keyboard input
 func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
+	// Handle Cockpit config mode navigation FIRST (before other handlers)
+	if m.currentView == core.VMCockpit && m.cockpitConfigMode {
+		if m.handleCockpitConfigNavigation(msg) {
+			return nil
+		}
+	}
+
 	// Handle Escape for context-specific exits
 	if msg.String() == "esc" {
 		// Focus detail -> back to main
@@ -679,13 +701,6 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		case "shift+down":
 			m.gitDiffPageDown()
-			return nil
-		}
-	}
-
-	// Handle widgets config mode navigation
-	if m.currentView == core.VMWidgets && m.widgetsConfigMode {
-		if m.handleWidgetsConfigNavigation(msg) {
 			return nil
 		}
 	}
@@ -972,8 +987,8 @@ func (m *Model) navigateUp() {
 			m.projectsMenu.MoveUp()
 		case core.VMProcesses:
 			m.processesMenu.MoveUp()
-		case core.VMWidgets:
-			m.navigateWidgetUp()
+		case core.VMCockpit:
+			m.navigateCockpitUp()
 		default:
 			if m.mainIndex > 0 {
 				m.mainIndex--
@@ -1008,8 +1023,8 @@ func (m *Model) navigateDown() {
 			m.projectsMenu.MoveDown()
 		case core.VMProcesses:
 			m.processesMenu.MoveDown()
-		case core.VMWidgets:
-			m.navigateWidgetDown()
+		case core.VMCockpit:
+			m.navigateCockpitDown()
 		default:
 			if m.mainIndex < m.maxMainItems-1 {
 				m.mainIndex++
@@ -1046,8 +1061,8 @@ func (m *Model) navigateLeft() {
 			m.mainIndex = 0
 			m.loadBrowserEntries()
 		}
-	case core.VMWidgets:
-		m.navigateWidgetLeft()
+	case core.VMCockpit:
+		m.navigateCockpitLeft()
 	}
 }
 
@@ -1064,8 +1079,8 @@ func (m *Model) navigateRight() {
 			m.configMode = "settings"
 			m.mainIndex = 0
 		}
-	case core.VMWidgets:
-		m.navigateWidgetRight()
+	case core.VMCockpit:
+		m.navigateCockpitRight()
 	}
 }
 
@@ -1224,8 +1239,8 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 	}
 
 	// Reset widgets config mode when leaving/entering view
-	if m.currentView != core.VMWidgets {
-		m.widgetsConfigMode = false
+	if m.currentView != core.VMCockpit {
+		m.cockpitConfigMode = false
 	}
 
 	m.state.SetCurrentView(m.currentView)
@@ -1322,12 +1337,18 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		return m.selectViewByType(core.VMLogs)
 	case "G":
 		return m.selectViewByType(core.VMGit)
-	case "W":
-		return m.selectViewByType(core.VMWidgets)
+	case "K":
+		return m.selectViewByType(core.VMCockpit)
 	case "C":
 		// Claude Code view (only if installed)
 		if m.state.Claude != nil && m.state.Claude.IsInstalled {
 			return m.selectViewByType(core.VMClaude)
+		}
+		return nil
+	case "A":
+		// Database view (only if databases found)
+		if m.state.Database != nil && len(m.state.Database.Databases) > 0 {
+			return m.selectViewByType(core.VMDatabase)
 		}
 		return nil
 	case "S":
@@ -1429,34 +1450,34 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	// Widgets view specific keys
-	if m.currentView == core.VMWidgets {
+	if m.currentView == core.VMCockpit {
 		switch key {
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			if !m.widgetsConfigMode {
-				m.switchWidgetProfile(key)
+			if !m.cockpitConfigMode {
+				m.switchCockpitProfile(key)
 			}
 			return nil
 		case "c":
 			// Enter/exit config mode
-			m.widgetsConfigMode = !m.widgetsConfigMode
-			if m.widgetsConfigMode {
-				m.widgetsConfigStep = "grid"
-				m.initWidgetsConfigMenus()
+			m.cockpitConfigMode = !m.cockpitConfigMode
+			if m.cockpitConfigMode {
+				m.cockpitConfigStep = "grid"
+				m.initCockpitConfigMenus()
 			}
 			return nil
 		case "n":
 			// New profile
-			if !m.widgetsConfigMode {
-				m.startNewWidgetProfile()
+			if !m.cockpitConfigMode {
+				m.startNewCockpitProfile()
 			}
 			return nil
 		case "x":
 			// Delete profile (with confirmation)
-			if !m.widgetsConfigMode {
+			if !m.cockpitConfigMode {
 				cfg := config.GetGlobal()
 				if cfg != nil && len(cfg.WidgetProfiles) > 1 {
-					m.dialogType = "delete_widget_profile"
-					m.dialogMessage = fmt.Sprintf("Delete profile '%s'?", m.getActiveWidgetProfile())
+					m.dialogType = "delete_cockpit_profile"
+					m.dialogMessage = fmt.Sprintf("Delete profile '%s'?", m.getActiveCockpitProfile())
 					m.showDialog = true
 				} else {
 					m.lastError = "Cannot delete the only profile"
@@ -1466,18 +1487,18 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		case "r":
 			// Rename profile
-			if !m.widgetsConfigMode {
-				m.startRenameWidgetProfile()
+			if !m.cockpitConfigMode {
+				m.startRenameCockpitProfile()
 			}
 			return nil
 		case "enter":
-			if m.widgetsConfigMode {
-				return m.handleWidgetsConfigEnter()
+			if m.cockpitConfigMode {
+				return m.handleCockpitConfigEnter()
 			}
 			return nil
 		case "esc":
-			if m.widgetsConfigMode {
-				m.widgetsConfigMode = false
+			if m.cockpitConfigMode {
+				m.cockpitConfigMode = false
 				return nil
 			}
 		}
@@ -1764,6 +1785,87 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		case "c":
 			// Clear filter
 			m.claudeFilterProject = ""
+			return nil
+		}
+	}
+
+	// Database view specific keys
+	if m.currentView == core.VMDatabase {
+		switch key {
+		case "n":
+			// New session - only when focused on database panel and on a database
+			if m.focusArea == FocusDetail {
+				_, dbID, isDatabase := m.getSelectedDatabaseTreeItem()
+				if isDatabase && dbID != "" {
+					return m.createDatabaseSession(dbID)
+				}
+			}
+			return nil
+		case "x":
+			// Delete selected session
+			if m.focusArea == FocusDetail {
+				_, sessionID, isDatabase := m.getSelectedDatabaseTreeItem()
+				if !isDatabase && sessionID != "" {
+					sessionName := sessionID
+					if item := m.databaseTreeMenu.SelectedItem(); item != nil {
+						sessionName = item.Label
+					}
+					m.dialogType = "delete_database_session"
+					m.dialogMessage = fmt.Sprintf("Delete session \"%s\"?", sessionName)
+					m.showDialog = true
+				}
+			}
+			return nil
+		case "r":
+			// Rename selected session
+			if m.focusArea == FocusDetail {
+				_, sessionID, isDatabase := m.getSelectedDatabaseTreeItem()
+				if !isDatabase && sessionID != "" {
+					m.databaseTreeMenu.SetRenameActive(true)
+				}
+			}
+			return nil
+		case "s":
+			// Stop database terminal session
+			if m.focusArea == FocusDetail {
+				_, sessionID, isDatabase := m.getSelectedDatabaseTreeItem()
+				if !isDatabase && sessionID != "" {
+					return m.stopDatabaseTerminal(sessionID)
+				}
+			}
+			return nil
+		case "enter":
+			// Start/connect to database
+			if m.focusArea == FocusDetail {
+				_, itemID, isDatabase := m.getSelectedDatabaseTreeItem()
+				if !isDatabase && itemID != "" {
+					// It's a session - start terminal
+					return m.startDatabaseSession(itemID)
+				} else if isDatabase && itemID != "" {
+					// It's a database - create new session and start
+					return m.createAndStartDatabaseSession(itemID)
+				}
+			} else if m.focusArea == FocusMain && m.databaseActiveSession != "" {
+				// Enter terminal mode if session is running
+				if t := m.terminalManager.Get(m.databaseActiveSession); t != nil && t.IsRunning() {
+					m.terminalMode = true
+				}
+			}
+			return nil
+		case "esc":
+			// Exit terminal mode or switch focus
+			if m.terminalMode {
+				m.terminalMode = false
+				return nil
+			}
+			if m.focusArea == FocusDetail {
+				m.focusArea = FocusMain
+				return nil
+			}
+			return nil
+		case "c":
+			// Clear filter
+			m.databaseFilterProject = ""
 			return nil
 		}
 	}
@@ -2119,6 +2221,212 @@ func (m *Model) stopClaudeTerminal(sessionID string) tea.Cmd {
 	return nil
 }
 
+// ============================================
+// Database view helper functions
+// ============================================
+
+// getSelectedDatabaseTreeItem returns the selected item from the database TreeMenu
+// Returns (projectID, itemID, isDatabase)
+// itemID is either a database ID (db:xxx) or session ID (session:xxx)
+func (m *Model) getSelectedDatabaseTreeItem() (string, string, bool) {
+	if m.databaseTreeMenu == nil {
+		return "", "", false
+	}
+
+	item := m.databaseTreeMenu.SelectedItem()
+	if item == nil {
+		return "", "", false
+	}
+
+	// Check if it's a database (starts with "db:")
+	if strings.HasPrefix(item.ID, "db:") {
+		dbID := strings.TrimPrefix(item.ID, "db:")
+		if db, ok := item.Data.(core.DatabaseInfoVM); ok {
+			return db.ProjectID, dbID, true
+		}
+		return "", dbID, true
+	}
+
+	// Check if it's a session (starts with "session:")
+	if strings.HasPrefix(item.ID, "session:") {
+		sessionID := strings.TrimPrefix(item.ID, "session:")
+		if sess, ok := item.Data.(core.DatabaseSessionVM); ok {
+			return sess.ProjectID, sessionID, false
+		}
+		return "", sessionID, false
+	}
+
+	// It's a project node
+	if strings.HasPrefix(item.ID, "project:") {
+		projectID := strings.TrimPrefix(item.ID, "project:")
+		return projectID, "", false
+	}
+
+	return "", "", false
+}
+
+// createDatabaseSession creates a new database session for the selected database
+func (m *Model) createDatabaseSession(databaseID string) tea.Cmd {
+	if m.state.Database == nil {
+		return nil
+	}
+
+	// Find the database info
+	var db *core.DatabaseInfoVM
+	for i := range m.state.Database.Databases {
+		if m.state.Database.Databases[i].ID == databaseID {
+			db = &m.state.Database.Databases[i]
+			break
+		}
+	}
+
+	if db == nil {
+		m.lastError = "Database not found"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+
+	event := core.NewEvent(core.EventDatabaseCreateSession).WithProject(db.ProjectID)
+	event.Data["database_id"] = databaseID
+	event.Data["project_name"] = db.ProjectName
+	return m.sendEvent(event)
+}
+
+// createAndStartDatabaseSession creates a session and starts it immediately
+func (m *Model) createAndStartDatabaseSession(databaseID string) tea.Cmd {
+	// First create the session
+	cmd := m.createDatabaseSession(databaseID)
+
+	// The terminal will be started when the session is created and selected
+	return cmd
+}
+
+// startDatabaseSession starts the database CLI terminal for a session
+func (m *Model) startDatabaseSession(sessionID string) tea.Cmd {
+	if m.terminalManager == nil || m.state.Database == nil {
+		return nil
+	}
+
+	// Find the session
+	var sess *core.DatabaseSessionVM
+	for i := range m.state.Database.Sessions {
+		if m.state.Database.Sessions[i].ID == sessionID {
+			sess = &m.state.Database.Sessions[i]
+			break
+		}
+	}
+
+	if sess == nil {
+		m.lastError = "Session not found"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+
+	// Find the database info to get the connection URL
+	var db *core.DatabaseInfoVM
+	for i := range m.state.Database.Databases {
+		if m.state.Database.Databases[i].DatabaseName == sess.DatabaseName &&
+			m.state.Database.Databases[i].ProjectID == sess.ProjectID {
+			db = &m.state.Database.Databases[i]
+			break
+		}
+	}
+
+	if db == nil {
+		m.lastError = "Database info not found"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+
+	// Get the CLI command based on database type
+	cliCmd, cliArgs := m.getDatabaseCLICommand(db)
+	if cliCmd == "" {
+		m.lastError = "Unknown database type: " + db.Type
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+
+	// Set active session
+	m.databaseActiveSession = sessionID
+
+	// Get or create terminal
+	t := m.terminalManager.GetOrCreateWithCommand(sessionID, cliCmd, cliArgs)
+
+	// Size the terminal appropriately
+	headerHeight := 3
+	footerHeight := 3
+	sidebarWidth := getSidebarWidth()
+	termWidth := m.width - sidebarWidth - 6
+	termHeight := m.height - headerHeight - footerHeight - 2
+	if termWidth > 20 && termHeight > 5 {
+		t.SetSize(termWidth, termHeight)
+	}
+
+	// Start if not already running
+	if !t.IsRunning() {
+		if err := t.Start(sessionID); err != nil {
+			m.lastError = "Failed to start database CLI: " + err.Error()
+			m.lastErrorTime = time.Now()
+			return nil
+		}
+	}
+
+	// Enter terminal mode
+	m.terminalMode = true
+	m.focusArea = FocusMain
+
+	// Update session state
+	m.sendEvent(core.NewEvent(core.EventDatabaseSelectSession).WithData("session_id", sessionID))
+
+	return m.scheduleTerminalRefresh()
+}
+
+// stopDatabaseTerminal stops the database CLI terminal for a session
+func (m *Model) stopDatabaseTerminal(sessionID string) tea.Cmd {
+	if m.terminalManager == nil {
+		return nil
+	}
+
+	t := m.terminalManager.Get(sessionID)
+	if t == nil {
+		return nil
+	}
+
+	// Stop the terminal
+	go t.Stop()
+
+	// Exit terminal mode if this was active
+	if m.databaseActiveSession == sessionID && m.terminalMode {
+		m.terminalMode = false
+	}
+
+	m.lastError = "Terminal stopped"
+	m.lastErrorTime = time.Now()
+
+	return nil
+}
+
+// getDatabaseCLICommand returns the CLI command and args for a database type
+func (m *Model) getDatabaseCLICommand(db *core.DatabaseInfoVM) (string, []string) {
+	switch db.Type {
+	case "postgres":
+		// Build postgres URL from components
+		url := fmt.Sprintf("postgres://%s@%s:%d/%s", db.User, db.Host, db.Port, db.DatabaseName)
+		return "psql", []string{url}
+	case "mysql":
+		return "mysql", []string{
+			"-h", db.Host,
+			"-P", fmt.Sprintf("%d", db.Port),
+			"-u", db.User,
+			db.DatabaseName,
+		}
+	case "sqlite":
+		return "sqlite3", []string{db.DatabaseName}
+	default:
+		return "", nil
+	}
+}
+
 // handleClaudeInput handles text input in Claude chat mode
 // Controls:
 //   - Enter: send message, stay in input mode
@@ -2371,9 +2679,9 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 			return m.createClaudeSessionWithName(projectID, sessionName)
 		}
 		return nil
-	case "delete_widget_profile":
-		// Delete the current widget profile
-		m.deleteWidgetProfile()
+	case "delete_cockpit_profile":
+		// Delete the current cockpit profile
+		m.deleteCockpitProfile()
 		return nil
 	}
 	return nil
@@ -2699,7 +3007,7 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
 	// Update Claude tree for navigation (must persist across Update calls)
 	m.updateClaudeTree()
 
-	// Handle newly created session - start Claude terminal immediately
+	// Handle newly created session - just select it, don't start terminal yet
 	needTerminalRefresh := false
 	if m.state.Claude != nil && m.state.Claude.NewlyCreatedSessionID != "" {
 		sessionID := m.state.Claude.NewlyCreatedSessionID
@@ -2708,28 +3016,8 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
 		m.claudeActiveSession = sessionID
 		m.claudeMode = ClaudeModeChat
 
-		// Get work directory for this session
-		workDir := ""
-		for _, sess := range m.state.Claude.Sessions {
-			if sess.ID == sessionID {
-				workDir = sess.WorkDir
-				break
-			}
-		}
-		if workDir == "" {
-			workDir, _ = os.Getwd()
-		}
-
-		// Start terminal in background (don't block, don't change focus)
-		t := m.terminalManager.GetOrCreate(sessionID, workDir)
-		if !t.IsRunning() {
-			go func() {
-				t.Start(sessionID)
-			}()
-		}
-		needTerminalRefresh = true
-		// Don't change focus - user stays where they were
-		// Don't enter terminal mode - user can Tab to chat when ready
+		// Don't start terminal automatically - user will start it when they want to interact
+		// Terminal is started when user presses Enter or types in the session
 	}
 
 	// Update Git menu for navigation
@@ -2740,6 +3028,9 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
 
 	// Update Processes menu for navigation
 	m.updateProcessesMenu()
+
+	// Update Database menu for navigation
+	m.updateDatabaseMenu()
 
 	// Update sidebar menu
 	m.updateSidebarMenu()
@@ -2976,6 +3267,16 @@ func (m *Model) updateProcessesMenu() {
 	}
 
 	m.processesMenu.SetItems(items)
+}
+
+// updateDatabaseMenu updates the database TreeMenu with current database data
+func (m *Model) updateDatabaseMenu() {
+	if m.databaseTreeMenu == nil || m.state.Database == nil {
+		return
+	}
+
+	items := m.buildDatabaseTreeItems()
+	m.databaseTreeMenu.SetItems(items)
 }
 
 // updateClaudeTree builds the flattened tree structure for Claude sessions navigation
@@ -3238,9 +3539,9 @@ func (m *Model) updateItemCounts() {
 		case ClaudeModeChat:
 			m.maxMainItems = 0 // No list navigation in chat
 		}
-	case core.VMWidgets:
+	case core.VMCockpit:
 		// Widgets view - count widgets in active profile
-		profile := m.getWidgetProfile(m.getActiveWidgetProfile())
+		profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 		if profile != nil {
 			m.maxMainItems = len(profile.Widgets)
 		} else {

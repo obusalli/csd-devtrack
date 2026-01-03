@@ -37,7 +37,7 @@ func NewTerminalManager(claudePath string) *TerminalManager {
 	}
 }
 
-// GetOrCreate gets an existing terminal or creates a new one
+// GetOrCreate gets an existing terminal or creates a new one (for Claude)
 func (tm *TerminalManager) GetOrCreate(sessionID, workDir string) TerminalInterface {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -48,6 +48,21 @@ func (tm *TerminalManager) GetOrCreate(sessionID, workDir string) TerminalInterf
 
 	// Use tmux-based terminal (persistent, captures ANSI colors with capture-pane -e)
 	t := NewTerminalTmux(sessionID, workDir, tm.claudePath)
+	tm.terminals[sessionID] = t
+	return t
+}
+
+// GetOrCreateWithCommand gets an existing terminal or creates a new one with a custom command
+func (tm *TerminalManager) GetOrCreateWithCommand(sessionID, command string, args []string) TerminalInterface {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if t, exists := tm.terminals[sessionID]; exists {
+		return t
+	}
+
+	// Use generic tmux-based terminal with custom command
+	t := NewTerminalTmuxCommand(sessionID, command, args)
 	tm.terminals[sessionID] = t
 	return t
 }

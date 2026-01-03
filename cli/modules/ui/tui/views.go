@@ -108,15 +108,40 @@ func (m *Model) renderHeader() string {
 	left := fmt.Sprintf(" %s %s │ %s%s", title, version, viewName, usageStr)
 	right := fmt.Sprintf("%s │ %s%s%s ", metricsStr, status, runningStr, gitStr)
 
-	padding := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if padding < 0 {
-		padding = 0
+	// Header event (centered between left and right)
+	centerContent := ""
+	if event := m.state.GetHeaderEvent(); event != nil {
+		eventStyle := lipgloss.NewStyle()
+		switch event.Type {
+		case core.HeaderEventSuccess:
+			eventStyle = eventStyle.Foreground(ColorSuccess)
+		case core.HeaderEventWarning:
+			eventStyle = eventStyle.Foreground(ColorWarning)
+		case core.HeaderEventError:
+			eventStyle = eventStyle.Foreground(ColorError)
+		default:
+			eventStyle = eventStyle.Foreground(ColorSecondary)
+		}
+		centerContent = eventStyle.Render(event.Icon + " " + event.Message)
 	}
+
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+	centerWidth := lipgloss.Width(centerContent)
+	totalPadding := m.width - leftWidth - rightWidth - centerWidth
+	if totalPadding < 0 {
+		totalPadding = 0
+	}
+
+	leftPad := totalPadding / 2
+	rightPad := totalPadding - leftPad
 
 	header := lipgloss.JoinHorizontal(
 		lipgloss.Center,
 		left,
-		strings.Repeat(" ", padding),
+		strings.Repeat(" ", leftPad),
+		centerContent,
+		strings.Repeat(" ", rightPad),
 		right,
 	)
 
@@ -135,12 +160,12 @@ type sidebarView struct {
 // baseSidebarViews defines the base navigation menu items (always shown)
 var baseSidebarViews = []sidebarView{
 	{"[D]ashboard", core.VMDashboard},
+	{"Coc[K]pit", core.VMCockpit},
 	{"[P]rojects", core.VMProjects},
 	{"[B]uild", core.VMBuild},
 	{"Pr[O]cesses", core.VMProcesses},
 	{"[L]ogs", core.VMLogs},
 	{"[G]it", core.VMGit},
-	{"[W]idgets", core.VMWidgets},
 }
 
 // getSidebarViews returns the sidebar views, including Claude Code if installed
@@ -151,6 +176,11 @@ func (m *Model) getSidebarViews() []sidebarView {
 	// Add Claude Code view if installed (before Settings)
 	if m.state.Claude != nil && m.state.Claude.IsInstalled {
 		views = append(views, sidebarView{"[C]laude Code", core.VMClaude})
+	}
+
+	// Add Database view if databases are found
+	if m.state.Database != nil && len(m.state.Database.Databases) > 0 {
+		views = append(views, sidebarView{"Data[A]base", core.VMDatabase})
 	}
 
 	// Settings always last
@@ -585,8 +615,10 @@ func (m *Model) renderMainContent() string {
 		content = m.renderConfig(width, height)
 	case core.VMClaude:
 		content = m.renderClaude(width, height)
-	case core.VMWidgets:
-		content = m.renderWidgets(width, height)
+	case core.VMCockpit:
+		content = m.renderCockpit(width, height)
+	case core.VMDatabase:
+		content = m.renderDatabase(width, height)
 	default:
 		content = m.renderDashboard(width, height)
 	}
@@ -821,9 +853,9 @@ func (m *Model) renderFooter() string {
 					)
 				}
 			}
-		case core.VMWidgets:
-			// Widgets view shortcuts
-			if m.widgetsConfigMode {
+		case core.VMCockpit:
+			// Cockpit view shortcuts
+			if m.cockpitConfigMode {
 				shortcuts = append(shortcuts,
 					HelpKeyStyle.Render("↑↓")+HelpDescStyle.Render(" select  "),
 					HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" confirm  "),
@@ -837,6 +869,27 @@ func (m *Model) renderFooter() string {
 					HelpKeyStyle.Render("n")+HelpDescStyle.Render(" new  "),
 					HelpKeyStyle.Render("r")+HelpDescStyle.Render(" rename  "),
 					HelpKeyStyle.Render("x")+HelpDescStyle.Render(" delete  "),
+				)
+			}
+		case core.VMDatabase:
+			// Database view shortcuts
+			if m.terminalMode {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("⇧Tab")+HelpDescStyle.Render(" sidebar  "),
+					HelpKeyStyle.Render("Esc")+HelpDescStyle.Render(" exit  "),
+				)
+			} else if m.focusArea == FocusDetail {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("n")+HelpDescStyle.Render(" new  "),
+					HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" connect  "),
+					HelpKeyStyle.Render("r")+HelpDescStyle.Render(" rename  "),
+					HelpKeyStyle.Render("x")+HelpDescStyle.Render(" delete  "),
+					HelpKeyStyle.Render("s")+HelpDescStyle.Render(" stop  "),
+				)
+			} else {
+				shortcuts = append(shortcuts,
+					HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" terminal  "),
+					HelpKeyStyle.Render("Tab")+HelpDescStyle.Render(" databases  "),
 				)
 			}
 		}

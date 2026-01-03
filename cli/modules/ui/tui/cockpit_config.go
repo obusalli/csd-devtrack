@@ -22,18 +22,19 @@ var widgetTypeOptions = []struct {
 	{config.WidgetBuildStatus, "Build Status", "Build progress and history"},
 	{config.WidgetGitStatus, "Git Status", "Repository status"},
 	{config.WidgetClaudeSessions, "Claude Sessions", "AI assistant sessions"},
+	{config.WidgetDatabaseSessions, "Database Sessions", "Database connections and sessions"},
 }
 
-// initWidgetsConfigMenus initializes the TreeMenus for widget configuration
-func (m *Model) initWidgetsConfigMenus() {
+// initCockpitConfigMenus initializes the TreeMenus for widget configuration
+func (m *Model) initCockpitConfigMenus() {
 	// Get current profile settings
-	profile := m.getWidgetProfile(m.getActiveWidgetProfile())
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 	if profile != nil {
-		m.widgetsConfigRows = profile.Rows
-		m.widgetsConfigCols = profile.Cols
+		m.cockpitConfigRows = profile.Rows
+		m.cockpitConfigCols = profile.Cols
 	} else {
-		m.widgetsConfigRows = 2
-		m.widgetsConfigCols = 2
+		m.cockpitConfigRows = 2
+		m.cockpitConfigCols = 2
 	}
 
 	// Initialize grid size menu
@@ -47,8 +48,8 @@ func (m *Model) initWidgetsConfigMenus() {
 			})
 		}
 	}
-	m.widgetsGridMenu = NewTreeMenu(gridItems)
-	m.widgetsGridMenu.SetTitle("Grid Size")
+	m.cockpitGridMenu = NewTreeMenu(gridItems)
+	m.cockpitGridMenu.SetTitle("Grid Size")
 
 	// Initialize widget type menu
 	typeItems := []TreeMenuItem{}
@@ -58,15 +59,15 @@ func (m *Model) initWidgetsConfigMenus() {
 			Data:  opt.Type,
 		})
 	}
-	m.widgetsTypeMenu = NewTreeMenu(typeItems)
-	m.widgetsTypeMenu.SetTitle("Widget Type")
+	m.cockpitTypeMenu = NewTreeMenu(typeItems)
+	m.cockpitTypeMenu.SetTitle("Widget Type")
 
 	// Initialize profile menu
-	m.initWidgetsProfileMenu()
+	m.initCockpitProfileMenu()
 }
 
-// initWidgetsProfileMenu initializes the profile selection menu
-func (m *Model) initWidgetsProfileMenu() {
+// initCockpitProfileMenu initializes the profile selection menu
+func (m *Model) initCockpitProfileMenu() {
 	cfg := config.GetGlobal()
 	items := []TreeMenuItem{}
 
@@ -83,12 +84,12 @@ func (m *Model) initWidgetsProfileMenu() {
 		}
 	}
 
-	m.widgetsProfileMenu = NewTreeMenu(items)
-	m.widgetsProfileMenu.SetTitle("Profiles")
+	m.cockpitProfileMenu = NewTreeMenu(items)
+	m.cockpitProfileMenu.SetTitle("Profiles")
 }
 
-// initWidgetsFilterMenu initializes the filter menu for current widget
-func (m *Model) initWidgetsFilterMenu(widgetType config.WidgetType) {
+// initCockpitFilterMenu initializes the filter menu for current widget
+func (m *Model) initCockpitFilterMenu(widgetType config.WidgetType) {
 	items := []TreeMenuItem{
 		{Label: "All (no filter)", Data: ""},
 	}
@@ -129,68 +130,68 @@ func (m *Model) initWidgetsFilterMenu(widgetType config.WidgetType) {
 		}
 	}
 
-	m.widgetsFilterMenu = NewTreeMenu(items)
-	m.widgetsFilterMenu.SetTitle("Filters")
+	m.cockpitFilterMenu = NewTreeMenu(items)
+	m.cockpitFilterMenu.SetTitle("Filters")
 }
 
-// handleWidgetsConfigEnter handles Enter key in config mode
-func (m *Model) handleWidgetsConfigEnter() tea.Cmd {
-	switch m.widgetsConfigStep {
+// handleCockpitConfigEnter handles Enter key in config mode
+func (m *Model) handleCockpitConfigEnter() tea.Cmd {
+	switch m.cockpitConfigStep {
 	case "grid":
 		// Grid size selected, get the selection
-		if item := m.widgetsGridMenu.SelectedItem(); item != nil {
+		if item := m.cockpitGridMenu.SelectedItem(); item != nil {
 			if size, ok := item.Data.([2]int); ok {
-				m.widgetsConfigRows = size[0]
-				m.widgetsConfigCols = size[1]
+				m.cockpitConfigRows = size[0]
+				m.cockpitConfigCols = size[1]
 			}
 		}
 		// Move to widget configuration
-		m.widgetsConfigStep = "widgets"
-		m.widgetsConfigCell = 0
+		m.cockpitConfigStep = "widgets"
+		m.cockpitConfigCell = 0
 		return nil
 
 	case "widgets":
 		// Widget type selected for current cell
-		if item := m.widgetsTypeMenu.SelectedItem(); item != nil {
+		if item := m.cockpitTypeMenu.SelectedItem(); item != nil {
 			if wtype, ok := item.Data.(config.WidgetType); ok {
-				m.setWidgetTypeForCell(m.widgetsConfigCell, wtype)
+				m.setWidgetTypeForCell(m.cockpitConfigCell, wtype)
 				// Move to filter configuration for this widget
-				m.initWidgetsFilterMenu(wtype)
-				m.widgetsConfigStep = "filters"
+				m.initCockpitFilterMenu(wtype)
+				m.cockpitConfigStep = "filters"
 			}
 		}
 		return nil
 
 	case "filters":
 		// Filter selected for current widget
-		if item := m.widgetsFilterMenu.SelectedItem(); item != nil {
+		if item := m.cockpitFilterMenu.SelectedItem(); item != nil {
 			if filter, ok := item.Data.(string); ok {
-				m.setWidgetFilterForCell(m.widgetsConfigCell, filter)
+				m.setWidgetFilterForCell(m.cockpitConfigCell, filter)
 			}
 		}
 		// Move to next cell or finish
-		m.widgetsConfigCell++
-		totalCells := m.widgetsConfigRows * m.widgetsConfigCols
-		if m.widgetsConfigCell >= totalCells {
+		m.cockpitConfigCell++
+		totalCells := m.cockpitConfigRows * m.cockpitConfigCols
+		if m.cockpitConfigCell >= totalCells {
 			// Done configuring, save and exit
-			m.saveWidgetProfile()
-			m.widgetsConfigMode = false
+			m.saveCockpitProfile()
+			m.cockpitConfigMode = false
 		} else {
-			m.widgetsConfigStep = "widgets"
+			m.cockpitConfigStep = "widgets"
 		}
 		return nil
 
 	case "profile_name":
 		// Profile name entered
-		if m.widgetsCreatingNew {
-			m.createNewWidgetProfile(m.widgetsNewName)
-			m.widgetsCreatingNew = false
-		} else if m.widgetsRenaming {
-			m.renameCurrentWidgetProfile(m.widgetsNewName)
-			m.widgetsRenaming = false
+		if m.cockpitCreatingNew {
+			m.createNewCockpitProfile(m.cockpitNewName)
+			m.cockpitCreatingNew = false
+		} else if m.cockpitRenaming {
+			m.renameCurrentCockpitProfile(m.cockpitNewName)
+			m.cockpitRenaming = false
 		}
-		m.widgetsConfigStep = "grid"
-		m.widgetsNewName = ""
+		m.cockpitConfigStep = "grid"
+		m.cockpitNewName = ""
 		return nil
 	}
 	return nil
@@ -203,14 +204,14 @@ func (m *Model) setWidgetTypeForCell(cellIndex int, wtype config.WidgetType) {
 		return
 	}
 
-	profileName := m.getActiveWidgetProfile()
+	profileName := m.getActiveCockpitProfile()
 	profile := cfg.WidgetProfiles[profileName]
 	if profile == nil {
 		// Create new profile
 		profile = &config.WidgetProfile{
 			Name: profileName,
-			Rows: m.widgetsConfigRows,
-			Cols: m.widgetsConfigCols,
+			Rows: m.cockpitConfigRows,
+			Cols: m.cockpitConfigCols,
 		}
 		if cfg.WidgetProfiles == nil {
 			cfg.WidgetProfiles = make(map[string]*config.WidgetProfile)
@@ -219,12 +220,12 @@ func (m *Model) setWidgetTypeForCell(cellIndex int, wtype config.WidgetType) {
 	}
 
 	// Update grid size
-	profile.Rows = m.widgetsConfigRows
-	profile.Cols = m.widgetsConfigCols
+	profile.Rows = m.cockpitConfigRows
+	profile.Cols = m.cockpitConfigCols
 
 	// Calculate row/col from cell index
-	row := cellIndex / m.widgetsConfigCols
-	col := cellIndex % m.widgetsConfigCols
+	row := cellIndex / m.cockpitConfigCols
+	col := cellIndex % m.cockpitConfigCols
 
 	// Find or create widget for this position
 	found := false
@@ -253,14 +254,14 @@ func (m *Model) setWidgetFilterForCell(cellIndex int, filter string) {
 		return
 	}
 
-	profileName := m.getActiveWidgetProfile()
+	profileName := m.getActiveCockpitProfile()
 	profile := cfg.WidgetProfiles[profileName]
 	if profile == nil {
 		return
 	}
 
-	row := cellIndex / m.widgetsConfigCols
-	col := cellIndex % m.widgetsConfigCols
+	row := cellIndex / m.cockpitConfigCols
+	col := cellIndex % m.cockpitConfigCols
 
 	for i := range profile.Widgets {
 		if profile.Widgets[i].Row == row && profile.Widgets[i].Col == col {
@@ -282,21 +283,21 @@ func (m *Model) setWidgetFilterForCell(cellIndex int, filter string) {
 	}
 }
 
-// saveWidgetProfile saves the current widget profile to config
-func (m *Model) saveWidgetProfile() {
+// saveCockpitProfile saves the current widget profile to config
+func (m *Model) saveCockpitProfile() {
 	_ = config.SaveGlobal()
 }
 
-// startNewWidgetProfile initiates new profile creation
-func (m *Model) startNewWidgetProfile() {
-	m.widgetsCreatingNew = true
-	m.widgetsNewName = ""
-	m.widgetsConfigStep = "profile_name"
-	m.widgetsConfigMode = true
+// startNewCockpitProfile initiates new profile creation
+func (m *Model) startNewCockpitProfile() {
+	m.cockpitCreatingNew = true
+	m.cockpitNewName = ""
+	m.cockpitConfigStep = "profile_name"
+	m.cockpitConfigMode = true
 }
 
-// createNewWidgetProfile creates a new widget profile
-func (m *Model) createNewWidgetProfile(name string) {
+// createNewCockpitProfile creates a new widget profile
+func (m *Model) createNewCockpitProfile(name string) {
 	if name == "" {
 		return
 	}
@@ -328,17 +329,17 @@ func (m *Model) createNewWidgetProfile(name string) {
 	}
 
 	_ = config.SaveGlobal()
-	m.initWidgetsProfileMenu()
+	m.initCockpitProfileMenu()
 }
 
-// deleteWidgetProfile deletes the current widget profile
-func (m *Model) deleteWidgetProfile() {
+// deleteCockpitProfile deletes the current widget profile
+func (m *Model) deleteCockpitProfile() {
 	cfg := config.GetGlobal()
 	if cfg == nil || cfg.WidgetProfiles == nil {
 		return
 	}
 
-	profileName := m.getActiveWidgetProfile()
+	profileName := m.getActiveCockpitProfile()
 
 	// Don't delete if it's the only profile
 	if len(cfg.WidgetProfiles) <= 1 {
@@ -357,19 +358,19 @@ func (m *Model) deleteWidgetProfile() {
 	}
 
 	_ = config.SaveGlobal()
-	m.initWidgetsProfileMenu()
+	m.initCockpitProfileMenu()
 }
 
-// startRenameWidgetProfile initiates profile rename
-func (m *Model) startRenameWidgetProfile() {
-	m.widgetsRenaming = true
-	m.widgetsNewName = m.getActiveWidgetProfile()
-	m.widgetsConfigStep = "profile_name"
-	m.widgetsConfigMode = true
+// startRenameCockpitProfile initiates profile rename
+func (m *Model) startRenameCockpitProfile() {
+	m.cockpitRenaming = true
+	m.cockpitNewName = m.getActiveCockpitProfile()
+	m.cockpitConfigStep = "profile_name"
+	m.cockpitConfigMode = true
 }
 
-// renameCurrentWidgetProfile renames the current profile
-func (m *Model) renameCurrentWidgetProfile(newName string) {
+// renameCurrentCockpitProfile renames the current profile
+func (m *Model) renameCurrentCockpitProfile(newName string) {
 	if newName == "" {
 		return
 	}
@@ -379,7 +380,7 @@ func (m *Model) renameCurrentWidgetProfile(newName string) {
 		return
 	}
 
-	oldName := m.getActiveWidgetProfile()
+	oldName := m.getActiveCockpitProfile()
 	if oldName == newName {
 		return
 	}
@@ -401,30 +402,30 @@ func (m *Model) renameCurrentWidgetProfile(newName string) {
 	}
 
 	_ = config.SaveGlobal()
-	m.initWidgetsProfileMenu()
+	m.initCockpitProfileMenu()
 }
 
-// renderWidgetsConfigOverlay renders the configuration overlay
-func (m *Model) renderWidgetsConfigOverlay(baseContent string, width, height int) string {
+// renderCockpitConfigOverlay renders the configuration overlay
+func (m *Model) renderCockpitConfigOverlay(baseContent string, width, height int) string {
 	// Determine overlay content based on current step
 	var title string
 	var content string
 	var menu *TreeMenu
 
-	switch m.widgetsConfigStep {
+	switch m.cockpitConfigStep {
 	case "grid":
 		title = "Select Grid Size"
-		menu = m.widgetsGridMenu
+		menu = m.cockpitGridMenu
 	case "widgets":
-		cellRow := m.widgetsConfigCell / m.widgetsConfigCols
-		cellCol := m.widgetsConfigCell % m.widgetsConfigCols
+		cellRow := m.cockpitConfigCell / m.cockpitConfigCols
+		cellCol := m.cockpitConfigCell % m.cockpitConfigCols
 		title = fmt.Sprintf("Widget for Cell [%d,%d]", cellRow+1, cellCol+1)
-		menu = m.widgetsTypeMenu
+		menu = m.cockpitTypeMenu
 	case "filters":
 		title = "Select Filter"
-		menu = m.widgetsFilterMenu
+		menu = m.cockpitFilterMenu
 	case "profile_name":
-		if m.widgetsCreatingNew {
+		if m.cockpitCreatingNew {
 			title = "New Profile Name"
 		} else {
 			title = "Rename Profile"
@@ -463,7 +464,7 @@ func (m *Model) renderWidgetsConfigOverlay(baseContent string, width, height int
 		Padding(0, 1)
 
 	var footerText string
-	if m.widgetsConfigStep == "profile_name" {
+	if m.cockpitConfigStep == "profile_name" {
 		footerText = "Enter: confirm  Esc: cancel"
 	} else {
 		footerText = "↑↓: select  Enter: confirm  Esc: cancel"
@@ -498,7 +499,7 @@ func (m *Model) renderProfileNameInput() string {
 		Foreground(ColorText)
 
 	// Show input with cursor
-	display := m.widgetsNewName + cursorStyle.Render(" ")
+	display := m.cockpitNewName + cursorStyle.Render(" ")
 	return inputStyle.Render(display)
 }
 
@@ -540,31 +541,47 @@ func (m *Model) overlayBox(base, overlay string, x, y, width, height int) string
 	return strings.Join(baseLines, "\n")
 }
 
-// handleWidgetsConfigNavigation handles navigation in config mode
-func (m *Model) handleWidgetsConfigNavigation(msg tea.KeyMsg) bool {
-	if !m.widgetsConfigMode {
+// handleCockpitConfigNavigation handles navigation in config mode
+func (m *Model) handleCockpitConfigNavigation(msg tea.KeyMsg) bool {
+	if !m.cockpitConfigMode {
 		return false
 	}
 
 	key := msg.String()
 
 	// Handle text input for profile name
-	if m.widgetsConfigStep == "profile_name" {
+	if m.cockpitConfigStep == "profile_name" {
 		switch key {
+		case "enter":
+			// Confirm profile name
+			if m.cockpitNewName != "" {
+				if m.cockpitCreatingNew {
+					m.createNewCockpitProfile(m.cockpitNewName)
+					m.cockpitCreatingNew = false
+				} else if m.cockpitRenaming {
+					m.renameCurrentCockpitProfile(m.cockpitNewName)
+					m.cockpitRenaming = false
+				}
+			}
+			m.cockpitConfigMode = false
+			m.cockpitConfigStep = ""
+			m.cockpitNewName = ""
+			return true
 		case "backspace":
-			if len(m.widgetsNewName) > 0 {
-				m.widgetsNewName = m.widgetsNewName[:len(m.widgetsNewName)-1]
+			if len(m.cockpitNewName) > 0 {
+				m.cockpitNewName = m.cockpitNewName[:len(m.cockpitNewName)-1]
 			}
 			return true
 		case "esc":
-			m.widgetsConfigMode = false
-			m.widgetsCreatingNew = false
-			m.widgetsRenaming = false
+			m.cockpitConfigMode = false
+			m.cockpitCreatingNew = false
+			m.cockpitRenaming = false
+			m.cockpitNewName = ""
 			return true
 		default:
 			// Add character if printable
 			if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
-				m.widgetsNewName += key
+				m.cockpitNewName += key
 				return true
 			}
 		}
@@ -573,13 +590,13 @@ func (m *Model) handleWidgetsConfigNavigation(msg tea.KeyMsg) bool {
 
 	// Handle menu navigation
 	var menu *TreeMenu
-	switch m.widgetsConfigStep {
+	switch m.cockpitConfigStep {
 	case "grid":
-		menu = m.widgetsGridMenu
+		menu = m.cockpitGridMenu
 	case "widgets":
-		menu = m.widgetsTypeMenu
+		menu = m.cockpitTypeMenu
 	case "filters":
-		menu = m.widgetsFilterMenu
+		menu = m.cockpitFilterMenu
 	}
 
 	if menu == nil {
@@ -593,15 +610,19 @@ func (m *Model) handleWidgetsConfigNavigation(msg tea.KeyMsg) bool {
 	case "down", "j":
 		menu.MoveDown()
 		return true
+	case "enter":
+		// Handle menu selection
+		m.handleCockpitConfigEnter()
+		return true
 	case "esc":
 		// Go back or exit
-		switch m.widgetsConfigStep {
+		switch m.cockpitConfigStep {
 		case "filters":
-			m.widgetsConfigStep = "widgets"
+			m.cockpitConfigStep = "widgets"
 		case "widgets":
-			m.widgetsConfigStep = "grid"
+			m.cockpitConfigStep = "grid"
 		default:
-			m.widgetsConfigMode = false
+			m.cockpitConfigMode = false
 		}
 		return true
 	}

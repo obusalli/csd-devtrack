@@ -17,12 +17,13 @@ type Config struct {
 type WidgetType string
 
 const (
-	WidgetLogs           WidgetType = "logs"
-	WidgetClaudeSessions WidgetType = "claude_sessions"
-	WidgetProcesses      WidgetType = "processes"
-	WidgetBuildStatus    WidgetType = "build_status"
-	WidgetGitStatus      WidgetType = "git_status"
-	WidgetDashStats      WidgetType = "dashboard_stats"
+	WidgetLogs             WidgetType = "logs"
+	WidgetClaudeSessions   WidgetType = "claude_sessions"
+	WidgetDatabaseSessions WidgetType = "database_sessions"
+	WidgetProcesses        WidgetType = "processes"
+	WidgetBuildStatus      WidgetType = "build_status"
+	WidgetGitStatus        WidgetType = "git_status"
+	WidgetDashStats        WidgetType = "dashboard_stats"
 )
 
 // WidgetConfig represents the configuration for a single widget

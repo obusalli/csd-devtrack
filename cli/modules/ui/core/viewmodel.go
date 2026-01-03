@@ -21,7 +21,8 @@ const (
 	VMGit       ViewModelType = "git"
 	VMConfig    ViewModelType = "config"
 	VMClaude    ViewModelType = "claude"
-	VMWidgets   ViewModelType = "widgets"
+	VMCockpit   ViewModelType = "cockpit"
+	VMDatabase  ViewModelType = "database"
 )
 
 // ViewModel is the base interface for all view models
@@ -263,8 +264,8 @@ type ClaudeInteractiveVM struct {
 	PlanContent string   `json:"plan_content"`  // Plan content
 }
 
-// WidgetsVM is the view model for the configurable widgets view
-type WidgetsVM struct {
+// CockpitVM is the view model for the configurable cockpit view
+type CockpitVM struct {
 	BaseViewModel
 	ActiveProfile     string   `json:"active_profile"`
 	AvailableProfiles []string `json:"available_profiles"`
@@ -300,4 +301,42 @@ type ClaudeVM struct {
 
 	// Usage stats (for current session)
 	Usage           *ClaudeUsageVM    `json:"usage,omitempty"`
+}
+
+// DatabaseInfoVM represents a database connection info for display
+type DatabaseInfoVM struct {
+	ID           string `json:"id"`
+	ProjectID    string `json:"project_id"`
+	ProjectName  string `json:"project_name"`
+	Source       string `json:"source"`        // "common", "cli", "backend"
+	Type         string `json:"type"`          // "postgres", "mysql", "sqlite"
+	DatabaseName string `json:"database_name"`
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	User         string `json:"user"`
+}
+
+// DatabaseSessionVM represents a database session for display
+type DatabaseSessionVM struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	ProjectID    string    `json:"project_id"`
+	ProjectName  string    `json:"project_name"`
+	DatabaseName string    `json:"database_name"`
+	DatabaseType string    `json:"database_type"`
+	State        string    `json:"state"` // idle, running, error
+	CreatedAt    time.Time `json:"created_at"`
+	LastActive   string    `json:"last_active"`   // Formatted date string
+	LastActiveAt time.Time `json:"last_active_at"`
+	IsActive     bool      `json:"is_active"`
+}
+
+// DatabaseVM is the view model for the database view
+type DatabaseVM struct {
+	BaseViewModel
+	Databases         []DatabaseInfoVM    `json:"databases"`
+	Sessions          []DatabaseSessionVM `json:"sessions"`
+	ActiveSessionID   string              `json:"active_session_id,omitempty"`
+	ActiveSession     *DatabaseSessionVM  `json:"active_session,omitempty"`
+	FilterProject     string              `json:"filter_project"`
 }

@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,52 +63,29 @@ func (s *Session) DisplayName() string {
 
 // SessionSummary is a lightweight version for listing
 type SessionSummary struct {
-	ID              string       `json:"id"`
-	Name            string       `json:"name"`
-	ProjectID       string       `json:"project_id"`
-	ProjectName     string       `json:"project_name"`
-	WorkDir         string       `json:"work_dir"`
-	State           SessionState `json:"state"`
-	MessageCount    int          `json:"message_count"`
-	LastActiveAt    time.Time    `json:"last_active_at"`
-	LastUserMessage string       `json:"last_user_message"` // Last user message (truncated)
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	ProjectID    string       `json:"project_id"`
+	ProjectName  string       `json:"project_name"`
+	WorkDir      string       `json:"work_dir"`
+	State        SessionState `json:"state"`
+	MessageCount int          `json:"message_count"`
+	CreatedAt    time.Time    `json:"created_at"`
+	LastActiveAt time.Time    `json:"last_active_at"`
 }
 
 // ToSummary converts a Session to SessionSummary
 func (s *Session) ToSummary() SessionSummary {
-	// Find last real user message (skip system/internal messages)
-	lastUserMsg := ""
-	for i := len(s.Messages) - 1; i >= 0; i-- {
-		if s.Messages[i].Role == "user" {
-			content := s.Messages[i].Content
-			// Skip system/internal messages and continuation summaries
-			if strings.HasPrefix(content, "[") ||
-				strings.HasPrefix(content, "<") ||
-				strings.HasPrefix(content, "Warmup") ||
-				strings.HasPrefix(content, "This session is being continued") ||
-				content == "Goodbye!" ||
-				len(content) < 3 {
-				continue
-			}
-			lastUserMsg = content
-			// Truncate to reasonable length
-			if len(lastUserMsg) > 100 {
-				lastUserMsg = lastUserMsg[:100] + "..."
-			}
-			break
-		}
-	}
-
 	return SessionSummary{
-		ID:              s.ID,
-		Name:            s.DisplayName(), // Use custom name if set
-		ProjectID:       s.ProjectID,
-		ProjectName:     s.ProjectName,
-		WorkDir:         s.WorkDir,
-		State:           s.State,
-		MessageCount:    len(s.Messages),
-		LastActiveAt:    s.LastActiveAt,
-		LastUserMessage: lastUserMsg,
+		ID:           s.ID,
+		Name:         s.DisplayName(), // Use custom name if set
+		ProjectID:    s.ProjectID,
+		ProjectName:  s.ProjectName,
+		WorkDir:      s.WorkDir,
+		State:        s.State,
+		MessageCount: len(s.Messages),
+		CreatedAt:    s.CreatedAt,
+		LastActiveAt: s.LastActiveAt,
 	}
 }
 

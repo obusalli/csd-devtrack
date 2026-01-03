@@ -1,0 +1,313 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	"csd-devtrack/cli/modules/ui/core"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Database view modes
+const (
+	DatabaseModeSession = "sessions"
+)
+
+// databaseTreeItem represents an item in the database tree
+type databaseTreeItem struct {
+	IsProject  bool   // true = project, false = database
+	ProjectID  string // Project ID
+	DatabaseID string // Database ID (empty for projects)
+}
+
+// renderDatabase renders the Database view
+// Layout: Terminal on left (70%), Sessions panel on right (30%)
+func (m *Model) renderDatabase(width, height int) string {
+	// Check if database service found any databases
+	if m.state.Database == nil || len(m.state.Database.Databases) == 0 {
+		return m.renderDatabaseNoDatabases(width, height)
+	}
+
+	// Full height for content (no tabs)
+	contentHeight := height - 2
+
+	// Calculate sessions panel width using TreeMenu
+	sessionsWidth := m.databaseTreeMenu.CalcWidth()
+	termWidth := width - sessionsWidth - GapHorizontal
+
+	// Session info takes some space at bottom
+	infoHeight := 8
+	treeHeight := contentHeight - infoHeight
+
+	// Configure and render TreeMenu
+	m.databaseTreeMenu.SetSize(sessionsWidth, treeHeight)
+	m.databaseTreeMenu.SetFocused(m.focusArea == FocusDetail)
+
+	termPanel := m.renderDatabaseTerminalPanel(termWidth, contentHeight)
+	treePanel := m.databaseTreeMenu.Render()
+	infoPanel := m.renderDatabaseSessionInfo(sessionsWidth, infoHeight)
+	sessionsPanel := lipgloss.JoinVertical(lipgloss.Left, treePanel, infoPanel)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		termPanel,
+		strings.Repeat(" ", GapHorizontal),
+		sessionsPanel,
+	)
+}
+
+// renderDatabaseSessionInfo renders selected session information
+func (m *Model) renderDatabaseSessionInfo(width, height int) string {
+	// Get selected item from TreeMenu
+	var sess *core.DatabaseSessionVM
+	var db *core.DatabaseInfoVM
+	if m.databaseTreeMenu != nil {
+		if item := m.databaseTreeMenu.SelectedItem(); item != nil {
+			if s, ok := item.Data.(core.DatabaseSessionVM); ok {
+				sess = &s
+			} else if d, ok := item.Data.(core.DatabaseInfoVM); ok {
+				db = &d
+			}
+		}
+	}
+
+	// Use same border style as TreeMenu for alignment
+	borderStyle := UnfocusedBorderStyle
+
+	// Adjust width for right-side panel border
+	renderWidth := width - 5
+	if renderWidth < 20 {
+		renderWidth = 20
+	}
+
+	if sess == nil && db == nil {
+		// No item selected - show placeholder
+		content := lipgloss.NewStyle().
+			Foreground(ColorMuted).
+			Render("Select a database")
+
+		return borderStyle.
+			Width(renderWidth).
+			Height(height).
+			Align(lipgloss.Center, lipgloss.Center).
+			Render(content)
+	}
+
+	// Inner dimensions (inside border)
+	innerWidth := renderWidth - 2
+	innerHeight := height - 2
+	contentWidth := innerWidth - 2 // padding
+
+	mutedStyle := lipgloss.NewStyle().Foreground(ColorMuted)
+	valueStyle := lipgloss.NewStyle().Foreground(ColorText)
+
+	var lines []string
+
+	if sess != nil {
+		// Session selected - show session info
+		relTime := formatRelativeTime(sess.LastActiveAt)
+		infoLine := relTime + " · " + sess.DatabaseType
+		lines = append(lines, mutedStyle.Render(infoLine))
+
+		// Database name
+		lines = append(lines, valueStyle.Render("DB: "+sess.DatabaseName))
+
+		// Duration
+		duration := formatDuration(sess.CreatedAt, sess.LastActiveAt)
+		lines = append(lines, valueStyle.Render("Duration: "+duration))
+	} else if db != nil {
+		// Database selected - show database info
+		lines = append(lines, valueStyle.Render(fmt.Sprintf("Type: %s", db.Type)))
+		lines = append(lines, valueStyle.Render(fmt.Sprintf("DB: %s", db.DatabaseName)))
+		lines = append(lines, valueStyle.Render(fmt.Sprintf("Host: %s:%d", db.Host, db.Port)))
+		if db.User != "" {
+			lines = append(lines, mutedStyle.Render(fmt.Sprintf("User: %s", db.User)))
+		}
+		lines = append(lines, mutedStyle.Render(fmt.Sprintf("Source: %s", db.Source)))
+	}
+
+	// Pad each line to exact width
+	for i, line := range lines {
+		lineWidth := lipgloss.Width(line)
+		if lineWidth < contentWidth {
+			lines[i] = line + strings.Repeat(" ", contentWidth-lineWidth)
+		}
+	}
+
+	// Pad to exact height
+	for len(lines) < innerHeight {
+		lines = append(lines, strings.Repeat(" ", contentWidth))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, lines...)
+
+	return borderStyle.
+		Width(renderWidth).
+		Height(height).
+		Padding(0, 1).
+		Render(content)
+}
+
+// renderDatabaseNoDatabases shows message when no databases are found
+func (m *Model) renderDatabaseNoDatabases(width, height int) string {
+	style := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Align(lipgloss.Center, lipgloss.Center)
+
+	icon := lipgloss.NewStyle().
+		Foreground(ColorWarning).
+		Bold(true).
+		Render("⚠")
+
+	title := lipgloss.NewStyle().
+		Foreground(ColorText).
+		Bold(true).
+		Render("No Databases Found")
+
+	msg := lipgloss.NewStyle().
+		Foreground(ColorMuted).
+		Render("Add database configuration to your project YAML files:\ncommon.database.url or backend.database.url")
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		icon,
+		"",
+		title,
+		"",
+		msg,
+	)
+
+	return style.Render(content)
+}
+
+// renderDatabaseTerminalPanel renders the main terminal area (terminal or placeholder)
+func (m *Model) renderDatabaseTerminalPanel(width, height int) string {
+	// Show terminal panel if there's an active session with a running terminal
+	if m.databaseActiveSession != "" && m.terminalManager != nil {
+		if t := m.terminalManager.Get(m.databaseActiveSession); t != nil && t.IsRunning() {
+			return m.renderTerminalPanel(t, width, height)
+		}
+	}
+
+	// No terminal running - show placeholder
+	style := UnfocusedBorderStyle
+	if m.focusArea == FocusMain {
+		style = FocusedBorderStyle
+	}
+
+	var message string
+	if m.databaseActiveSession == "" {
+		message = "Select a database and press 'n' to create a session"
+	} else {
+		message = "Press Enter to connect to database"
+	}
+
+	content := lipgloss.NewStyle().
+		Foreground(ColorMuted).
+		Align(lipgloss.Center).
+		Width(width - 4).
+		Render(message)
+
+	return style.
+		Width(width - 2).
+		Height(height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(content)
+}
+
+// buildDatabaseTreeItems builds the tree menu items for database view
+func (m *Model) buildDatabaseTreeItems() []TreeMenuItem {
+	if m.state.Database == nil {
+		return nil
+	}
+
+	// Group databases by project
+	projectDatabases := make(map[string][]core.DatabaseInfoVM)
+	projectNames := make(map[string]string)
+
+	for _, db := range m.state.Database.Databases {
+		projectDatabases[db.ProjectID] = append(projectDatabases[db.ProjectID], db)
+		projectNames[db.ProjectID] = db.ProjectName
+	}
+
+	// Group sessions by project
+	projectSessions := make(map[string][]core.DatabaseSessionVM)
+	for _, sess := range m.state.Database.Sessions {
+		projectSessions[sess.ProjectID] = append(projectSessions[sess.ProjectID], sess)
+	}
+
+	// Get sorted project IDs
+	var projectIDs []string
+	for pid := range projectDatabases {
+		projectIDs = append(projectIDs, pid)
+	}
+
+	var items []TreeMenuItem
+
+	for _, projectID := range projectIDs {
+		projectName := projectNames[projectID]
+		databases := projectDatabases[projectID]
+		sessions := projectSessions[projectID]
+
+		// Project header
+		projectIcon := "📁"
+		itemCount := len(databases) + len(sessions)
+
+		projectItem := TreeMenuItem{
+			ID:        "project:" + projectID,
+			Label:     projectName,
+			Icon:      projectIcon,
+			IconColor: ColorSecondary,
+			Count:     itemCount,
+			Data: databaseTreeItem{
+				IsProject: true,
+				ProjectID: projectID,
+			},
+		}
+
+		// Add databases as children
+		for _, db := range databases {
+			dbIcon := "🗄️"
+			switch db.Type {
+			case "postgres":
+				dbIcon = "🐘"
+			case "mysql":
+				dbIcon = "🐬"
+			case "sqlite":
+				dbIcon = "📦"
+			}
+
+			dbItem := TreeMenuItem{
+				ID:        "db:" + db.ID,
+				Label:     db.DatabaseName,
+				Icon:      dbIcon,
+				IconColor: ColorMuted,
+				Data:      db,
+			}
+			projectItem.Children = append(projectItem.Children, dbItem)
+		}
+
+		// Add sessions as children
+		for _, sess := range sessions {
+			sessionIcon := "⚡"
+			iconColor := ColorMuted
+			if sess.State == "running" {
+				iconColor = ColorSuccess
+			}
+
+			sessionItem := TreeMenuItem{
+				ID:        "session:" + sess.ID,
+				Label:     sess.Name,
+				Icon:      sessionIcon,
+				IconColor: iconColor,
+				IsActive:  sess.ID == m.databaseActiveSession,
+				Data:      sess,
+			}
+			projectItem.Children = append(projectItem.Children, sessionItem)
+		}
+
+		items = append(items, projectItem)
+	}
+
+	return items
+}

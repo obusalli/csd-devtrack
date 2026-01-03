@@ -1,6 +1,8 @@
 package core
 
 import (
+	"time"
+
 	"csd-devtrack/cli/modules/core/projects"
 )
 
@@ -56,6 +58,14 @@ const (
 	EventClaudeApprovePermission EventType = "claude_approve_permission"
 	EventClaudeDenyPermission    EventType = "claude_deny_permission"
 	EventClaudeAnswerQuestion EventType = "claude_answer_question"
+
+	// Database events
+	EventDatabaseCreateSession  EventType = "database_create_session"
+	EventDatabaseSelectSession  EventType = "database_select_session"
+	EventDatabaseDeleteSession  EventType = "database_delete_session"
+	EventDatabaseRenameSession  EventType = "database_rename_session"
+	EventDatabaseStopSession    EventType = "database_stop_session"
+	EventDatabaseRefresh        EventType = "database_refresh"
 
 	// UI state events
 	EventFilter          EventType = "filter"
@@ -147,6 +157,56 @@ func NewNotification(ntype NotificationType, title, message string) *Notificatio
 		Duration:    5,
 		Dismissable: true,
 	}
+}
+
+// ============================================
+// Header Events (transient status messages)
+// ============================================
+
+// HeaderEventType identifies the type of header event
+type HeaderEventType string
+
+const (
+	HeaderEventInfo    HeaderEventType = "info"
+	HeaderEventSuccess HeaderEventType = "success"
+	HeaderEventWarning HeaderEventType = "warning"
+	HeaderEventError   HeaderEventType = "error"
+)
+
+// HeaderEvent represents a transient event to display in the header
+type HeaderEvent struct {
+	Type      HeaderEventType `json:"type"`
+	Message   string          `json:"message"`
+	Icon      string          `json:"icon"`       // Optional icon prefix
+	CreatedAt time.Time       `json:"created_at"` // For expiration
+	Duration  time.Duration   `json:"duration"`   // How long to display (default 3s)
+}
+
+// NewHeaderEvent creates a new header event with default 3s duration
+func NewHeaderEvent(etype HeaderEventType, message string) *HeaderEvent {
+	icon := ""
+	switch etype {
+	case HeaderEventSuccess:
+		icon = "✓"
+	case HeaderEventWarning:
+		icon = "⚠"
+	case HeaderEventError:
+		icon = "✗"
+	case HeaderEventInfo:
+		icon = "●"
+	}
+	return &HeaderEvent{
+		Type:      etype,
+		Message:   message,
+		Icon:      icon,
+		CreatedAt: time.Now(),
+		Duration:  3 * time.Second,
+	}
+}
+
+// IsExpired returns true if the event has exceeded its display duration
+func (e *HeaderEvent) IsExpired() bool {
+	return time.Since(e.CreatedAt) > e.Duration
 }
 
 // ============================================
