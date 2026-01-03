@@ -1359,6 +1359,7 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 
 	// Switch view
 	m.sidebarIndex = index
+	m.sidebarMenu.SetSelectedIndex(index)
 	m.currentView = viewType
 
 	// Restore saved state for new view
@@ -4148,6 +4149,7 @@ func (m *Model) buildSelected() tea.Cmd {
 	// Switch to Build view to show output
 	m.currentView = core.VMBuild
 	m.sidebarIndex = 2 // Build view index
+	m.sidebarMenu.SetSelectedIndex(2)
 
 	return m.sendEvent(core.NewEvent(core.EventStartBuild).WithProject(projectID).WithComponent(component))
 }
@@ -4156,6 +4158,7 @@ func (m *Model) buildAll() tea.Cmd {
 	// Switch to Build view to show output
 	m.currentView = core.VMBuild
 	m.sidebarIndex = 2 // Build view index
+	m.sidebarMenu.SetSelectedIndex(2)
 	return m.sendEvent(core.NewEvent(core.EventBuildAll))
 }
 
@@ -4239,6 +4242,7 @@ func (m *Model) viewLogs() tea.Cmd {
 	}
 	m.currentView = core.VMLogs
 	m.sidebarIndex = 4 // Logs view index
+	m.sidebarMenu.SetSelectedIndex(4)
 	return m.sendEvent(core.NewEvent(core.EventViewLogs).WithProject(projectID))
 }
 
@@ -4253,6 +4257,7 @@ func (m *Model) viewLogsForSelected() tea.Cmd {
 	// Switch to Logs view
 	m.currentView = core.VMLogs
 	m.sidebarIndex = 4 // Logs view index
+	m.sidebarMenu.SetSelectedIndex(4)
 
 	// Set source filter to show only this component's logs
 	if component != "" {

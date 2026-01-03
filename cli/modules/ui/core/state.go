@@ -7,10 +7,10 @@ import (
 
 // AppState represents the global application state
 type AppState struct {
-	mu sync.RWMutex
+	mu sync.RWMutex `json:"-"`
 
 	// Current view
-	CurrentView ViewModelType
+	CurrentView ViewModelType `json:"current_view"`
 
 	// View models (cached)
 	Dashboard    *DashboardVM
@@ -28,11 +28,11 @@ type AppState struct {
 	Capabilities *CapabilitiesVM
 
 	// Global state
-	IsConnected   bool
-	Initializing  bool      // True while presenter is initializing (project loading)
-	GitLoading    bool      // True while git info is loading in background
-	LastRefresh   time.Time
-	Notifications []*Notification
+	IsConnected   bool      `json:"is_connected"`
+	Initializing  bool      `json:"initializing"`   // True while presenter is initializing (project loading)
+	GitLoading    bool      `json:"git_loading"`    // True while git info is loading in background
+	LastRefresh   time.Time `json:"last_refresh"`
+	Notifications []*Notification `json:"notifications,omitempty"`
 
 	// Header events queue (ticker-style scrolling in header center)
 	HeaderEvents []*HeaderEvent

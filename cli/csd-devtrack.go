@@ -403,7 +403,7 @@ func runAsDaemon() {
 			for _, db := range state.Database.Databases {
 				dbNames = append(dbNames, fmt.Sprintf("%s/%s", db.ProjectName, db.DatabaseName))
 			}
-			log.Info("Databases found: %s", strings.Join(dbNames, ", "))
+			log.Info("Database Configs found: %s", strings.Join(dbNames, ", "))
 		} else {
 			log.Info("No databases configured")
 		}

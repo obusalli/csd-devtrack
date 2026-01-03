@@ -392,7 +392,15 @@ func (s *Server) sendStateOnly(conn net.Conn) {
 		return
 	}
 
+	// Skip refresh if still initializing (avoids deadlock)
+	// Just send current state - it will be updated after init completes
 	state := s.presenter.GetState()
+	if state != nil && !state.Initializing {
+		_ = s.presenter.Refresh()
+		// Re-get state after refresh
+		state = s.presenter.GetState()
+	}
+
 	if state == nil {
 		return
 	}

@@ -326,6 +326,9 @@ func (m *Model) renderContextPanel(width, height int) string {
 	innerWidth := width - 4 // Account for border and padding
 	var lines []string
 
+	// Calculate available lines for content (subtract border)
+	availableLines := height - 2
+
 	// Title (aligned with MENU)
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -353,11 +356,140 @@ func (m *Model) renderContextPanel(width, height int) string {
 		projectStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true).Padding(0, 2)
 		lines = append(lines, projectStyle.Render(truncate(activeProject.Name, innerWidth-4)))
 
+		// Collect all data first to calculate space distribution
+		type fileEntry struct {
+			path   string
+			status string
+			prefix string
+		}
+		var gitFiles []fileEntry
+		hasGitInfo := activeProject.GitBranch != ""
+
+		if hasGitInfo && m.state.Git != nil {
+			for _, g := range m.state.Git.Projects {
+				if g.ProjectID == activeProject.ID && !g.IsClean {
+					for _, f := range g.Staged {
+						gitFiles = append(gitFiles, fileEntry{f, "staged", "A"})
+					}
+					for _, f := range g.Modified {
+						gitFiles = append(gitFiles, fileEntry{f, "modified", "M"})
+					}
+					for _, f := range g.Deleted {
+						gitFiles = append(gitFiles, fileEntry{f, "deleted", "D"})
+					}
+					for _, f := range g.Untracked {
+						gitFiles = append(gitFiles, fileEntry{f, "untracked", "?"})
+					}
+					break
+				}
+			}
+		}
+
+		var projectProcesses []core.ProcessVM
+		if m.state.Processes != nil {
+			for _, p := range m.state.Processes.Processes {
+				if p.ProjectID == activeProject.ID {
+					projectProcesses = append(projectProcesses, p)
+				}
+			}
+		}
+
+		var recentLogs []core.LogLineVM
+		if m.state.Logs != nil && len(m.state.Logs.Lines) > 0 {
+			for i := len(m.state.Logs.Lines) - 1; i >= 0 && len(recentLogs) < 10; i-- {
+				log := m.state.Logs.Lines[i]
+				if strings.HasPrefix(log.Source, activeProject.ID) || strings.HasPrefix(log.Source, activeProject.Name) {
+					recentLogs = append(recentLogs, log)
+				}
+			}
+		}
+
+		// Calculate fixed lines usage:
+		// - Title + separator: 2 (already added)
+		// - Project name: 1 (already added)
+		// - Git section header + empty line: 2
+		// - Git branch + status: 2 (if hasGitInfo)
+		// - Processes section header + empty line: 2
+		// - Logs section header + empty line: 2 (if logs exist)
+		fixedLines := 3 // title + separator + project name
+		if hasGitInfo {
+			fixedLines += 4 // empty + header + branch + status
+		} else {
+			fixedLines += 3 // empty + header + "No git info"
+		}
+		fixedLines += 2 // empty + processes header
+
+		hasLogs := len(recentLogs) > 0
+		if hasLogs {
+			fixedLines += 2 // empty + logs header
+		}
+
+		// Calculate remaining lines for dynamic content
+		remainingLines := availableLines - fixedLines
+		if remainingLines < 0 {
+			remainingLines = 0
+		}
+
+		// Distribute remaining lines among sections (git files, processes, logs)
+		// Priority: processes (important), git files (useful), logs (nice to have)
+		numSections := 0
+		if len(gitFiles) > 0 {
+			numSections++
+		}
+		if len(projectProcesses) > 0 {
+			numSections++
+		} else {
+			remainingLines-- // "○ none" takes 1 line
+		}
+		if hasLogs {
+			numSections++
+		}
+
+		// Calculate max items per section
+		var maxGitFiles, maxProcesses, maxLogs int
+		if numSections > 0 {
+			basePerSection := remainingLines / numSections
+			extra := remainingLines % numSections
+
+			// Assign base + extra (prioritize processes, then git, then logs)
+			if len(projectProcesses) > 0 {
+				maxProcesses = basePerSection
+				if extra > 0 {
+					maxProcesses++
+					extra--
+				}
+			}
+			if len(gitFiles) > 0 {
+				maxGitFiles = basePerSection
+				if extra > 0 {
+					maxGitFiles++
+					extra--
+				}
+			}
+			if hasLogs {
+				maxLogs = basePerSection
+				if extra > 0 {
+					maxLogs++
+				}
+			}
+		}
+
+		// Ensure minimums
+		if maxGitFiles < 1 && len(gitFiles) > 0 {
+			maxGitFiles = 1
+		}
+		if maxProcesses < 1 && len(projectProcesses) > 0 {
+			maxProcesses = 1
+		}
+		if maxLogs < 1 && hasLogs {
+			maxLogs = 1
+		}
+
 		// ─── Git Status ───
 		lines = append(lines, "")
 		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Git Status ─"))
 
-		if activeProject.GitBranch != "" {
+		if hasGitInfo {
 			// Branch
 			branchLine := labelStyle.Render("  ⎇ ") + GitBranchStyle.Render(truncate(activeProject.GitBranch, innerWidth-6))
 			lines = append(lines, branchLine)
@@ -380,66 +512,46 @@ func (m *Model) renderContextPanel(width, height int) string {
 			}
 			lines = append(lines, statusIcon+statusText+syncText)
 
-			// Recent files (up to 5) - same format as Git view
-			if m.state.Git != nil {
-				for _, g := range m.state.Git.Projects {
-					if g.ProjectID == activeProject.ID && !g.IsClean {
-						// Collect all files with their status (same order as Git view)
-						type fileEntry struct {
-							path   string
-							status string
-							prefix string
-						}
-						var files []fileEntry
-						for _, f := range g.Staged {
-							files = append(files, fileEntry{f, "staged", "A"})
-						}
-						for _, f := range g.Modified {
-							files = append(files, fileEntry{f, "modified", "M"})
-						}
-						for _, f := range g.Deleted {
-							files = append(files, fileEntry{f, "deleted", "D"})
-						}
-						for _, f := range g.Untracked {
-							files = append(files, fileEntry{f, "untracked", "?"})
-						}
-
-						// Show up to 5 files
-						maxFiles := 5
-						if len(files) < maxFiles {
-							maxFiles = len(files)
-						}
-						for i := 0; i < maxFiles; i++ {
-							f := files[i]
-							// Get just filename, not full path
-							name := f.path
-							if idx := strings.LastIndex(name, "/"); idx >= 0 {
-								name = name[idx+1:]
-							}
-							name = truncate(name, innerWidth-6)
-
-							var statusStyle lipgloss.Style
-							switch f.status {
-							case "staged":
-								statusStyle = StatusSuccess
-							case "modified":
-								statusStyle = StatusWarning
-							case "deleted":
-								statusStyle = StatusError
-							default:
-								statusStyle = SubtitleStyle
-							}
-							fileLine := fmt.Sprintf("  %s %s", statusStyle.Render(f.prefix), name)
-							lines = append(lines, fileLine)
-						}
-
-						// Show remaining count if any
-						remaining := len(files) - maxFiles
-						if remaining > 0 {
-							lines = append(lines, SubtitleStyle.Render(fmt.Sprintf("    +%d more", remaining)))
-						}
-						break
+			// Git files with dynamic limit
+			if len(gitFiles) > 0 {
+				// Reserve 1 line for "+N more" if needed
+				showFiles := maxGitFiles
+				if len(gitFiles) > maxGitFiles && maxGitFiles > 0 {
+					showFiles = maxGitFiles - 1
+					if showFiles < 1 {
+						showFiles = 1
 					}
+				}
+				if showFiles > len(gitFiles) {
+					showFiles = len(gitFiles)
+				}
+
+				for i := 0; i < showFiles; i++ {
+					f := gitFiles[i]
+					name := f.path
+					if idx := strings.LastIndex(name, "/"); idx >= 0 {
+						name = name[idx+1:]
+					}
+					name = truncate(name, innerWidth-6)
+
+					var statusStyle lipgloss.Style
+					switch f.status {
+					case "staged":
+						statusStyle = StatusSuccess
+					case "modified":
+						statusStyle = StatusWarning
+					case "deleted":
+						statusStyle = StatusError
+					default:
+						statusStyle = SubtitleStyle
+					}
+					fileLine := fmt.Sprintf("  %s %s", statusStyle.Render(f.prefix), name)
+					lines = append(lines, fileLine)
+				}
+
+				remaining := len(gitFiles) - showFiles
+				if remaining > 0 {
+					lines = append(lines, SubtitleStyle.Render(fmt.Sprintf("    +%d more", remaining)))
 				}
 			}
 		} else {
@@ -450,22 +562,20 @@ func (m *Model) renderContextPanel(width, height int) string {
 		lines = append(lines, "")
 		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Processes ─"))
 
-		var projectProcesses []core.ProcessVM
-		if m.state.Processes != nil {
-			for _, p := range m.state.Processes.Processes {
-				if p.ProjectID == activeProject.ID {
-					projectProcesses = append(projectProcesses, p)
+		if len(projectProcesses) > 0 {
+			// Reserve 1 line for "+N more" if needed
+			showProcs := maxProcesses
+			if len(projectProcesses) > maxProcesses && maxProcesses > 0 {
+				showProcs = maxProcesses - 1
+				if showProcs < 1 {
+					showProcs = 1
 				}
 			}
-		}
-
-		if len(projectProcesses) > 0 {
-			// Show up to 3 most recent processes
-			maxProcs := 3
-			if len(projectProcesses) < maxProcs {
-				maxProcs = len(projectProcesses)
+			if showProcs > len(projectProcesses) {
+				showProcs = len(projectProcesses)
 			}
-			for i := 0; i < maxProcs; i++ {
+
+			for i := 0; i < showProcs; i++ {
 				p := projectProcesses[i]
 				var icon string
 				var style lipgloss.Style
@@ -483,36 +593,35 @@ func (m *Model) renderContextPanel(width, height int) string {
 				name := truncate(string(p.Component), innerWidth-8)
 				lines = append(lines, style.Render(fmt.Sprintf("  %s %s", icon, name)))
 			}
-			if len(projectProcesses) > maxProcs {
-				lines = append(lines, SubtitleStyle.Render(fmt.Sprintf("    +%d more", len(projectProcesses)-maxProcs)))
+
+			remaining := len(projectProcesses) - showProcs
+			if remaining > 0 {
+				lines = append(lines, SubtitleStyle.Render(fmt.Sprintf("    +%d more", remaining)))
 			}
 		} else {
 			lines = append(lines, labelStyle.Render("  ○ none"))
 		}
 
 		// ─── Recent Logs ───
-		if m.state.Logs != nil && len(m.state.Logs.Lines) > 0 {
+		if hasLogs {
 			lines = append(lines, "")
 			lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Recent Logs ─"))
 
-			// Get last 3 logs for this project
-			var recentLogs []core.LogLineVM
-			for i := len(m.state.Logs.Lines) - 1; i >= 0 && len(recentLogs) < 3; i-- {
-				log := m.state.Logs.Lines[i]
-				// Filter by project if we have one
-				if activeProject != nil {
-					if strings.HasPrefix(log.Source, activeProject.ID) || strings.HasPrefix(log.Source, activeProject.Name) {
-						recentLogs = append(recentLogs, log)
-					}
-				} else {
-					recentLogs = append(recentLogs, log)
+			// Reserve 1 line for "+N more" if needed
+			showLogs := maxLogs
+			if len(recentLogs) > maxLogs && maxLogs > 0 {
+				showLogs = maxLogs - 1
+				if showLogs < 1 {
+					showLogs = 1
 				}
+			}
+			if showLogs > len(recentLogs) {
+				showLogs = len(recentLogs)
 			}
 
 			// Show logs in chronological order (oldest first)
-			for i := len(recentLogs) - 1; i >= 0; i-- {
+			for i := showLogs - 1; i >= 0; i-- {
 				log := recentLogs[i]
-				// Level icon
 				levelIcon := "·"
 				levelStyle := labelStyle
 				switch log.Level {
@@ -523,14 +632,14 @@ func (m *Model) renderContextPanel(width, height int) string {
 					levelIcon = "!"
 					levelStyle = StatusWarning
 				}
-				// Extract component type from Source (format: "project/component")
+
 				compType := ""
 				if parts := strings.Split(log.Source, "/"); len(parts) >= 2 {
 					compType = parts[len(parts)-1]
 				} else {
 					compType = log.Source
 				}
-				// Short component label
+
 				compLabel := ""
 				switch compType {
 				case "backend":
@@ -546,11 +655,16 @@ func (m *Model) renderContextPanel(width, height int) string {
 						compLabel = "[" + truncate(compType, 2) + "]"
 					}
 				}
-				// Truncate message to fit (account for label width)
-				labelWidth := len(compLabel) + 1 // +1 for space
+
+				labelWidth := len(compLabel) + 1
 				msg := truncate(log.Message, innerWidth-4-labelWidth)
 				compLabelStyled := lipgloss.NewStyle().Foreground(ColorSecondary).Render(compLabel)
 				lines = append(lines, levelStyle.Render("  "+levelIcon+" ")+compLabelStyled+" "+labelStyle.Render(msg))
+			}
+
+			remaining := len(recentLogs) - showLogs
+			if remaining > 0 {
+				lines = append(lines, SubtitleStyle.Render(fmt.Sprintf("    +%d more", remaining)))
 			}
 		}
 
