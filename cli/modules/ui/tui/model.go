@@ -821,15 +821,10 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 
 	// Focus navigation - consistent across all views:
-	// Shift+Tab: always go to sidebar (except Cockpit: previous widget)
+	// Shift+Tab: always go to sidebar
 	// Tab: cycle between other panels (Main <-> Detail) or widgets in Cockpit
 	case key.Matches(msg, m.keys.ShiftTab):
-		// Cockpit: Shift+Tab cycles to previous widget
-		if m.currentView == core.VMCockpit && !m.cockpitConfigMode {
-			m.navigateCockpitPrev()
-			return nil
-		}
-		// Other views: Shift+Tab always goes to sidebar (from any panel)
+		// Shift+Tab always goes to sidebar (from any panel)
 		if m.focusArea != FocusSidebar {
 			m.focusArea = FocusSidebar
 			m.terminalMode = false
@@ -2407,6 +2402,9 @@ func (m *Model) openClaudeSession() tea.Cmd {
 		m.claudeSessionLoading = true
 		m.claudeChatScroll = 0
 
+		// Update tree immediately so IsActive is set correctly
+		m.updateClaudeTree()
+
 		// Automatically activate input mode when opening a session
 		m.claudeInputActive = true
 		m.claudeTextInput.Focus()
@@ -2466,6 +2464,9 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 	m.claudeActiveSession = sessionID
 	m.claudeMode = ClaudeModeChat
 
+	// Update tree immediately so IsActive is set correctly
+	m.updateClaudeTree()
+
 	// Switch focus to terminal
 	m.focusArea = FocusMain
 
@@ -2522,6 +2523,9 @@ func (m *Model) switchToSessionByID(sessionID string) tea.Cmd {
 	// Session selected - switch to it and start terminal
 	m.claudeActiveSession = sessionID
 	m.claudeMode = ClaudeModeChat
+
+	// Update tree immediately so IsActive is set correctly
+	m.updateClaudeTree()
 
 	// Switch focus to terminal
 	m.focusArea = FocusMain
@@ -2636,6 +2640,9 @@ func (m *Model) connectToDatabase(databaseID string) tea.Cmd {
 	// Use database ID as the terminal session ID
 	m.databaseActiveSession = databaseID
 
+	// Update tree immediately so IsActive is set correctly
+	m.updateDatabaseMenu()
+
 	// Switch focus to terminal
 	m.focusArea = FocusMain
 
@@ -2695,6 +2702,8 @@ func (m *Model) stopDatabaseTerminal(databaseID string) tea.Cmd {
 	// Clear active session
 	if m.databaseActiveSession == databaseID {
 		m.databaseActiveSession = ""
+		// Update tree immediately so IsActive is cleared
+		m.updateDatabaseMenu()
 	}
 
 	// Header event
@@ -3584,6 +3593,9 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
 		// Set as active session (shows in chat panel)
 		m.claudeActiveSession = sessionID
 		m.claudeMode = ClaudeModeChat
+
+		// Update tree again so IsActive reflects the new session
+		m.updateClaudeTree()
 
 		// Don't start terminal automatically - user will start it when they want to interact
 		// Terminal is started when user presses Enter or types in the session
