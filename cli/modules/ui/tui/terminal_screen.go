@@ -144,7 +144,7 @@ func (t *TerminalScreen) Start(sessionID string) error {
 
 // captureLoop periodically captures screen content
 func (t *TerminalScreen) captureLoop() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {

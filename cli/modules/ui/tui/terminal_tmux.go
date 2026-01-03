@@ -277,7 +277,7 @@ func (t *TerminalTmux) doStart(sessionID string) error {
 
 // captureLoop periodically captures tmux pane content
 func (t *TerminalTmux) captureLoop() {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {

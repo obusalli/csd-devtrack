@@ -663,7 +663,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.lastRefreshTime.IsZero() {
 			m.lastRefreshTime = time.Now()
 		}
-		cmds = append(cmds, m.refreshData)
+		// Note: Do NOT call m.refreshData here - it would create an infinite loop
+		// refreshData is triggered by tickMsg, not by refreshMsg
 
 	case errMsg:
 		m.lastError = msg.Error()
@@ -4554,7 +4555,7 @@ func claudeRefreshCmd() tea.Cmd {
 // terminalRefreshMsg triggers UI refresh for terminal output
 type terminalRefreshMsg struct{}
 
-// scheduleTerminalRefresh schedules a terminal output refresh (30ms for smooth display)
+// scheduleTerminalRefresh schedules a terminal output refresh (100ms for smooth display with lower CPU)
 func (m *Model) scheduleTerminalRefresh() tea.Cmd {
 	// Continue refreshing as long as there's an active running terminal
 	if m.claudeActiveSession == "" || m.terminalManager == nil {
@@ -4563,7 +4564,7 @@ func (m *Model) scheduleTerminalRefresh() tea.Cmd {
 	if t := m.terminalManager.Get(m.claudeActiveSession); t == nil || !t.IsRunning() {
 		return nil
 	}
-	return tea.Tick(time.Millisecond*30, func(t time.Time) tea.Msg {
+	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
 		return terminalRefreshMsg{}
 	})
 }
