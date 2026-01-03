@@ -1234,43 +1234,111 @@ func (m *Model) navigateRight() {
 // pageUp scrolls up one page
 func (m *Model) pageUp() {
 	switch m.focusArea {
+	case FocusSidebar:
+		m.sidebarMenu.PageUp()
+		m.sidebarIndex = m.sidebarMenu.SelectedIndex()
 	case FocusMain:
-		m.mainIndex -= m.visibleMainRows
-		if m.mainIndex < 0 {
-			m.mainIndex = 0
+		// Handle TreeMenu-based views
+		if menu := m.getCurrentMainTreeMenu(); menu != nil {
+			menu.PageUp()
+		} else {
+			m.mainIndex -= m.visibleMainRows
+			if m.mainIndex < 0 {
+				m.mainIndex = 0
+			}
+			m.ensureMainVisible()
 		}
-		m.ensureMainVisible()
 	case FocusDetail:
-		m.detailIndex -= m.visibleDetailRows
-		if m.detailIndex < 0 {
-			m.detailIndex = 0
+		// Handle TreeMenu-based detail panels
+		if menu := m.getCurrentDetailTreeMenu(); menu != nil {
+			menu.PageUp()
+		} else {
+			m.detailIndex -= m.visibleDetailRows
+			if m.detailIndex < 0 {
+				m.detailIndex = 0
+			}
+			m.ensureDetailVisible()
 		}
-		m.ensureDetailVisible()
 	}
 }
 
 // pageDown scrolls down one page
 func (m *Model) pageDown() {
 	switch m.focusArea {
+	case FocusSidebar:
+		m.sidebarMenu.PageDown()
+		m.sidebarIndex = m.sidebarMenu.SelectedIndex()
 	case FocusMain:
-		m.mainIndex += m.visibleMainRows
-		if m.mainIndex >= m.maxMainItems {
-			m.mainIndex = m.maxMainItems - 1
+		// Handle TreeMenu-based views
+		if menu := m.getCurrentMainTreeMenu(); menu != nil {
+			menu.PageDown()
+		} else {
+			m.mainIndex += m.visibleMainRows
+			if m.mainIndex >= m.maxMainItems {
+				m.mainIndex = m.maxMainItems - 1
+			}
+			if m.mainIndex < 0 {
+				m.mainIndex = 0
+			}
+			m.ensureMainVisible()
 		}
-		if m.mainIndex < 0 {
-			m.mainIndex = 0
-		}
-		m.ensureMainVisible()
 	case FocusDetail:
-		m.detailIndex += m.visibleDetailRows
-		if m.detailIndex >= m.maxDetailItems {
-			m.detailIndex = m.maxDetailItems - 1
+		// Handle TreeMenu-based detail panels
+		if menu := m.getCurrentDetailTreeMenu(); menu != nil {
+			menu.PageDown()
+		} else {
+			m.detailIndex += m.visibleDetailRows
+			if m.detailIndex >= m.maxDetailItems {
+				m.detailIndex = m.maxDetailItems - 1
+			}
+			if m.detailIndex < 0 {
+				m.detailIndex = 0
+			}
+			m.ensureDetailVisible()
 		}
-		if m.detailIndex < 0 {
-			m.detailIndex = 0
-		}
-		m.ensureDetailVisible()
 	}
+}
+
+// getCurrentMainTreeMenu returns the TreeMenu for the main panel if applicable
+func (m *Model) getCurrentMainTreeMenu() *TreeMenu {
+	switch m.currentView {
+	case core.VMProjects:
+		return m.projectsMenu
+	case core.VMProcesses:
+		return m.processesMenu
+	case core.VMGit:
+		return m.gitMenu
+	}
+	return nil
+}
+
+// getCurrentDetailTreeMenu returns the TreeMenu for the detail panel if applicable
+func (m *Model) getCurrentDetailTreeMenu() *TreeMenu {
+	switch m.currentView {
+	case core.VMClaude:
+		return m.sessionsTreeMenu
+	case core.VMCodex:
+		return m.codexTreeMenu
+	case core.VMDatabase:
+		return m.databaseTreeMenu
+	case core.VMShell:
+		return m.shellTreeMenu
+	case core.VMCockpit:
+		// Cockpit config mode uses its own menus
+		if m.cockpitConfigMode {
+			switch m.cockpitConfigStep {
+			case "grid":
+				return m.cockpitGridMenu
+			case "widgets":
+				return m.cockpitTypeMenu
+			case "filters":
+				return m.cockpitFilterMenu
+			case "profile":
+				return m.cockpitProfileMenu
+			}
+		}
+	}
+	return nil
 }
 
 // goToStart goes to the start of the current list
@@ -3449,7 +3517,10 @@ func (m *Model) sendEvent(event *core.Event) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
 			if err := m.presenter.HandleEvent(event); err != nil {
-				logger.Error("Event %s failed: %v", event.Type, err)
+				// Ignore "closed network connection" errors - expected during shutdown
+				if !strings.Contains(err.Error(), "closed network connection") {
+					logger.Error("Event %s failed: %v", event.Type, err)
+				}
 			}
 		}()
 		return nil
@@ -4849,6 +4920,7 @@ func (m *Model) ImportTUIState(state *daemon.TUIState) {
 	// Restore current view
 	m.currentView = state.CurrentView
 	m.sidebarIndex = state.SidebarIndex
+	m.sidebarMenu.SetSelectedIndex(state.SidebarIndex)
 
 	// Restore focus state
 	m.focusArea = FocusArea(state.FocusArea)
