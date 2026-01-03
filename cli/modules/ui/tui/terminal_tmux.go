@@ -14,10 +14,11 @@ type TerminalTmux struct {
 	mu sync.RWMutex
 
 	// Session info
-	SessionID  string
-	WorkDir    string
-	ClaudePath string
-	tmuxName   string
+	SessionID        string
+	WorkDir          string
+	ClaudeProjectDir string // Original Claude project directory (e.g., -data-devel-infra-csd-devtrack)
+	ClaudePath       string
+	tmuxName         string
 
 	// Custom command support (for non-Claude terminals like psql)
 	customCmd  string   // Custom command to run (empty = use Claude)
@@ -44,12 +45,12 @@ type TerminalTmux struct {
 }
 
 // NewTerminalTmux creates a new tmux-based terminal for Claude
-func NewTerminalTmux(sessionID, workDir, claudePath string) *TerminalTmux {
-	return NewTerminalTmuxWithPrefix(sessionID, workDir, claudePath, TmuxPrefixClaude)
+func NewTerminalTmux(sessionID, workDir, claudeProjectDir, claudePath string) *TerminalTmux {
+	return NewTerminalTmuxWithPrefix(sessionID, workDir, claudeProjectDir, claudePath, TmuxPrefixClaude)
 }
 
 // NewTerminalTmuxWithPrefix creates a new tmux-based terminal with a specific prefix
-func NewTerminalTmuxWithPrefix(sessionID, workDir, claudePath, prefix string) *TerminalTmux {
+func NewTerminalTmuxWithPrefix(sessionID, workDir, claudeProjectDir, claudePath, prefix string) *TerminalTmux {
 	shortID := sessionID
 	if len(shortID) > 8 {
 		shortID = shortID[:8]
@@ -57,14 +58,15 @@ func NewTerminalTmuxWithPrefix(sessionID, workDir, claudePath, prefix string) *T
 	tmuxName := fmt.Sprintf("%s%s", prefix, shortID)
 
 	return &TerminalTmux{
-		SessionID:  sessionID,
-		WorkDir:    workDir,
-		ClaudePath: claudePath,
-		tmuxName:   tmuxName,
-		width:      80,
-		height:     24,
-		state:      TerminalIdle,
-		stopCh:     make(chan struct{}),
+		SessionID:        sessionID,
+		WorkDir:          workDir,
+		ClaudeProjectDir: claudeProjectDir,
+		ClaudePath:       claudePath,
+		tmuxName:         tmuxName,
+		width:            80,
+		height:           24,
+		state:            TerminalIdle,
+		stopCh:           make(chan struct{}),
 	}
 }
 
@@ -183,6 +185,7 @@ func (t *TerminalTmux) doStart(sessionID string) error {
 	height := t.height
 	tmuxName := t.tmuxName
 	workDir := t.WorkDir
+	claudeProjectDir := t.ClaudeProjectDir
 	claudePath := t.ClaudePath
 	customCmd := t.customCmd
 	customArgs := t.customArgs
@@ -202,9 +205,9 @@ func (t *TerminalTmux) doStart(sessionID string) error {
 		// Build command for Claude
 		// Only use --resume if the session file exists and has content
 		claudeArgs := []string{}
-		if sessionID != "" && isValidUUID(sessionID) {
+		if sessionID != "" && isValidUUID(sessionID) && claudeProjectDir != "" {
 			// Check if session file exists and has content
-			sessionFile := getClaudeSessionFile(workDir, sessionID)
+			sessionFile := getClaudeSessionFile(claudeProjectDir, sessionID)
 			if info, err := os.Stat(sessionFile); err == nil && info.Size() > 0 {
 				// Session has content, resume it
 				claudeArgs = append(claudeArgs, "--resume", sessionID)
@@ -711,10 +714,9 @@ func CleanupOrphanTmuxSessions() int {
 }
 
 // getClaudeSessionFile returns the path to the Claude session file
-func getClaudeSessionFile(workDir, sessionID string) string {
+func getClaudeSessionFile(claudeProjectDir, sessionID string) string {
 	// Claude stores sessions in ~/.claude/projects/<encoded-path>/<session-id>.jsonl
-	// The path is encoded by replacing / with - (e.g., /data/devel/project -> -data-devel-project)
+	// claudeProjectDir is already in the correct format (e.g., -data-devel-infra-csd-devtrack)
 	homeDir, _ := os.UserHomeDir()
-	encodedPath := strings.ReplaceAll(workDir, "/", "-")
-	return fmt.Sprintf("%s/.claude/projects/%s/%s.jsonl", homeDir, encodedPath, sessionID)
+	return fmt.Sprintf("%s/.claude/projects/%s/%s.jsonl", homeDir, claudeProjectDir, sessionID)
 }

@@ -2372,10 +2372,12 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 
 	// Get or create terminal for this session
 	workDir := ""
+	claudeProjectDir := ""
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
 			if sess.ID == sessionID {
 				workDir = sess.WorkDir
+				claudeProjectDir = sess.ClaudeProjectDir
 				break
 			}
 		}
@@ -2385,7 +2387,7 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 		workDir, _ = os.Getwd()
 	}
 
-	t := m.terminalManager.GetOrCreate(sessionID, workDir)
+	t := m.terminalManager.GetOrCreate(sessionID, workDir, claudeProjectDir)
 
 	// Set terminal size
 	headerHeight := 3
@@ -2425,12 +2427,14 @@ func (m *Model) switchToSessionByID(sessionID string) tea.Cmd {
 	// Switch focus to terminal
 	m.focusArea = FocusMain
 
-	// Get work directory for this session
+	// Get work directory and ClaudeProjectDir for this session
 	workDir := ""
+	claudeProjectDir := ""
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
 			if sess.ID == sessionID {
 				workDir = sess.WorkDir
+				claudeProjectDir = sess.ClaudeProjectDir
 				break
 			}
 		}
@@ -2440,7 +2444,7 @@ func (m *Model) switchToSessionByID(sessionID string) tea.Cmd {
 		workDir, _ = os.Getwd()
 	}
 
-	t := m.terminalManager.GetOrCreate(sessionID, workDir)
+	t := m.terminalManager.GetOrCreate(sessionID, workDir, claudeProjectDir)
 
 	// Set terminal size
 	headerHeight := 3

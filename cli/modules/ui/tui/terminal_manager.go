@@ -38,12 +38,12 @@ func NewTerminalManager(claudePath string) *TerminalManager {
 }
 
 // GetOrCreate gets an existing terminal or creates a new one (for Claude)
-func (tm *TerminalManager) GetOrCreate(sessionID, workDir string) TerminalInterface {
-	return tm.GetOrCreateWithPrefix(sessionID, workDir, TmuxPrefixClaude)
+func (tm *TerminalManager) GetOrCreate(sessionID, workDir, claudeProjectDir string) TerminalInterface {
+	return tm.GetOrCreateWithPrefix(sessionID, workDir, claudeProjectDir, TmuxPrefixClaude)
 }
 
 // GetOrCreateWithPrefix gets an existing terminal or creates a new one with a specific prefix
-func (tm *TerminalManager) GetOrCreateWithPrefix(sessionID, workDir, prefix string) TerminalInterface {
+func (tm *TerminalManager) GetOrCreateWithPrefix(sessionID, workDir, claudeProjectDir, prefix string) TerminalInterface {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -52,7 +52,7 @@ func (tm *TerminalManager) GetOrCreateWithPrefix(sessionID, workDir, prefix stri
 	}
 
 	// Use tmux-based terminal (persistent, captures ANSI colors with capture-pane -e)
-	t := NewTerminalTmuxWithPrefix(sessionID, workDir, tm.claudePath, prefix)
+	t := NewTerminalTmuxWithPrefix(sessionID, workDir, claudeProjectDir, tm.claudePath, prefix)
 	tm.terminals[sessionID] = t
 	return t
 }
