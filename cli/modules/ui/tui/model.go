@@ -209,8 +209,12 @@ type Model struct {
 	lastErrorTime time.Time
 
 	// Daemon mode
-	detachable bool // If true, Ctrl+D detaches from TUI (daemon mode)
-	detached   bool // Set to true when user presses Ctrl+D
+	detachable bool // If true, can detach from TUI (daemon mode)
+	detached   bool // Set to true when user detaches
+
+	// Command mode (like screen/tmux - activated with Ctrl+Space)
+	commandMode     bool      // True after Ctrl+Space, waiting for command key
+	commandModeTime time.Time // When command mode was activated (for timeout)
 
 	// State restoration callback (for daemon mode)
 	onStateRestore func()
@@ -486,14 +490,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		// Terminal mode - forward most keys to terminal
-		if m.terminalMode && m.claudeActiveSession != "" {
+		// Works for Claude, Codex, and Database terminals
+		activeTerminalSession := m.claudeActiveSession
+		if activeTerminalSession == "" {
+			activeTerminalSession = m.databaseActiveSession
+		}
+
+		if m.terminalMode && activeTerminalSession != "" {
 			keyStr := msg.String()
+
+			// Ctrl+Tab exits terminal mode (universal exit key)
+			if key.Matches(msg, m.keys.ExitTerminal) {
+				m.terminalMode = false
+				m.focusArea = FocusDetail // Go to sessions panel
+				return m, nil
+			}
 
 			// Tab and Shift+Tab are handled by the global focus navigation
 			// Don't consume them here - let them fall through
 			if keyStr == "tab" || keyStr == "shift+tab" {
 				// Will be handled by key.Matches below
-			} else if t := m.terminalManager.Get(m.claudeActiveSession); t != nil {
+			} else if t := m.terminalManager.Get(activeTerminalSession); t != nil {
 				consumed, _ := t.HandleKey(keyStr)
 				if consumed {
 					return m, nil
@@ -695,6 +712,26 @@ func (m Model) renderInitializingView() string {
 
 // handleKeyPress processes keyboard input
 func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
+	// Command mode handling (like screen/tmux)
+	// Ctrl+Space activates command mode, then next key is the command
+	if key.Matches(msg, m.keys.CommandPrefix) {
+		m.commandMode = true
+		m.commandModeTime = time.Now()
+		return nil
+	}
+
+	// If in command mode, process the command key
+	if m.commandMode {
+		// Timeout after 2 seconds
+		if time.Since(m.commandModeTime) > 2*time.Second {
+			m.commandMode = false
+			// Fall through to normal key handling
+		} else {
+			m.commandMode = false
+			return m.handleCommandKey(msg)
+		}
+	}
+
 	// Handle Cockpit config mode navigation FIRST (before other handlers)
 	if m.currentView == core.VMCockpit && m.cockpitConfigMode {
 		if m.handleCockpitConfigNavigation(msg) {
@@ -728,14 +765,6 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Quit
 	case key.Matches(msg, m.keys.Quit):
 		return tea.Quit
-
-	// Detach (Ctrl+D) - only in daemon mode
-	case key.Matches(msg, m.keys.Detach):
-		if m.detachable {
-			m.detached = true
-			return tea.Quit // Quit the TUI but leave daemon running
-		}
-		return nil // Ignore if not in daemon mode
 
 	// Cancel current build/process (Ctrl+C)
 	case key.Matches(msg, m.keys.Cancel):
@@ -1306,6 +1335,43 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 	return m.sendEvent(core.NavigateEvent(m.currentView))
 }
 
+// handleCommandKey handles command keys after Ctrl+Space prefix
+// Commands: q=quit, d=detach, ?=help
+func (m *Model) handleCommandKey(msg tea.KeyMsg) tea.Cmd {
+	keyStr := msg.String()
+
+	switch keyStr {
+	case "q":
+		// Quit DevTrack
+		return tea.Quit
+
+	case "d":
+		// Detach from DevTrack (daemon mode only)
+		if m.detachable {
+			m.detached = true
+			return tea.Quit
+		}
+		m.lastError = "Detach only available in daemon mode"
+		m.lastErrorTime = time.Now()
+		return nil
+
+	case "?":
+		// Show command help
+		m.showHelp = true
+		return nil
+
+	case "escape", "esc":
+		// Cancel command mode (already cancelled, just return)
+		return nil
+
+	default:
+		// Unknown command
+		m.lastError = fmt.Sprintf("Unknown command: ^Space %s", keyStr)
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+}
+
 // handleEnter handles the Enter key based on focus
 func (m *Model) handleEnter() tea.Cmd {
 	switch m.focusArea {
@@ -1408,6 +1474,19 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			m.lastErrorTime = time.Now()
 		} else if m.state.Capabilities != nil && !m.state.Capabilities.Claude.Available {
 			m.lastError = "claude CLI not found"
+			m.lastErrorTime = time.Now()
+		}
+		return nil
+	case "X":
+		// Codex view (requires tmux + codex)
+		if m.state.Capabilities != nil && m.state.Capabilities.HasCodex() {
+			return m.selectViewByType(core.VMCodex)
+		}
+		if m.state.Capabilities != nil && !m.state.Capabilities.Tmux.Available {
+			m.lastError = "tmux required for Codex view"
+			m.lastErrorTime = time.Now()
+		} else if m.state.Capabilities != nil && !m.state.Capabilities.Codex.Available {
+			m.lastError = "codex CLI not found"
 			m.lastErrorTime = time.Now()
 		}
 		return nil
@@ -1879,8 +1958,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	// Database view specific keys
 	if m.currentView == core.VMDatabase {
 		switch key {
-		case "s":
-			// Stop database terminal
+		case "d":
+			// Disconnect database terminal
 			if m.databaseActiveSession != "" {
 				return m.stopDatabaseTerminal(m.databaseActiveSession)
 			}
