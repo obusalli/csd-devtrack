@@ -231,7 +231,7 @@ func DefaultSettings() *Settings {
 
 		// UI settings
 		Theme:          "dark",
-		RefreshRate:    1000,
+		RefreshRate:    5000, // 5 seconds
 		ShowTimestamps: true,
 	}
 }

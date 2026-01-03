@@ -111,6 +111,9 @@ type Model struct {
 	// Header ticker animation
 	tickerScrollPos int // Current scroll position for header event ticker
 
+	// Context panel refresh tracking
+	lastRefreshTime time.Time // Last time context was refreshed
+
 	// Log filtering
 	logLevelFilter   string // "", "error", "warn", "info", "debug"
 	logSourceFilter  string // "", "project-id", "project-id/component"
@@ -652,6 +655,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handleNotification(msg.notification)
 
 	case refreshMsg:
+		// Update refresh timestamp on initial refresh too
+		if m.lastRefreshTime.IsZero() {
+			m.lastRefreshTime = time.Now()
+		}
 		cmds = append(cmds, m.refreshData)
 
 	case errMsg:
@@ -664,6 +671,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Advance ticker scroll position (for header event animation)
 		m.tickerScrollPos++
+
+		// Update refresh timestamp
+		m.lastRefreshTime = time.Now()
 
 		cmds = append(cmds, m.refreshData, tickCmd())
 
@@ -4451,8 +4461,16 @@ type errMsg struct {
 
 type tickMsg time.Time
 
+// getRefreshRateMs returns the refresh rate in milliseconds from config (default 5000ms)
+func getRefreshRateMs() int {
+	if cfg := config.GetGlobal(); cfg != nil && cfg.Settings != nil && cfg.Settings.RefreshRate > 0 {
+		return cfg.Settings.RefreshRate
+	}
+	return 5000
+}
+
 func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second*2, func(t time.Time) tea.Msg {
+	return tea.Tick(time.Duration(getRefreshRateMs())*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
