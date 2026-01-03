@@ -11,17 +11,20 @@ const (
 	GapVertical   = 1 // Vertical gap between sections
 )
 
-// Color palette
+// Color palette - Aligned with csd-core/frontend theme
 var (
-	ColorPrimary   = lipgloss.Color("#7C3AED") // Purple
-	ColorSecondary = lipgloss.Color("#06B6D4") // Cyan
-	ColorSuccess   = lipgloss.Color("#10B981") // Green
-	ColorWarning   = lipgloss.Color("#F59E0B") // Orange
-	ColorError     = lipgloss.Color("#EF4444") // Red
+	ColorPrimary   = lipgloss.Color("#00d4ff") // Cyan - CSD brand accent
+	ColorSecondary = lipgloss.Color("#1976d2") // Blue
+	ColorSuccess   = lipgloss.Color("#48bb78") // Green
+	ColorWarning   = lipgloss.Color("#ed8936") // Orange
+	ColorError     = lipgloss.Color("#f56565") // Red
+	ColorInfo      = lipgloss.Color("#00d4ff") // Cyan (same as primary)
 	ColorMuted     = lipgloss.Color("#6B7280") // Gray
-	ColorText      = lipgloss.Color("#F9FAFB") // Light
-	ColorBg        = lipgloss.Color("#111827") // Dark
-	ColorBgAlt     = lipgloss.Color("#1F2937") // Dark alt
+	ColorText      = lipgloss.Color("#f7fafc") // Light text
+	ColorTextAlt   = lipgloss.Color("#cbd5e0") // Secondary text
+	ColorBg        = lipgloss.Color("#1e1e2e") // Dark background (csd-core)
+	ColorBgAlt     = lipgloss.Color("#252530") // Dark alt - selection/hover (csd-core)
+	ColorSidebar   = lipgloss.Color("#1a1a25") // Sidebar background (csd-core)
 	ColorBorder    = lipgloss.Color("#374151") // Gray border
 )
 
@@ -163,13 +166,15 @@ var (
 				Foreground(ColorText).
 				Padding(0, 1)
 
-	// Help
+	// Help (with footer background for proper nested styling)
 	HelpKeyStyle = lipgloss.NewStyle().
 			Foreground(ColorSecondary).
+			Background(ColorBgAlt).
 			Bold(true)
 
 	HelpDescStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted)
+			Foreground(ColorMuted).
+			Background(ColorBgAlt)
 
 	// Progress bar
 	ProgressBarFilled = lipgloss.NewStyle().
@@ -291,21 +296,50 @@ func StripShortcutBrackets(label string) (clean string, shortcutPos int) {
 // ApplyShortcutColor applies color to the character at the given position
 // Used after truncation to color the shortcut if still visible
 func ApplyShortcutColor(label string, pos int) string {
+	return ApplyShortcutColorWithBg(label, pos, nil)
+}
+
+// ApplyShortcutColorWithBg applies color to the character at the given position with optional background
+// Used for selected items where the shortcut needs to preserve the selection background
+// When bg is provided, the ENTIRE label gets the background, with the shortcut char also getting the accent color
+func ApplyShortcutColorWithBg(label string, pos int, bg lipgloss.TerminalColor) string {
 	if pos < 0 || pos >= len(label) {
+		// No shortcut, but still apply background if provided
+		if bg != nil {
+			return lipgloss.NewStyle().Background(bg).Render(label)
+		}
 		return label
 	}
 	// Don't color if position is in the "..." suffix
 	if len(label) > 3 && label[len(label)-3:] == "..." && pos >= len(label)-3 {
+		if bg != nil {
+			return lipgloss.NewStyle().Background(bg).Render(label)
+		}
 		return label
 	}
 	runes := []rune(label)
 	if pos >= len(runes) {
+		if bg != nil {
+			return lipgloss.NewStyle().Background(bg).Render(label)
+		}
 		return label
 	}
 	before := string(runes[:pos])
 	char := string(runes[pos])
 	after := string(runes[pos+1:])
-	return before + ShortcutStyle.Render(char) + after
+
+	// Shortcut style with accent color
+	shortcutStyle := ShortcutStyle
+	if bg != nil {
+		shortcutStyle = shortcutStyle.Background(bg)
+	}
+
+	// Background style for non-shortcut parts
+	if bg != nil {
+		bgStyle := lipgloss.NewStyle().Background(bg)
+		return bgStyle.Render(before) + shortcutStyle.Render(char) + bgStyle.Render(after)
+	}
+	return before + shortcutStyle.Render(char) + after
 }
 
 // RenderShortcutLabel renders a label with [X] syntax, using color if supported

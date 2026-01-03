@@ -30,12 +30,17 @@ func (m *Model) renderDatabase(width, height int) string {
 		return m.renderDatabaseNoDatabases(width, height)
 	}
 
-	// Full height for content (no tabs)
-	contentHeight := height - 2
+	// Layout: terminal (1 panel) + sessions (2 stacked panels)
+	// Height: max(1×2, 2×2) = 4
+	// Width: 2 panels × 2 = 4
+	heightBorders := 4
+	widthBorders := 4
+	contentHeight := height - heightBorders
+	availableWidth := width - widthBorders - GapHorizontal
 
 	// Calculate sessions panel width using TreeMenu
 	sessionsWidth := m.databaseTreeMenu.CalcWidth()
-	termWidth := width - sessionsWidth - GapHorizontal
+	termWidth := availableWidth - sessionsWidth
 
 	// Session info takes some space at bottom
 	infoHeight := 8
@@ -45,7 +50,8 @@ func (m *Model) renderDatabase(width, height int) string {
 	m.databaseTreeMenu.SetSize(sessionsWidth, treeHeight)
 	m.databaseTreeMenu.SetFocused(m.focusArea == FocusDetail)
 
-	termPanel := m.renderDatabaseTerminalPanel(termWidth, contentHeight)
+	// Terminal panel has only 1 panel (not 2 stacked like sessions), so add +2
+	termPanel := m.renderDatabaseTerminalPanel(termWidth, contentHeight+2)
 	treePanel := m.databaseTreeMenu.Render()
 	infoPanel := m.renderDatabaseSessionInfo(sessionsWidth, infoHeight)
 	sessionsPanel := lipgloss.JoinVertical(lipgloss.Left, treePanel, infoPanel)
@@ -75,8 +81,8 @@ func (m *Model) renderDatabaseSessionInfo(width, height int) string {
 	// Use same border style as TreeMenu for alignment
 	borderStyle := UnfocusedBorderStyle
 
-	// Adjust width for right-side panel border
-	renderWidth := width - 5
+	// Adjust width for right-side panel border (1 panel = 1 × 2)
+	renderWidth := width - 2
 	if renderWidth < 20 {
 		renderWidth = 20
 	}

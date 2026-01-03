@@ -73,10 +73,11 @@ type Model struct {
 	keys      KeyMap
 
 	// UI state
-	width       int
-	height      int
-	ready       bool
-	currentView core.ViewModelType
+	width         int
+	height        int
+	contentHeight int // Available height for sidebar + main content
+	ready         bool
+	currentView   core.ViewModelType
 
 	// Focus management
 	focusArea     FocusArea
@@ -196,6 +197,10 @@ type Model struct {
 	cockpitNewName      string    // New profile name being entered
 	cockpitRenaming     bool      // True when renaming profile
 	cockpitCreatingNew  bool      // True when creating new profile
+	cockpitEditMode     bool      // True when editing settings
+	cockpitEditProfile  bool      // True when editing profile (rows/cols), false when editing widget
+	cockpitEditField    string    // Current field being edited
+	cockpitEditValue    string    // Current input value for the field being edited
 
 	// Database view state
 	databaseActiveSession string    // Active database session ID
@@ -487,8 +492,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.visibleMainRows = m.height - 10
 		m.visibleDetailRows = m.height - 15
 
-		headerHeight := 3
-		footerHeight := 3
+		// Layout: header(1) + content + footer(1)
+		headerHeight := 1
+		footerHeight := 1
 		sidebarWidth := getSidebarWidth()
 		m.viewport = viewport.New(m.width-sidebarWidth-4, m.height-headerHeight-footerHeight)
 		m.viewport.YPosition = headerHeight
@@ -705,58 +711,69 @@ func (m Model) View() string {
 		return m.renderInitializingView()
 	}
 
+	// Fixed layout constants
+	const headerHeight = 1
+	const footerHeight = 1
+
+	// Calculate content height for sidebar and main
+	// Layout: header(1) + content + footer(1) = height
+	m.contentHeight = m.height - headerHeight - footerHeight
+	if m.contentHeight < 1 {
+		m.contentHeight = 1
+	}
+
 	header := m.renderHeader()
+	footer := m.renderFooter()
 	sidebar := m.renderSidebar()
 	main := m.renderMainContent()
-	footer := m.renderFooter()
 
-	// Combine sidebar and main with gap
-	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " ", main)
+	// Combine sidebar and main with horizontal gap between them
+	horizontalGap := strings.Repeat(" ", GapHorizontal)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, horizontalGap, main)
+
+	// Apply fixed height to body
+	body = lipgloss.NewStyle().Height(m.contentHeight).MaxHeight(m.contentHeight).Render(body)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
 
-// renderInitializingView renders a full-screen loading view with spinner
+// renderInitializingView renders the normal layout with initialization event in header
 func (m Model) renderInitializingView() string {
-	// Header
+	// Add initializing event to header if not already present
+	if m.state.GetHeaderEvent() == nil {
+		m.state.SetHeaderEvent(core.NewPersistentHeaderEvent(core.HeaderEventInfo, m.spinner.View()+" Initializing..."))
+	}
+
+	// Render normal layout with header, empty content, and footer
 	header := m.renderHeader()
+	footer := m.renderFooter()
 
-	// Centered spinner with message
-	spinnerStyle := lipgloss.NewStyle().
-		Foreground(ColorPrimary).
-		Bold(true)
+	// Empty content area (will show sidebar + main area structure)
+	contentHeight := m.height - 4 // header + footer
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
 
-	messageStyle := lipgloss.NewStyle().
-		Foreground(ColorMuted)
+	// Render sidebar + empty main content
+	sidebar := m.renderSidebar()
+	sidebarWidth := getSidebarWidth()
 
-	content := lipgloss.JoinVertical(lipgloss.Center,
-		"",
-		"",
-		spinnerStyle.Render(m.spinner.View()+" Initializing..."),
-		"",
-		messageStyle.Render("Loading projects and git status"),
-		"",
+	// Empty main content with border
+	mainWidth := m.width - sidebarWidth - GapHorizontal - 2
+	mainHeight := contentHeight
+
+	mainContent := UnfocusedBorderStyle.
+		Width(mainWidth).
+		Height(mainHeight).
+		Render("")
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top,
+		sidebar,
+		strings.Repeat(" ", GapHorizontal),
+		mainContent,
 	)
 
-	// Center in available space
-	contentHeight := m.height - 6
-	contentWidth := m.width - 4
-
-	centered := lipgloss.Place(
-		contentWidth,
-		contentHeight,
-		lipgloss.Center,
-		lipgloss.Center,
-		content,
-	)
-
-	// Simple footer
-	footer := lipgloss.NewStyle().
-		Width(m.width).
-		Background(ColorBgAlt).
-		Render(" Please wait...")
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, centered, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, content, footer)
 }
 
 // handleKeyPress processes keyboard input
@@ -784,6 +801,13 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Handle Cockpit config mode navigation FIRST (before other handlers)
 	if m.currentView == core.VMCockpit && m.cockpitConfigMode {
 		if m.handleCockpitConfigNavigation(msg) {
+			return nil
+		}
+	}
+
+	// Handle Cockpit widget edit mode navigation
+	if m.currentView == core.VMCockpit && m.cockpitEditMode {
+		if m.handleWidgetEditNavigation(msg.String()) {
 			return nil
 		}
 	}
@@ -835,22 +859,31 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	case key.Matches(msg, m.keys.Tab):
-		// Cockpit: Tab cycles between widgets
+		// Cockpit view: special handling
 		if m.currentView == core.VMCockpit && !m.cockpitConfigMode {
-			m.navigateCockpitNext()
+			if m.focusArea == FocusSidebar {
+				// From sidebar, go to top-left widget
+				m.focusArea = FocusMain
+				m.cockpitFocusedIndex = m.getTopLeftWidgetIndex()
+			} else {
+				// Cycle through widgets (never return to sidebar)
+				m.navigateCockpitNext()
+			}
 			return nil
 		}
-		// Other views: Tab cycles between Main and Detail panels (skips sidebar)
+		// Other views: Tab cycles between Main and Detail (never returns to sidebar)
 		if m.focusArea == FocusSidebar {
-			// From sidebar, go to main
+			// From sidebar, go to first item in main panel
 			m.focusArea = FocusMain
+			m.resetMainPanelToFirst()
 		} else if m.focusArea == FocusMain {
 			// Main -> Detail
 			m.focusArea = FocusDetail
 			m.terminalMode = false
 			m.claudeInputActive = false
+			m.resetDetailPanelToFirst()
 		} else {
-			// Detail -> Main (and re-enter terminal if applicable)
+			// Detail -> Main (never back to sidebar)
 			m.focusArea = FocusMain
 			// Re-enter terminal mode if there's an active terminal
 			if m.currentView == core.VMClaude && m.claudeActiveSession != "" {
@@ -1336,6 +1369,24 @@ func (m *Model) getCurrentDetailTreeMenu() *TreeMenu {
 	return nil
 }
 
+// resetMainPanelToFirst resets the main panel selection to the first item
+func (m *Model) resetMainPanelToFirst() {
+	if menu := m.getCurrentMainTreeMenu(); menu != nil {
+		menu.SetSelectedIndex(0)
+	}
+	m.mainIndex = 0
+	m.mainScrollOffset = 0
+}
+
+// resetDetailPanelToFirst resets the detail panel selection to the first item
+func (m *Model) resetDetailPanelToFirst() {
+	if menu := m.getCurrentDetailTreeMenu(); menu != nil {
+		menu.SetSelectedIndex(0)
+	}
+	m.detailIndex = 0
+	m.detailScrollOffset = 0
+}
+
 // goToStart goes to the start of the current list
 func (m *Model) goToStart() {
 	switch m.focusArea {
@@ -1459,8 +1510,11 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 		}
 	}
 
-	// Reset widgets config mode when leaving/entering view
-	if m.currentView != core.VMCockpit {
+	// Initialize Cockpit view - focus on top-left widget
+	if m.currentView == core.VMCockpit {
+		m.cockpitFocusedIndex = m.getTopLeftWidgetIndex()
+	} else {
+		// Reset widgets config mode when leaving Cockpit
 		m.cockpitConfigMode = false
 	}
 
@@ -1781,8 +1835,14 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		case "r":
 			// Rename profile
-			if !m.cockpitConfigMode {
+			if !m.cockpitConfigMode && !m.cockpitEditMode {
 				m.startRenameCockpitProfile()
+			}
+			return nil
+		case "e":
+			// Edit profile grid settings (rows/cols)
+			if !m.cockpitConfigMode && !m.cockpitEditMode {
+				m.startProfileEdit()
 			}
 			return nil
 		case "enter":
@@ -2490,11 +2550,11 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 	t := m.terminalManager.GetOrCreate(sessionID, workDir, claudeProjectDir)
 
 	// Set terminal size
-	headerHeight := 3
-	footerHeight := 3
+	headerHeight := 1
+	footerHeight := 1
 	sidebarWidth := getSidebarWidth()
 	termWidth := m.width - sidebarWidth - 6
-	termHeight := m.height - headerHeight - footerHeight - 2
+	termHeight := m.height - headerHeight - footerHeight
 	if termWidth > 20 && termHeight > 5 {
 		t.SetSize(termWidth, termHeight)
 	}
@@ -2550,11 +2610,11 @@ func (m *Model) switchToSessionByID(sessionID string) tea.Cmd {
 	t := m.terminalManager.GetOrCreate(sessionID, workDir, claudeProjectDir)
 
 	// Set terminal size
-	headerHeight := 3
-	footerHeight := 3
+	headerHeight := 1
+	footerHeight := 1
 	sidebarWidth := getSidebarWidth()
 	termWidth := m.width - sidebarWidth - 6
-	termHeight := m.height - headerHeight - footerHeight - 2
+	termHeight := m.height - headerHeight - footerHeight
 	if termWidth > 20 && termHeight > 5 {
 		t.SetSize(termWidth, termHeight)
 	}
@@ -2650,11 +2710,11 @@ func (m *Model) connectToDatabase(databaseID string) tea.Cmd {
 	t := m.terminalManager.GetOrCreateWithCommand(databaseID, cliCmd, cliArgs)
 
 	// Size the terminal appropriately
-	headerHeight := 3
-	footerHeight := 3
+	headerHeight := 1
+	footerHeight := 1
 	sidebarWidth := getSidebarWidth()
 	termWidth := m.width - sidebarWidth - 6
-	termHeight := m.height - headerHeight - footerHeight - 2
+	termHeight := m.height - headerHeight - footerHeight
 	if termWidth > 20 && termHeight > 5 {
 		t.SetSize(termWidth, termHeight)
 	}
@@ -3570,9 +3630,16 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
 		m.state.GitLoading = presenterState.GitLoading
 		m.state.Capabilities = presenterState.Capabilities
 
-		// Sync header event
-		if headerEvent := presenterState.GetHeaderEvent(); headerEvent != nil {
-			m.state.SetHeaderEvent(headerEvent)
+		// Sync header events from presenter
+		presenterEvents := presenterState.GetHeaderEvents()
+		if len(presenterEvents) > 0 {
+			// Add new events from presenter
+			for _, event := range presenterEvents {
+				m.state.SetHeaderEvent(event)
+			}
+		} else {
+			// Presenter has no events - clear all events from TUI state (including persistent)
+			m.state.ClearHeaderEvent()
 		}
 	}
 

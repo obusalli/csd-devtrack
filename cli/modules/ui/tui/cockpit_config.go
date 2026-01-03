@@ -598,3 +598,407 @@ func (m *Model) getAvailableProfiles() []string {
 
 	return names
 }
+
+// Widget edit mode fields in display order
+var widgetEditFields = []struct {
+	Field string
+	Label string
+	Desc  string
+}{
+	{"title", "Title", "Widget display name"},
+	{"colSpan", "ColSpan", "Number of columns to span"},
+	{"rowSpan", "RowSpan", "Number of rows to span"},
+}
+
+// Profile edit mode fields (grid sizing)
+var profileEditFields = []struct {
+	Field string
+	Label string
+	Desc  string
+}{
+	{"rows", "Rows", "Number of rows in grid"},
+	{"cols", "Cols", "Number of columns in grid"},
+}
+
+// startWidgetEdit starts editing the focused widget
+func (m *Model) startWidgetEdit() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
+	if profile == nil || len(profile.Widgets) == 0 {
+		return
+	}
+
+	if m.cockpitFocusedIndex < 0 || m.cockpitFocusedIndex >= len(profile.Widgets) {
+		return
+	}
+
+	// Start widget edit mode with first field
+	m.cockpitEditMode = true
+	m.cockpitEditProfile = false
+	m.cockpitEditField = "title"
+	widget := profile.Widgets[m.cockpitFocusedIndex]
+	m.cockpitEditValue = widget.Title
+}
+
+// startProfileEdit starts editing the profile grid settings (rows/cols)
+func (m *Model) startProfileEdit() {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
+	if profile == nil {
+		return
+	}
+
+	// Start profile edit mode with first field
+	m.cockpitEditMode = true
+	m.cockpitEditProfile = true
+	m.cockpitEditField = "rows"
+	m.cockpitEditValue = fmt.Sprintf("%d", profile.Rows)
+}
+
+// getEditFieldValue returns the current value for the edit field
+func (m *Model) getEditFieldValue(field string) string {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
+	if profile == nil {
+		return ""
+	}
+
+	// Profile fields
+	switch field {
+	case "rows":
+		return fmt.Sprintf("%d", profile.Rows)
+	case "cols":
+		return fmt.Sprintf("%d", profile.Cols)
+	}
+
+	// Widget fields
+	if m.cockpitFocusedIndex >= len(profile.Widgets) {
+		return ""
+	}
+	widget := profile.Widgets[m.cockpitFocusedIndex]
+	switch field {
+	case "title":
+		return widget.Title
+	case "colSpan":
+		cs := widget.ColSpan
+		if cs < 1 {
+			cs = 1
+		}
+		return fmt.Sprintf("%d", cs)
+	case "rowSpan":
+		rs := widget.RowSpan
+		if rs < 1 {
+			rs = 1
+		}
+		return fmt.Sprintf("%d", rs)
+	}
+	return ""
+}
+
+// setEditFieldValue updates a widget or profile field value
+func (m *Model) setEditFieldValue(field string, value string) {
+	cfg := config.GetGlobal()
+	if cfg == nil {
+		return
+	}
+
+	profileName := m.getActiveCockpitProfile()
+	profile := cfg.WidgetProfiles[profileName]
+	if profile == nil {
+		return
+	}
+
+	// Profile fields
+	switch field {
+	case "rows":
+		var r int
+		fmt.Sscanf(value, "%d", &r)
+		if r < 1 {
+			r = 1
+		}
+		if r > 10 {
+			r = 10
+		}
+		profile.Rows = r
+		return
+	case "cols":
+		var c int
+		fmt.Sscanf(value, "%d", &c)
+		if c < 1 {
+			c = 1
+		}
+		if c > 10 {
+			c = 10
+		}
+		profile.Cols = c
+		return
+	}
+
+	// Widget fields
+	if m.cockpitFocusedIndex >= len(profile.Widgets) {
+		return
+	}
+	widget := &profile.Widgets[m.cockpitFocusedIndex]
+	switch field {
+	case "title":
+		widget.Title = value
+	case "colSpan":
+		var cs int
+		fmt.Sscanf(value, "%d", &cs)
+		if cs < 1 {
+			cs = 1
+		}
+		widget.ColSpan = cs
+	case "rowSpan":
+		var rs int
+		fmt.Sscanf(value, "%d", &rs)
+		if rs < 1 {
+			rs = 1
+		}
+		widget.RowSpan = rs
+	}
+}
+
+// getEditFields returns the appropriate fields slice based on edit mode
+func (m *Model) getEditFields() []struct {
+	Field string
+	Label string
+	Desc  string
+} {
+	if m.cockpitEditProfile {
+		return profileEditFields
+	}
+	return widgetEditFields
+}
+
+// nextEditField moves to the next field (cycles back to first)
+func (m *Model) nextEditField() {
+	// Save current field value to memory (not to disk yet)
+	m.setEditFieldValue(m.cockpitEditField, m.cockpitEditValue)
+
+	fields := m.getEditFields()
+
+	// Find current field index
+	currentIdx := -1
+	for i, f := range fields {
+		if f.Field == m.cockpitEditField {
+			currentIdx = i
+			break
+		}
+	}
+
+	// Move to next field (cycle back to first)
+	nextIdx := (currentIdx + 1) % len(fields)
+	nextField := fields[nextIdx].Field
+	m.cockpitEditField = nextField
+	m.cockpitEditValue = m.getEditFieldValue(nextField)
+}
+
+// prevEditField moves to the previous field (cycles to last)
+func (m *Model) prevEditField() {
+	// Save current field value to memory
+	m.setEditFieldValue(m.cockpitEditField, m.cockpitEditValue)
+
+	fields := m.getEditFields()
+
+	// Find current field index
+	currentIdx := -1
+	for i, f := range fields {
+		if f.Field == m.cockpitEditField {
+			currentIdx = i
+			break
+		}
+	}
+
+	// Move to previous field (cycle to last)
+	prevIdx := currentIdx - 1
+	if prevIdx < 0 {
+		prevIdx = len(fields) - 1
+	}
+	prevField := fields[prevIdx].Field
+	m.cockpitEditField = prevField
+	m.cockpitEditValue = m.getEditFieldValue(prevField)
+}
+
+// saveWidgetEdit saves changes and exits edit mode
+func (m *Model) saveWidgetEdit() {
+	// Save current field
+	m.setEditFieldValue(m.cockpitEditField, m.cockpitEditValue)
+
+	// Save config to disk
+	_ = config.SaveGlobal()
+
+	// Exit edit mode
+	m.cockpitEditMode = false
+	m.cockpitEditField = ""
+	m.cockpitEditValue = ""
+}
+
+// cancelWidgetEdit cancels editing without saving
+func (m *Model) cancelWidgetEdit() {
+	m.cockpitEditMode = false
+	m.cockpitEditField = ""
+	m.cockpitEditValue = ""
+}
+
+// renderWidgetEditOverlay renders the widget or profile edit overlay
+func (m *Model) renderWidgetEditOverlay(width, height int) string {
+	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
+	if profile == nil {
+		return ""
+	}
+
+	// For widget edit mode, verify widget index is valid
+	if !m.cockpitEditProfile {
+		if m.cockpitFocusedIndex >= len(profile.Widgets) {
+			return ""
+		}
+	}
+
+	// Determine title based on edit mode
+	var overlayTitle string
+	if m.cockpitEditProfile {
+		overlayTitle = "EDIT GRID: " + m.getActiveCockpitProfile()
+	} else {
+		widget := profile.Widgets[m.cockpitFocusedIndex]
+		widgetTitle := widget.Title
+		if widgetTitle == "" {
+			widgetTitle = widget.Type
+		}
+		overlayTitle = "EDIT: " + strings.ToUpper(widgetTitle)
+	}
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorSecondary).
+		Padding(0, 1)
+
+	// Get appropriate fields based on edit mode
+	fields := m.getEditFields()
+
+	// Render each field
+	var fieldLines []string
+	for _, f := range fields {
+		isActive := f.Field == m.cockpitEditField
+
+		labelStyle := lipgloss.NewStyle().
+			Foreground(ColorMuted).
+			Width(10)
+
+		valueStyle := lipgloss.NewStyle().
+			Width(20)
+
+		if isActive {
+			labelStyle = labelStyle.Foreground(ColorPrimary).Bold(true)
+			valueStyle = valueStyle.
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(ColorPrimary).
+				Padding(0, 1)
+		} else {
+			valueStyle = valueStyle.
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(ColorMuted).
+				Padding(0, 1)
+		}
+
+		// Get value to display
+		var displayValue string
+		if isActive {
+			// Show edit value with cursor
+			cursorStyle := lipgloss.NewStyle().
+				Background(ColorPrimary).
+				Foreground(ColorText)
+			displayValue = m.cockpitEditValue + cursorStyle.Render(" ")
+		} else {
+			displayValue = m.getEditFieldValue(f.Field)
+			if displayValue == "" || displayValue == "0" {
+				displayValue = "(auto)"
+			}
+		}
+
+		line := lipgloss.JoinHorizontal(lipgloss.Center,
+			labelStyle.Render(f.Label+":"),
+			" ",
+			valueStyle.Render(displayValue),
+		)
+		fieldLines = append(fieldLines, line)
+	}
+
+	// Combine fields
+	content := lipgloss.JoinVertical(lipgloss.Left, fieldLines...)
+
+	// Footer hints
+	footerStyle := lipgloss.NewStyle().
+		Foreground(ColorMuted).
+		Padding(1, 1, 0, 1)
+
+	footerText := "↑↓/Tab: navigate  Enter: save  Esc: cancel"
+
+	// Create overlay box
+	overlayWidth := 50
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Background(ColorBgAlt).
+		Padding(1, 2).
+		Width(overlayWidth - 4)
+
+	overlay := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("≡ "+overlayTitle),
+		"",
+		content,
+		footerStyle.Render(footerText),
+	)
+
+	overlay = boxStyle.Render(overlay)
+
+	// Center overlay on screen
+	return lipgloss.Place(
+		width,
+		height,
+		lipgloss.Center,
+		lipgloss.Center,
+		overlay,
+		lipgloss.WithWhitespaceBackground(ColorBg),
+	)
+}
+
+// handleWidgetEditNavigation handles keys in widget edit mode
+func (m *Model) handleWidgetEditNavigation(key string) bool {
+	if !m.cockpitEditMode {
+		return false
+	}
+
+	switch key {
+	case "enter":
+		// Save and close
+		m.saveWidgetEdit()
+		return true
+	case "tab", "down":
+		m.nextEditField()
+		return true
+	case "shift+tab", "up":
+		m.prevEditField()
+		return true
+	case "esc":
+		// Cancel without saving
+		m.cancelWidgetEdit()
+		return true
+	case "backspace":
+		if len(m.cockpitEditValue) > 0 {
+			m.cockpitEditValue = m.cockpitEditValue[:len(m.cockpitEditValue)-1]
+		}
+		return true
+	default:
+		// Add character if printable (for title: any char, for numbers: digits only)
+		if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
+			if m.cockpitEditField == "title" {
+				m.cockpitEditValue += key
+				return true
+			} else if key[0] >= '0' && key[0] <= '9' {
+				m.cockpitEditValue += key
+				return true
+			}
+		}
+	}
+
+	return false
+}

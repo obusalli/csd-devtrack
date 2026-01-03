@@ -38,29 +38,24 @@ func (m *Model) renderCockpit(width, height int) string {
 		return m.renderCockpitEmpty(width, height)
 	}
 
-	// Render header
-	header := m.renderCockpitHeader(width)
-	headerHeight := 2 // header + gap
-
-	// Calculate grid layout for remaining space
-	gridHeight := height - headerHeight
-	layouts := m.calculateWidgetLayouts(profile, width, gridHeight)
-	if len(layouts) == 0 {
-		return m.renderCockpitPlaceholder(width, height, "No widgets in profile")
-	}
-
-	// Render grid
-	grid := m.renderWidgetGrid(layouts, profile, width, gridHeight)
-
-	// Combine header and grid
-	content := lipgloss.JoinVertical(lipgloss.Left, header, "", grid)
-
 	// Add config overlay if in config mode
 	if m.cockpitConfigMode {
 		return m.renderCockpitConfigOverlay(width, height)
 	}
 
-	return content
+	// Add edit overlay if in edit mode
+	if m.cockpitEditMode {
+		return m.renderWidgetEditOverlay(width, height)
+	}
+
+	// Calculate grid layout (full height, header info is in top bar)
+	layouts := m.calculateWidgetLayouts(profile, width, height)
+	if len(layouts) == 0 {
+		return m.renderCockpitPlaceholder(width, height, "No widgets in profile")
+	}
+
+	// Render grid
+	return m.renderWidgetGrid(layouts, profile, width, height)
 }
 
 // renderCockpitEmpty renders the empty state when no profiles exist
@@ -318,19 +313,32 @@ func (m *Model) renderWidgetGrid(layouts []WidgetLayout, profile *config.WidgetP
 			if colSpan < 1 {
 				colSpan = 1
 			}
-			// Width proportional to colSpan
-			widgetWidth := (availableWidth * colSpan) / totalColSpan
+			// Width proportional to colSpan (or custom if set)
+			widgetWidth := w.Layout.Widget.Width
+			if widgetWidth <= 0 {
+				// Auto width based on colSpan
+				widgetWidth = (availableWidth * colSpan) / totalColSpan
+			}
 			if widgetWidth < 10 {
 				widgetWidth = 10
 			}
 
-			// Create adjusted layout with new width
+			// Height: use custom if set, otherwise row height
+			widgetHeight := w.Layout.Widget.Height
+			if widgetHeight <= 0 {
+				widgetHeight = rowHeight
+			}
+			if widgetHeight < 5 {
+				widgetHeight = 5
+			}
+
+			// Create adjusted layout with custom or calculated dimensions
 			adjustedLayout := WidgetLayout{
 				Widget: w.Layout.Widget,
 				X:      w.Layout.X,
 				Y:      w.Layout.Y,
 				Width:  widgetWidth,
-				Height: rowHeight,
+				Height: widgetHeight,
 			}
 
 			focused := m.focusArea == FocusMain && m.cockpitFocusedIndex == w.Index

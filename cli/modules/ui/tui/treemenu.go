@@ -324,6 +324,44 @@ func (tm *TreeMenu) MoveDown() {
 	}
 }
 
+// PageUp moves selection up by one page
+func (tm *TreeMenu) PageUp() {
+	pageSize := tm.visibleRowCount()
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	tm.selectedIndex -= pageSize
+	if tm.selectedIndex < 0 {
+		tm.selectedIndex = 0
+	}
+	// Skip disabled items
+	if tm.isIndexDisabled(tm.selectedIndex) {
+		tm.moveToNextEnabled(1)
+	}
+	tm.ensureSelectionVisible()
+}
+
+// PageDown moves selection down by one page
+func (tm *TreeMenu) PageDown() {
+	total := tm.TotalVisibleCount()
+	pageSize := tm.visibleRowCount()
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	tm.selectedIndex += pageSize
+	if tm.selectedIndex >= total {
+		tm.selectedIndex = total - 1
+	}
+	if tm.selectedIndex < 0 {
+		tm.selectedIndex = 0
+	}
+	// Skip disabled items
+	if tm.isIndexDisabled(tm.selectedIndex) {
+		tm.moveToNextEnabled(-1)
+	}
+	tm.ensureSelectionVisible()
+}
+
 // ensureSelectionVisible adjusts scrollOffset to keep selectedIndex visible
 func (tm *TreeMenu) ensureSelectionVisible() {
 	visibleRows := tm.visibleRowCount()
@@ -677,26 +715,44 @@ func (tm *TreeMenu) Render() string {
 			isSelected := displayIndex == tm.selectedIndex
 			hasChildren := len(item.Children) > 0
 
+			// Determine background for selected state (used for nested styles)
+			var selectedBg lipgloss.TerminalColor
+			if isSelected && tm.focused {
+				selectedBg = ColorBgAlt
+			}
+
+			// Helper to apply background to text when selected
+			withBg := func(text string) string {
+				if selectedBg != nil {
+					return lipgloss.NewStyle().Background(selectedBg).Render(text)
+				}
+				return text
+			}
+
 			// Build the line
 			icon := item.Icon
 			iconPart := ""
 			if icon != "" {
 				// Handle blinking: hide icon when blink is true and blinkState is false
 				if item.Blink && !tm.blinkState {
-					iconPart = "  " // Space instead of icon
+					iconPart = withBg("  ") // Space instead of icon
 				} else if item.IconColor != nil {
-					iconPart = lipgloss.NewStyle().Foreground(item.IconColor).Render(icon) + " "
+					iconStyle := lipgloss.NewStyle().Foreground(item.IconColor)
+					if selectedBg != nil {
+						iconStyle = iconStyle.Background(selectedBg)
+					}
+					iconPart = iconStyle.Render(icon + " ")
 				} else {
-					iconPart = icon + " "
+					iconPart = withBg(icon + " ")
 				}
 			}
 
 			// Cursor/indicator: ▶ for selected/active, space otherwise
-			indicator := "  "
+			indicator := withBg("  ")
 			if isSelected && tm.focused {
-				indicator = "▶ "
+				indicator = withBg("▶ ")
 			} else if item.IsActive {
-				indicator = "▶ "
+				indicator = withBg("▶ ")
 			}
 
 			// Label with optional count
@@ -707,21 +763,23 @@ func (tm *TreeMenu) Render() string {
 				if count == 0 {
 					count = len(item.Children)
 				}
-				countSuffix = lipgloss.NewStyle().Foreground(ColorMuted).Render(
-					" (" + itoa(count) + ")",
-				)
+				countStyle := lipgloss.NewStyle().Foreground(ColorMuted)
+				if selectedBg != nil {
+					countStyle = countStyle.Background(selectedBg)
+				}
+				countSuffix = countStyle.Render(" (" + itoa(count) + ")")
 			}
 
 			// Trailing icon (e.g., ⚡ for attached terminal)
 			trailingIcon := ""
 			if item.TrailingIcon != "" {
-				trailingIcon = " " + item.TrailingIcon
+				trailingIcon = withBg(" " + item.TrailingIcon)
 			}
 
 			// Arrow for items with children
 			arrow := ""
 			if hasChildren {
-				arrow = " →"
+				arrow = withBg(" →")
 			}
 
 			// Calculate available space for label
@@ -755,9 +813,9 @@ func (tm *TreeMenu) Render() string {
 			displayLabel = truncate(displayLabel, availableForLabel)
 
 			// Apply shortcut coloring after truncation (if color supported and shortcut visible)
-			if shortcutPos >= 0 {
-				displayLabel = ApplyShortcutColor(displayLabel, shortcutPos)
-			}
+			// Pass background color for selected items to preserve hover background
+			// ApplyShortcutColorWithBg handles both cases: with shortcut and without
+			displayLabel = ApplyShortcutColorWithBg(displayLabel, shortcutPos, selectedBg)
 
 			line := indicator + iconPart + displayLabel + countSuffix + trailingIcon + arrow
 
@@ -771,9 +829,10 @@ func (tm *TreeMenu) Render() string {
 					Padding(0, 2).
 					Width(innerWidth)
 			} else if item.IsActive {
+				// Active items: white text with bold (indicator ▶ shows active state)
 				style = lipgloss.NewStyle().
 					Bold(true).
-					Foreground(ColorPrimary).
+					Foreground(ColorText).
 					Padding(0, 2).
 					Width(innerWidth)
 			} else {

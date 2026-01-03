@@ -35,6 +35,8 @@ type WidgetConfig struct {
 	Col            int    `yaml:"col" json:"col"`
 	RowSpan        int    `yaml:"row_span,omitempty" json:"row_span,omitempty"` // Default: 1
 	ColSpan        int    `yaml:"col_span,omitempty" json:"col_span,omitempty"` // Default: 1
+	Width          int    `yaml:"width,omitempty" json:"width,omitempty"`       // Custom width in characters (0 = auto)
+	Height         int    `yaml:"height,omitempty" json:"height,omitempty"`     // Custom height in lines (0 = auto)
 	ProjectFilter  string `yaml:"project_filter,omitempty" json:"project_filter,omitempty"`
 	LogTypeFilter  string `yaml:"log_type_filter,omitempty" json:"log_type_filter,omitempty"`   // build, process
 	LogLevelFilter string `yaml:"log_level_filter,omitempty" json:"log_level_filter,omitempty"` // error, warn, info

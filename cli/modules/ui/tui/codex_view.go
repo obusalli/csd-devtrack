@@ -20,17 +20,24 @@ func (m *Model) renderCodex(width, height int) string {
 	}
 
 	// Layout: 70% terminal/chat, 30% sessions panel
-	sessionsWidth := width * 30 / 100
+	// 2 panels side by side: height 1×2=2, width 2×2=4
+	heightBorders := 2
+	widthBorders := 4
+	panelHeight := height - heightBorders
+	availableWidth := width - widthBorders - GapHorizontal
+
+	sessionsWidth := availableWidth * 30 / 100
 	if sessionsWidth < 25 {
 		sessionsWidth = 25
 	}
-	mainWidth := width - sessionsWidth - 1
+	mainWidth := availableWidth - sessionsWidth
 
 	// Render main panel (terminal or empty state)
-	mainPanel := m.renderCodexMainPanel(mainWidth, height)
+	// Main panel has only 1 panel (not 2 stacked like sessions), so add +2
+	mainPanel := m.renderCodexMainPanel(mainWidth, panelHeight+2)
 
 	// Render sessions panel
-	sessionsPanel := m.renderCodexSessionsPanel(sessionsWidth, height)
+	sessionsPanel := m.renderCodexSessionsPanel(sessionsWidth, panelHeight)
 
 	// Combine horizontally
 	return lipgloss.JoinHorizontal(lipgloss.Top, mainPanel, sessionsPanel)

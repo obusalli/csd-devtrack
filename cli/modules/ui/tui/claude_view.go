@@ -36,12 +36,17 @@ func (m *Model) renderClaude(width, height int) string {
 		m.claudeMode = ClaudeModeChat
 	}
 
-	// Full height for content (no tabs)
-	contentHeight := height - 2
+	// Layout: chat (1 panel) + sessions (2 stacked panels)
+	// Height: max(1×2, 2×2) = 4
+	// Width: 2 panels × 2 = 4
+	heightBorders := 4
+	widthBorders := 4
+	contentHeight := height - heightBorders
+	availableWidth := width - widthBorders - GapHorizontal
 
 	// Calculate sessions panel width using TreeMenu
 	sessionsWidth := m.sessionsTreeMenu.CalcWidth()
-	chatWidth := width - sessionsWidth - GapHorizontal
+	chatWidth := availableWidth - sessionsWidth
 
 	// Session info takes some space at bottom
 	infoHeight := 8
@@ -51,7 +56,8 @@ func (m *Model) renderClaude(width, height int) string {
 	m.sessionsTreeMenu.SetSize(sessionsWidth, treeHeight)
 	m.sessionsTreeMenu.SetFocused(m.focusArea == FocusDetail)
 
-	chatPanel := m.renderClaudeChatPanel(chatWidth, contentHeight)
+	// Chat panel has only 1 panel (not 2 stacked like sessions), so add +2
+	chatPanel := m.renderClaudeChatPanel(chatWidth, contentHeight+2)
 	treePanel := m.sessionsTreeMenu.Render()
 	infoPanel := m.renderSessionInfo(sessionsWidth, infoHeight)
 	sessionsPanel := lipgloss.JoinVertical(lipgloss.Left, treePanel, infoPanel)
@@ -79,8 +85,8 @@ func (m *Model) renderSessionInfo(width, height int) string {
 	// Use same border style as TreeMenu for alignment
 	borderStyle := UnfocusedBorderStyle
 
-	// Adjust width for right-side panel border
-	renderWidth := width - 5
+	// Adjust width for right-side panel border (1 panel = 1 × 2)
+	renderWidth := width - 2
 	if renderWidth < 20 {
 		renderWidth = 20
 	}

@@ -30,58 +30,57 @@ var (
 
 // renderHeader renders the top header bar
 func (m *Model) renderHeader() string {
-	title := TitleStyle.Render(modules.AppName)
-	version := SubtitleStyle.Render("v" + modules.AppVersion + " (" + modules.BuildHash() + ")")
+	// Base style with header background for all nested elements
+	headerBg := ColorBgAlt
+
+	title := TitleStyle.Background(headerBg).Render(modules.AppName)
+	version := SubtitleStyle.Background(headerBg).Render("v" + modules.AppVersion + " (" + modules.BuildHash() + ")")
 
 	// Status indicators
 	var status string
 	if m.state.IsConnected {
-		status = StatusRunning.Render("● Connected")
+		status = StatusRunning.Background(headerBg).Render("● Connected")
 	} else {
-		status = StatusStopped.Render("○ Disconnected")
+		status = StatusStopped.Background(headerBg).Render("○ Disconnected")
 	}
 
 	// Running processes count
 	running := len(core.SelectRunningProcesses(m.state))
 	runningStr := ""
 	if running > 0 {
-		runningStr = StatusRunning.Render(fmt.Sprintf(" %d running", running))
+		runningStr = StatusRunning.Background(headerBg).Render(fmt.Sprintf(" %d running", running))
 	}
 
-	// Git loading indicator
-	gitStr := ""
-	if m.state.GitLoading {
-		gitStr = lipgloss.NewStyle().Foreground(ColorWarning).Render(" " + m.spinner.View() + "git")
-	}
+	// Git loading is now shown via header events, no need for separate indicator
 
 	// System metrics (CPU, RAM, Load)
 	metricsStr := ""
 	if m.metricsCollector != nil {
 		metrics := m.metricsCollector.Get()
 		// CPU with color based on usage
-		cpuStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
+		cpuStyle := lipgloss.NewStyle().Foreground(ColorSuccess).Background(headerBg)
 		if metrics.CPUPercent > 80 {
-			cpuStyle = lipgloss.NewStyle().Foreground(ColorError)
+			cpuStyle = lipgloss.NewStyle().Foreground(ColorError).Background(headerBg)
 		} else if metrics.CPUPercent > 50 {
-			cpuStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+			cpuStyle = lipgloss.NewStyle().Foreground(ColorWarning).Background(headerBg)
 		}
 		cpuStr := cpuStyle.Render(fmt.Sprintf("CPU:%.0f%%", metrics.CPUPercent))
 
 		// RAM with color based on usage
-		ramStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
+		ramStyle := lipgloss.NewStyle().Foreground(ColorSuccess).Background(headerBg)
 		if metrics.MemPercent > 80 {
-			ramStyle = lipgloss.NewStyle().Foreground(ColorError)
+			ramStyle = lipgloss.NewStyle().Foreground(ColorError).Background(headerBg)
 		} else if metrics.MemPercent > 50 {
-			ramStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+			ramStyle = lipgloss.NewStyle().Foreground(ColorWarning).Background(headerBg)
 		}
 		ramStr := ramStyle.Render(fmt.Sprintf("RAM:%.1f/%.0fG", metrics.MemUsedGB, metrics.MemTotalGB))
 
 		// Load average with color based on load vs CPU count
-		loadStyle := lipgloss.NewStyle().Foreground(ColorSuccess)
+		loadStyle := lipgloss.NewStyle().Foreground(ColorSuccess).Background(headerBg)
 		if metrics.LoadAvg1 > float64(metrics.NumCPU) {
-			loadStyle = lipgloss.NewStyle().Foreground(ColorError)
+			loadStyle = lipgloss.NewStyle().Foreground(ColorError).Background(headerBg)
 		} else if metrics.LoadAvg1 > float64(metrics.NumCPU)*0.7 {
-			loadStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+			loadStyle = lipgloss.NewStyle().Foreground(ColorWarning).Background(headerBg)
 		}
 		loadStr := loadStyle.Render(fmt.Sprintf("Load:%.2f", metrics.LoadAvg1))
 
@@ -91,22 +90,38 @@ func (m *Model) renderHeader() string {
 	// Current view indicator
 	viewName := strings.ToUpper(string(m.currentView))
 
+	// Add cockpit profile info if in cockpit view
+	if m.currentView == core.VMCockpit {
+		profileName := m.getActiveCockpitProfile()
+		profiles := m.getAvailableProfiles()
+		profileNum := 0
+		for i, name := range profiles {
+			if name == profileName {
+				profileNum = i + 1
+				break
+			}
+		}
+		if profileNum > 0 {
+			viewName += fmt.Sprintf(": %s (%d/%d)", profileName, profileNum, len(profiles))
+		}
+	}
+
 	// Claude usage info if in Claude view with active session
 	usageStr := ""
 	if m.currentView == core.VMClaude && m.state.Claude != nil && m.state.Claude.Usage != nil {
 		usage := m.state.Claude.Usage
-		usageStr = lipgloss.NewStyle().Foreground(ColorSecondary).Render(
+		usageStr = lipgloss.NewStyle().Foreground(ColorSecondary).Background(headerBg).Render(
 			fmt.Sprintf(" │ %dk tokens", usage.TotalTokens/1000),
 		)
 		if usage.CostUSD > 0 {
-			usageStr += lipgloss.NewStyle().Foreground(ColorMuted).Render(
+			usageStr += lipgloss.NewStyle().Foreground(ColorMuted).Background(headerBg).Render(
 				fmt.Sprintf(" ~$%.2f", usage.CostUSD),
 			)
 		}
 	}
 
 	left := fmt.Sprintf(" %s %s │ %s%s", title, version, viewName, usageStr)
-	right := fmt.Sprintf("%s │ %s%s%s ", metricsStr, status, runningStr, gitStr)
+	right := fmt.Sprintf("%s │ %s%s ", metricsStr, status, runningStr)
 
 	leftWidth := lipgloss.Width(left)
 	rightWidth := lipgloss.Width(right)
@@ -142,6 +157,8 @@ func (m *Model) renderHeader() string {
 	return lipgloss.NewStyle().
 		Background(ColorBgAlt).
 		Width(m.width).
+		Height(1).
+		MaxHeight(1).
 		Render(header)
 }
 
@@ -295,7 +312,12 @@ func getSidebarWidth() int {
 // renderSidebar renders the left navigation sidebar with context panel below
 func (m *Model) renderSidebar() string {
 	width := getSidebarWidth()
-	totalHeight := m.height - 6
+	// Account for 2 stacked panels with borders (2 lines each = 4 total)
+	// This compensates for how lipgloss handles stacked bordered panels
+	totalHeight := m.contentHeight - 4
+	if totalHeight < 10 {
+		totalHeight = 10
+	}
 
 	// Calculate menu height based on items
 	sidebarViews := m.getSidebarViews()
@@ -306,19 +328,25 @@ func (m *Model) renderSidebar() string {
 	m.sidebarMenu.SetFocused(m.focusArea == FocusSidebar)
 	menuPanel := m.sidebarMenu.Render()
 
-	// Context panel takes remaining space (separate panel with its own border)
-	contextHeight := totalHeight - menuHeight - GapVertical - 2 // 2 for context border
+	// Context panel takes remaining space
+	// totalHeight = menuHeight + contextHeight
+	contextHeight := totalHeight - menuHeight
 	if contextHeight < 5 {
 		contextHeight = 5
 	}
 
 	contextPanel := m.renderContextPanel(width, contextHeight)
 
-	// Stack menu and context panels vertically
-	return lipgloss.JoinVertical(lipgloss.Left,
+	// Stack menu and context panels vertically (no gap)
+	content := lipgloss.JoinVertical(lipgloss.Left,
 		menuPanel,
 		contextPanel,
 	)
+
+	// Fixed height (no left gap - sidebar starts at edge)
+	return lipgloss.NewStyle().
+		Height(totalHeight).
+		Render(content)
 }
 
 // renderContextPanel renders the context panel showing current project/git info
@@ -791,8 +819,9 @@ func (m *Model) getActiveProjectContext() *core.ProjectVM {
 // renderMainContent renders the main content area
 func (m *Model) renderMainContent() string {
 	sidebarWidth := getSidebarWidth()
-	width := m.width - sidebarWidth - 2
-	height := m.height - 6
+	// Account for sidebar + gap between sidebar and main
+	width := m.width - sidebarWidth - GapHorizontal
+	height := m.contentHeight
 
 	var content string
 
@@ -840,7 +869,11 @@ func (m *Model) renderMainContent() string {
 		content = m.renderFilterOverlay(content, width, height)
 	}
 
-	return content
+	// Apply right gap and fixed height
+	return lipgloss.NewStyle().
+		Height(height).
+		PaddingRight(GapHorizontal).
+		Render(content)
 }
 
 // renderFooter renders the bottom help bar
@@ -864,7 +897,6 @@ func (m *Model) renderFooter() string {
 	if m.focusArea == FocusSidebar {
 		shortcuts = append(shortcuts,
 			HelpKeyStyle.Render("Enter")+HelpDescStyle.Render(" select  "),
-			HelpKeyStyle.Render("D P B")+HelpDescStyle.Render(" views  "),
 		)
 	} else {
 		// View-specific shortcuts (only when not on sidebar)
@@ -1122,7 +1154,9 @@ func (m *Model) renderFooter() string {
 		HelpKeyStyle.Render("^G q")+HelpDescStyle.Render(" quit"),
 	)
 
-	left := " " + strings.Join(shortcuts, "")
+	// Build left side with consistent background
+	bgStyle := lipgloss.NewStyle().Background(ColorBgAlt)
+	left := bgStyle.Render(" ") + strings.Join(shortcuts, "")
 
 	// Right side: notifications or errors
 	var right string
@@ -1147,39 +1181,68 @@ func (m *Model) renderFooter() string {
 		padding = 0
 	}
 
+	// Build focus indicator for right side
+	focusIndicator := m.renderFocusIndicator()
+
+	// If we have a notification, show it; otherwise show focus indicator on right
+	if right == "" {
+		right = focusIndicator
+	} else {
+		// Both notification and focus: notification first, then focus
+		right = right + "  " + focusIndicator
+	}
+
+	padding = m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if padding < 0 {
+		padding = 0
+	}
+
+	// Apply background to padding to avoid gaps
 	footer := lipgloss.JoinHorizontal(
 		lipgloss.Center,
 		left,
-		strings.Repeat(" ", padding),
+		bgStyle.Render(strings.Repeat(" ", padding)),
 		right,
 	)
 
-	// Second line: focus indicator
-	focusLine := SubtitleStyle.Render(m.getFocusIndicatorLine())
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		lipgloss.NewStyle().Width(m.width).Background(ColorBgAlt).Render(footer),
-		focusLine,
-	)
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(1).
+		MaxHeight(1).
+		Background(ColorBgAlt).
+		Render(footer)
 }
 
-// getFocusIndicatorLine returns a visual indicator of current focus
-func (m *Model) getFocusIndicatorLine() string {
+// renderFocusIndicator returns a compact focus indicator for the footer
+func (m *Model) renderFocusIndicator() string {
 	areas := []string{"Sidebar", "Main"}
 	if m.hasDetailPanel() {
 		areas = append(areas, "Detail")
 	}
 
+	// Build content with plain text to calculate width
+	sep := "→"
+	plainText := "Focus: " + strings.Join(areas, sep) + " "
+
+	// Build styled content
 	var parts []string
 	for i, area := range areas {
 		if FocusArea(i) == m.focusArea {
-			parts = append(parts, lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("["+area+"]"))
+			parts = append(parts, HelpKeyStyle.Render(area))
 		} else {
-			parts = append(parts, SubtitleStyle.Render(" "+area+" "))
+			parts = append(parts, HelpDescStyle.Render(area))
 		}
 	}
+	styledContent := HelpDescStyle.Render("Focus: ") + strings.Join(parts, HelpDescStyle.Render(sep)) + HelpDescStyle.Render(" ")
 
-	return " Focus: " + strings.Join(parts, " → ")
+	// Fixed width for stability, pad on left for right-align
+	fixedWidth := 30
+	contentWidth := lipgloss.Width(plainText)
+	if contentWidth < fixedWidth {
+		padding := strings.Repeat(" ", fixedWidth-contentWidth)
+		return HelpDescStyle.Render(padding) + styledContent
+	}
+	return styledContent
 }
 
 // renderDashboard renders the dashboard view with split panes
@@ -1206,16 +1269,25 @@ func (m *Model) renderDashboard(width, height int) string {
 	)
 
 	// Calculate panel sizes
-	// Left: Projects + Processes + Git stacked (narrow, 1/3)
-	// Right: Logs (wide, 2/3)
-	panelHeight := height - 8
-	leftWidth := width / 3
+	// Stats: 4 lines (2 content + 2 border)
+	// Left: 3 stacked panels × 2 border lines = 6
+	statsHeight := 4
+	panelBorders := 6
+
+	// Width: simple split (1/3 left, 2/3 right)
+	// 3 panels × 2 border chars = 6
+	widthBorders := 6
+	availableWidth := width - widthBorders - GapHorizontal
+	leftWidth := availableWidth / 3
 	if leftWidth < 30 {
 		leftWidth = 30
 	}
-	rightWidth := width - leftWidth - GapHorizontal
+	rightWidth := availableWidth - leftWidth
 
-	// Left: 3 panels, distribute height with remainder to last panel
+	// Height for left side (3 stacked panels)
+	panelHeight := height - statsHeight - panelBorders
+
+	// Left: 3 panels, distribute height
 	thirdHeight := panelHeight / 3
 	lastPanelHeight := panelHeight - (thirdHeight * 2)
 
@@ -1226,8 +1298,9 @@ func (m *Model) renderDashboard(width, height int) string {
 	// Stack left panels
 	leftPane := lipgloss.JoinVertical(lipgloss.Left, projectsPanel, processesPanel, gitPanel)
 
-	// Right: Logs - use full panelHeight to align with left pane
-	logsPanel := m.renderMiniLogs(rightWidth-5, panelHeight)
+	// Right: Logs - add back border difference (6 - 2 = 4) so both sides align
+	logsHeight := panelHeight + 4
+	logsPanel := m.renderMiniLogs(rightWidth, logsHeight)
 
 	// Combine with horizontal gap
 	panels := lipgloss.JoinHorizontal(lipgloss.Top,
@@ -1509,23 +1582,31 @@ func (m *Model) renderProjects(width, height int) string {
 		return m.renderLoading()
 	}
 
+	// 2 panels side by side (TreeMenu + detail)
+	// Height: 1 × 2 = 2
+	// Width: 2 × 2 = 4
+	heightBorders := 2
+	widthBorders := 4
+	panelHeight := height - heightBorders
+	availableWidth := width - widthBorders - GapHorizontal
+
 	// Left panel - TreeMenu with projects and components
 	listWidth := m.projectsMenu.CalcWidth()
 	if listWidth < 30 {
 		listWidth = 30
 	}
-	if listWidth > width/2 {
-		listWidth = width / 2
+	if listWidth > availableWidth/2 {
+		listWidth = availableWidth / 2
 	}
 
 	// Configure and render TreeMenu
-	m.projectsMenu.SetSize(listWidth, height-4)
+	m.projectsMenu.SetSize(listWidth, panelHeight)
 	m.projectsMenu.SetFocused(m.focusArea == FocusMain)
 	listPanel := m.projectsMenu.Render()
 
 	// Right panel - project/component details
-	detailWidth := width - listWidth - GapHorizontal
-	detailHeight := height - 6
+	detailWidth := availableWidth - listWidth
+	detailHeight := panelHeight
 	var detailContent string
 
 	// Get selected item from TreeMenu
@@ -1643,7 +1724,7 @@ func (m *Model) renderProjects(width, height int) string {
 	} else {
 		detailStyle = UnfocusedBorderStyle
 	}
-	detailPanel := detailStyle.Width(detailWidth - 5).Height(detailHeight).Render(detailContent)
+	detailPanel := detailStyle.Width(detailWidth - 2).Height(detailHeight).Render(detailContent)
 
 	gap := strings.Repeat(" ", GapHorizontal)
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, gap, detailPanel)
@@ -1737,7 +1818,8 @@ func (m *Model) renderBuild(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	return style.Width(width - 3).Height(height - 2).Render(
+	// 1 panel: width 1 × 2 = 2
+	return style.Width(width - 2).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			profileBar,
 			"",
@@ -1779,23 +1861,31 @@ func (m *Model) renderProcesses(width, height int) string {
 		return m.renderLoading()
 	}
 
+	// 2 panels side by side
+	// Height: 1 level × 2 border lines = 2
+	// Width: 2 panels × 2 border chars = 4
+	heightBorders := 2
+	widthBorders := 4
+	panelHeight := height - heightBorders
+	availableWidth := width - widthBorders - GapHorizontal
+
 	// Left panel - TreeMenu with projects and processes
 	listWidth := m.processesMenu.CalcWidth()
 	if listWidth < 30 {
 		listWidth = 30
 	}
-	if listWidth > width/2 {
-		listWidth = width / 2
+	if listWidth > availableWidth/2 {
+		listWidth = availableWidth / 2
 	}
 
 	// Configure and render TreeMenu
-	m.processesMenu.SetSize(listWidth, height-4)
+	m.processesMenu.SetSize(listWidth, panelHeight)
 	m.processesMenu.SetFocused(m.focusArea == FocusMain)
 	listPanel := m.processesMenu.Render()
 
 	// Right panel - process details
-	detailWidth := width - listWidth - GapHorizontal
-	detailHeight := height - 6
+	detailWidth := availableWidth - listWidth
+	detailHeight := panelHeight
 	var detailContent string
 
 	// Get selected item from TreeMenu
@@ -1878,7 +1968,7 @@ func (m *Model) renderProcesses(width, height int) string {
 	} else {
 		detailStyle = UnfocusedBorderStyle
 	}
-	detailPanel := detailStyle.Width(detailWidth - 5).Height(detailHeight).Render(detailContent)
+	detailPanel := detailStyle.Width(detailWidth - 2).Height(detailHeight).Render(detailContent)
 
 	gap := strings.Repeat(" ", GapHorizontal)
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, gap, detailPanel)
@@ -2100,7 +2190,8 @@ func (m *Model) renderLogs(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	return style.Width(width - 3).Height(height - 2).Render(
+	// 1 panel: height 1×2=2, width 1×2=2
+	return style.Width(width - 2).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left, filterBar1, filterBar2, statsLine, "", content),
 	)
 }
@@ -2139,23 +2230,31 @@ func (m *Model) renderGit(width, height int) string {
 		return m.renderLoading()
 	}
 
+	// 2 panels side by side
+	// Height: 1 level × 2 border lines = 2
+	// Width: 2 panels × 2 border chars = 4
+	heightBorders := 2
+	widthBorders := 4
+	panelHeight := height - heightBorders
+	availableWidth := width - widthBorders - GapHorizontal
+
 	// Left panel - TreeMenu with projects and files
 	listWidth := m.gitMenu.CalcWidth()
 	if listWidth < 35 {
 		listWidth = 35
 	}
-	if listWidth > width/2 {
-		listWidth = width / 2
+	if listWidth > availableWidth/2 {
+		listWidth = availableWidth / 2
 	}
 
 	// Configure and render TreeMenu
-	m.gitMenu.SetSize(listWidth, height-4)
+	m.gitMenu.SetSize(listWidth, panelHeight)
 	m.gitMenu.SetFocused(m.focusArea == FocusMain)
 	listPanel := m.gitMenu.Render()
 
 	// Right panel - diff/file preview
-	detailWidth := width - listWidth - GapHorizontal
-	detailHeight := height - 6
+	detailWidth := availableWidth - listWidth
+	detailHeight := panelHeight
 	var detailContent string
 
 	// Get selected item from TreeMenu
@@ -2289,7 +2388,7 @@ func (m *Model) renderGit(width, height int) string {
 	} else {
 		detailStyle = UnfocusedBorderStyle
 	}
-	detailPanel := detailStyle.Width(detailWidth - 5).Height(detailHeight).Render(detailContent)
+	detailPanel := detailStyle.Width(detailWidth - 2).Height(detailHeight).Render(detailContent)
 
 	gap := strings.Repeat(" ", GapHorizontal)
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, gap, detailPanel)
@@ -2395,7 +2494,8 @@ func (m *Model) renderConfig(width, height int) string {
 		style = UnfocusedBorderStyle
 	}
 
-	return style.Width(width - 3).Height(height - 2).Render(
+	// 1 panel: height 1×2=2, width 1×2=2
+	return style.Width(width - 2).Height(height - 2).Render(
 		lipgloss.JoinVertical(lipgloss.Left,
 			tabBar,
 			"",
