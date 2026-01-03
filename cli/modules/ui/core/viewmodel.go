@@ -218,9 +218,9 @@ type ClaudeSessionVM struct {
 	WorkDir         string    `json:"work_dir"`          // Working directory for Claude
 	State           string    `json:"state"`             // idle, running, waiting, error
 	MessageCount    int       `json:"message_count"`
+	CreatedAt       time.Time `json:"created_at"`        // Session creation time
 	LastActive      string    `json:"last_active"`       // Formatted date string
 	LastActiveAt    time.Time `json:"last_active_at"`    // Raw time for relative calculation
-	LastUserMessage string    `json:"last_user_message"` // Last user message (truncated)
 	IsActive     bool `json:"is_active"`     // Currently selected session
 	IsPersistent bool `json:"is_persistent"` // Has active persistent process (fast mode)
 }

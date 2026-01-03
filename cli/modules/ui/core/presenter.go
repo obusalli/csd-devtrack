@@ -1540,7 +1540,6 @@ func (p *AppPresenter) refreshClaude() {
 			MessageCount:    s.MessageCount,
 			LastActive:      s.LastActiveAt.Format("2006-01-02 15:04"),
 			LastActiveAt:    s.LastActiveAt,
-			LastUserMessage: s.LastUserMessage,
 			IsActive:        s.ID == p.state.Claude.ActiveSessionID,
 			IsPersistent:    persistentSessions[s.ID],
 		}
@@ -1582,38 +1581,18 @@ func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
 	if session == nil {
 		return nil
 	}
-	// Get last user message (skip system/internal messages)
-	lastUserMsg := ""
-	for i := len(session.Messages) - 1; i >= 0; i-- {
-		if session.Messages[i].Role == "user" {
-			content := session.Messages[i].Content
-			// Skip system/internal messages
-			if strings.HasPrefix(content, "[") ||
-				strings.HasPrefix(content, "<") ||
-				strings.HasPrefix(content, "Warmup") ||
-				content == "Goodbye!" ||
-				len(content) < 3 {
-				continue
-			}
-			lastUserMsg = content
-			if len(lastUserMsg) > 100 {
-				lastUserMsg = lastUserMsg[:100] + "..."
-			}
-			break
-		}
-	}
 	return &ClaudeSessionVM{
-		ID:              session.ID,
-		Name:            session.DisplayName(), // Use custom name if set
-		ProjectID:       session.ProjectID,
-		ProjectName:     session.ProjectName,
-		WorkDir:         session.WorkDir,
-		State:           string(session.State),
-		MessageCount:    len(session.Messages),
-		LastActive:      session.LastActiveAt.Format("2006-01-02 15:04"),
-		LastActiveAt:    session.LastActiveAt,
-		LastUserMessage: lastUserMsg,
-		IsActive:        true,
+		ID:           session.ID,
+		Name:         session.DisplayName(), // Use custom name if set
+		ProjectID:    session.ProjectID,
+		ProjectName:  session.ProjectName,
+		WorkDir:      session.WorkDir,
+		State:        string(session.State),
+		MessageCount: len(session.Messages),
+		CreatedAt:    session.CreatedAt,
+		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
+		LastActiveAt: session.LastActiveAt,
+		IsActive:     true,
 	}
 }
 

@@ -246,44 +246,9 @@ func DefaultBuildProfiles() map[string]*BuildProfile {
 	}
 }
 
-// DefaultWidgetProfiles returns the default widget layout profiles
+// DefaultWidgetProfiles returns empty widget profiles (user configures from scratch)
 func DefaultWidgetProfiles() map[string]*WidgetProfile {
-	return map[string]*WidgetProfile{
-		"default": {
-			Name:        "default",
-			Description: "Standard layout with stats, processes and logs",
-			Rows:        2,
-			Cols:        2,
-			Widgets: []WidgetConfig{
-				{ID: "w1", Type: string(WidgetDashStats), Row: 0, Col: 0, ColSpan: 2, Title: "Stats"},
-				{ID: "w2", Type: string(WidgetProcesses), Row: 1, Col: 0, Title: "Processes"},
-				{ID: "w3", Type: string(WidgetLogs), Row: 1, Col: 1, Title: "Logs"},
-			},
-		},
-		"debug": {
-			Name:        "debug",
-			Description: "Focused on logs and build output",
-			Rows:        2,
-			Cols:        2,
-			Widgets: []WidgetConfig{
-				{ID: "w1", Type: string(WidgetLogs), Row: 0, Col: 0, ColSpan: 2, LogLevelFilter: "error", Title: "Errors"},
-				{ID: "w2", Type: string(WidgetBuildStatus), Row: 1, Col: 0, Title: "Build"},
-				{ID: "w3", Type: string(WidgetProcesses), Row: 1, Col: 1, Title: "Processes"},
-			},
-		},
-		"monitoring": {
-			Name:        "monitoring",
-			Description: "System monitoring focus",
-			Rows:        3,
-			Cols:        2,
-			Widgets: []WidgetConfig{
-				{ID: "w1", Type: string(WidgetDashStats), Row: 0, Col: 0, ColSpan: 2, Title: "Dashboard"},
-				{ID: "w2", Type: string(WidgetProcesses), Row: 1, Col: 0, Title: "Processes"},
-				{ID: "w3", Type: string(WidgetGitStatus), Row: 1, Col: 1, Title: "Git"},
-				{ID: "w4", Type: string(WidgetLogs), Row: 2, Col: 0, ColSpan: 2, Title: "All Logs"},
-			},
-		},
-	}
+	return map[string]*WidgetProfile{}
 }
 
 // DefaultConfig returns a default configuration

@@ -114,21 +114,10 @@ func (m *Model) renderSessionInfo(width, height int) string {
 	infoLine := relTime + " · " + msgCount
 	lines = append(lines, mutedStyle.Render(infoLine))
 
-	// Remaining lines: Last user message (word wrapped to fill panel)
-	if sess.LastUserMessage != "" {
-		msg := sess.LastUserMessage
-		msg = strings.ReplaceAll(msg, "\n", " ")
-		msg = strings.TrimSpace(msg)
-
-		// Word wrap to fill remaining height
-		maxMsgLines := innerHeight - 1
-		wrapped := wrapTextRunes(msg, contentWidth, maxMsgLines)
-		for _, line := range wrapped {
-			lines = append(lines, valueStyle.Render(line))
-		}
-	} else {
-		lines = append(lines, mutedStyle.Render("No messages"))
-	}
+	// Second line: Session duration
+	duration := formatDuration(sess.CreatedAt, sess.LastActiveAt)
+	durationLine := "Duration: " + duration
+	lines = append(lines, valueStyle.Render(durationLine))
 
 	// Pad each line to exact width
 	for i, line := range lines {
@@ -152,58 +141,27 @@ func (m *Model) renderSessionInfo(width, height int) string {
 		Render(content)
 }
 
-// truncateRunes truncates a string to maxLen runes (not bytes)
-func truncateRunes(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
+// formatDuration formats the duration between two times
+func formatDuration(start, end time.Time) string {
+	if start.IsZero() || end.IsZero() {
+		return "unknown"
 	}
-	if maxLen <= 3 {
-		return string(runes[:maxLen])
-	}
-	return string(runes[:maxLen-2]) + ".."
-}
-
-// wrapTextRunes wraps text to width using runes, returns up to maxLines
-func wrapTextRunes(s string, width, maxLines int) []string {
-	if width <= 0 || maxLines <= 0 {
-		return nil
+	d := end.Sub(start)
+	if d < 0 {
+		d = 0
 	}
 
-	runes := []rune(s)
-	var result []string
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	secs := int(d.Seconds()) % 60
 
-	for len(runes) > 0 && len(result) < maxLines {
-		lineLen := width
-		if lineLen > len(runes) {
-			lineLen = len(runes)
-		}
-		result = append(result, string(runes[:lineLen]))
-		runes = runes[lineLen:]
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
 	}
-
-	// Add ellipsis if there's more text
-	if len(runes) > 0 && len(result) > 0 {
-		lastIdx := len(result) - 1
-		lastLine := []rune(result[lastIdx])
-		// If last line has room for "...", append to same line
-		if len(lastLine) <= width-3 {
-			result[lastIdx] = string(lastLine) + "..."
-		} else if len(result) < maxLines {
-			// Add "..." on a new line if we have room
-			result = append(result, "...")
-		} else {
-			// Replace last 3 chars with "..."
-			if len(lastLine) >= 3 {
-				lastLine[len(lastLine)-3] = '.'
-				lastLine[len(lastLine)-2] = '.'
-				lastLine[len(lastLine)-1] = '.'
-				result[lastIdx] = string(lastLine)
-			}
-		}
+	if mins > 0 {
+		return fmt.Sprintf("%dm %ds", mins, secs)
 	}
-
-	return result
+	return fmt.Sprintf("%ds", secs)
 }
 
 // formatRelativeTime formats a time as relative (e.g., "2 hours ago")

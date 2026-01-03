@@ -79,9 +79,9 @@ func (l *Loader) LoadWithCreate(createIfMissing bool) (*Config, error) {
 		}
 	}
 
-	// Apply default widget profiles if missing
-	if config.WidgetProfiles == nil || len(config.WidgetProfiles) == 0 {
-		config.WidgetProfiles = DefaultWidgetProfiles()
+	// Initialize empty widget profiles map if nil
+	if config.WidgetProfiles == nil {
+		config.WidgetProfiles = make(map[string]*WidgetProfile)
 	}
 
 	// Apply default build profiles if missing

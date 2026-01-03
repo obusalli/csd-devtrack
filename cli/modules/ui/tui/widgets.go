@@ -26,11 +26,16 @@ func (m *Model) renderWidgets(width, height int) string {
 		return m.renderWidgetsPlaceholder(width, height, "No configuration loaded")
 	}
 
+	// Check if there are any profiles
+	if cfg.WidgetProfiles == nil || len(cfg.WidgetProfiles) == 0 {
+		return m.renderWidgetsEmpty(width, height)
+	}
+
 	// Get active profile
 	profileName := m.getActiveWidgetProfile()
 	profile := m.getWidgetProfile(profileName)
 	if profile == nil {
-		return m.renderWidgetsPlaceholder(width, height, "No widget profile found")
+		return m.renderWidgetsEmpty(width, height)
 	}
 
 	// Render header
@@ -41,7 +46,7 @@ func (m *Model) renderWidgets(width, height int) string {
 	gridHeight := height - headerHeight
 	layouts := m.calculateWidgetLayouts(profile, width, gridHeight)
 	if len(layouts) == 0 {
-		return m.renderWidgetsPlaceholder(width, height, "No widgets configured")
+		return m.renderWidgetsPlaceholder(width, height, "No widgets in profile")
 	}
 
 	// Render grid
@@ -56,6 +61,36 @@ func (m *Model) renderWidgets(width, height int) string {
 	}
 
 	return content
+}
+
+// renderWidgetsEmpty renders the empty state when no profiles exist
+func (m *Model) renderWidgetsEmpty(width, height int) string {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorSecondary)
+
+	messageStyle := lipgloss.NewStyle().
+		Foreground(ColorMuted).
+		Align(lipgloss.Center)
+
+	keyStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(ColorPrimary)
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		titleStyle.Render("≡ WIDGETS"),
+		"",
+		"",
+		messageStyle.Render("No widget profiles configured"),
+		"",
+		messageStyle.Render("Press "+keyStyle.Render("n")+" to create your first profile"),
+	)
+
+	return lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(content)
 }
 
 // getActiveWidgetProfile returns the active widget profile name
