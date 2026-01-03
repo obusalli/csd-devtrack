@@ -201,6 +201,11 @@ type Model struct {
 	codexTreeMenu      *TreeMenu // Tree menu for sessions panel
 	codexFilterProject string    // Filter by project ID
 
+	// Shell view state
+	shellActiveSession string    // Active Shell session ID
+	shellTreeMenu      *TreeMenu // Tree menu for sessions panel
+	shellFilterProject string    // Filter by project ID
+
 	// Components
 	help     help.Model
 	spinner  spinner.Model
@@ -446,11 +451,21 @@ func (m *Model) restoreViewState(view core.ViewModelType) {
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
+	// Clean up orphan tmux sessions from previous runs
+	CleanupOrphanTmuxSessions()
+
 	return tea.Batch(
 		m.spinner.Tick,
 		m.refreshData,
 		tea.WindowSize(),
 	)
+}
+
+// Cleanup cleans up resources before shutdown
+func (m *Model) Cleanup() {
+	if m.terminalManager != nil {
+		m.terminalManager.StopAll()
+	}
 }
 
 // Update handles messages
@@ -523,6 +538,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if keyStr == "esc" || keyStr == "escape" {
 						m.terminalMode = false
 						m.focusArea = FocusDetail
+						m.claudeInputActive = false
+						m.claudeRenameActive = false
 						return m, nil
 					}
 					// Other commands work too (q for quit, d for detach)
@@ -543,13 +560,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Claude input handling (chat or rename)
-		// Debug
-		if msg.String() == "esc" {
-			if f, _ := os.OpenFile("/tmp/esc_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); f != nil {
-				f.WriteString(fmt.Sprintf("ESC pressed: claudeInputActive=%v terminalMode=%v\n", m.claudeInputActive, m.terminalMode))
-				f.Close()
-			}
-		}
 		if m.claudeInputActive {
 			cmd := m.handleClaudeInput(msg)
 			if cmd != nil {
@@ -737,7 +747,7 @@ func (m Model) renderInitializingView() string {
 // handleKeyPress processes keyboard input
 func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Command mode handling (like screen/tmux)
-	// Ctrl+Space activates command mode, then next key is the command
+	// Ctrl+G activates command mode, then next key is the command
 	if key.Matches(msg, m.keys.CommandPrefix) {
 		m.commandMode = true
 		m.commandModeTime = time.Now()
@@ -826,6 +836,9 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			if m.currentView == core.VMClaude && m.claudeActiveSession != "" {
 				if t := m.terminalManager.Get(m.claudeActiveSession); t != nil && t.IsRunning() {
 					m.terminalMode = true
+					m.claudeInputActive = false
+					m.claudeRenameActive = false
+					m.commandMode = false
 				}
 			}
 		}
@@ -1527,6 +1540,19 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			m.lastErrorTime = time.Now()
 		}
 		return nil
+	case "T":
+		// Terminal/Shell view (requires tmux + shell)
+		if m.state.Capabilities != nil && m.state.Capabilities.HasShell() {
+			return m.selectViewByType(core.VMShell)
+		}
+		if m.state.Capabilities != nil && !m.state.Capabilities.Tmux.Available {
+			m.lastError = "tmux required for Terminal view"
+			m.lastErrorTime = time.Now()
+		} else if m.state.Capabilities != nil && !m.state.Capabilities.Shell.Available {
+			m.lastError = "shell (bash/sh) not found"
+			m.lastErrorTime = time.Now()
+		}
+		return nil
 	case "S":
 		return m.selectViewByType(core.VMConfig)
 	}
@@ -1994,6 +2020,109 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 			if m.focusArea == FocusMain && m.databaseActiveSession != "" {
 				if t := m.terminalManager.Get(m.databaseActiveSession); t != nil && t.IsRunning() {
 					m.terminalMode = true
+					m.claudeInputActive = false
+					m.claudeRenameActive = false
+					m.commandMode = false
+				}
+			}
+			return nil
+		case "esc":
+			// Exit terminal mode or switch focus
+			if m.terminalMode {
+				m.terminalMode = false
+				return nil
+			}
+			if m.focusArea == FocusDetail {
+				m.focusArea = FocusMain
+				return nil
+			}
+			return nil
+		}
+	}
+
+	// Shell view specific keys
+	if m.currentView == core.VMShell {
+		switch key {
+		case "n":
+			// New project shell session - when focused on sessions panel and on a project
+			if m.focusArea == FocusDetail && m.shellTreeMenu != nil {
+				item := m.shellTreeMenu.SelectedItem()
+				if item != nil && len(item.Children) > 0 {
+					// Create new session for selected project (has children = category)
+					return m.createShellSession("project", item.ID, item.Label)
+				}
+			}
+			return nil
+		case "h":
+			// New home directory shell session
+			return m.createShellSession("home", "", "")
+		case "s":
+			// New sudo root shell session (if sudo is available)
+			if m.state.Capabilities != nil && m.state.Capabilities.HasSudo() {
+				return m.createShellSession("sudo", "", "")
+			} else {
+				m.lastError = "sudo not available"
+				m.lastErrorTime = time.Now()
+			}
+			return nil
+		case "x":
+			// Delete selected session
+			if m.focusArea == FocusDetail && m.shellTreeMenu != nil {
+				item := m.shellTreeMenu.SelectedItem()
+				if item != nil && len(item.Children) == 0 && item.ID != "" {
+					m.dialogType = "delete_shell_session"
+					m.dialogMessage = fmt.Sprintf("Delete session \"%s\"?", item.Label)
+					m.showDialog = true
+				}
+			}
+			return nil
+		case "d":
+			// Disconnect shell terminal
+			if m.shellActiveSession != "" {
+				return m.stopShellTerminal(m.shellActiveSession)
+			}
+			return nil
+		case "e":
+			// Edit shell for selected session (cycle through available shells)
+			// Only if there's no terminal running for this session
+			if m.focusArea == FocusDetail && m.shellTreeMenu != nil {
+				item := m.shellTreeMenu.SelectedItem()
+				if item != nil && len(item.Children) == 0 && item.ID != "" {
+					// Check if terminal is running
+					if t := m.terminalManager.Get(item.ID); t != nil && t.IsRunning() {
+						m.lastError = "Cannot change shell while terminal is running"
+						m.lastErrorTime = time.Now()
+						return nil
+					}
+					// Check if we have more than one shell available
+					if m.state.Shell != nil && len(m.state.Shell.AvailableShells) <= 1 {
+						m.lastError = "Only one shell available"
+						m.lastErrorTime = time.Now()
+						return nil
+					}
+					// Cycle shell via presenter event
+					event := core.NewEvent(core.EventShellCycleShell).
+						WithData("session_id", item.ID)
+					return func() tea.Msg {
+						m.presenter.HandleEvent(event)
+						return refreshMsg{}
+					}
+				}
+			}
+			return nil
+		case "enter":
+			// Enter terminal mode when focused on terminal panel
+			if m.focusArea == FocusMain && m.shellActiveSession != "" {
+				if t := m.terminalManager.Get(m.shellActiveSession); t != nil && t.IsRunning() {
+					m.terminalMode = true
+					m.commandMode = false
+				}
+			}
+			// Select session from tree menu
+			if m.focusArea == FocusDetail && m.shellTreeMenu != nil {
+				item := m.shellTreeMenu.SelectedItem()
+				if item != nil && len(item.Children) == 0 && item.ID != "" {
+					return m.switchToShellSession(item.ID)
 				}
 			}
 			return nil
@@ -2277,8 +2406,11 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 		}
 	}
 
-	// Enter terminal mode
+	// Enter terminal mode - reset conflicting input modes
 	m.terminalMode = true
+	m.claudeInputActive = false
+	m.claudeRenameActive = false
+	m.commandMode = false
 
 	// Start terminal refresh loop
 	return m.scheduleTerminalRefresh()
@@ -2329,8 +2461,11 @@ func (m *Model) switchToSessionByID(sessionID string) tea.Cmd {
 		}
 	}
 
-	// Enter terminal mode
+	// Enter terminal mode - reset conflicting input modes
 	m.terminalMode = true
+	m.claudeInputActive = false
+	m.claudeRenameActive = false
+	m.commandMode = false
 
 	// Start terminal refresh loop
 	return m.scheduleTerminalRefresh()
@@ -2423,8 +2558,11 @@ func (m *Model) connectToDatabase(databaseID string) tea.Cmd {
 		}
 	}
 
-	// Enter terminal mode
+	// Enter terminal mode - reset conflicting input modes
 	m.terminalMode = true
+	m.claudeInputActive = false
+	m.claudeRenameActive = false
+	m.commandMode = false
 
 	// Header event
 	m.state.SetHeaderEvent(core.NewHeaderEvent(core.HeaderEventSuccess, "Connected to "+db.DatabaseName))
@@ -2483,6 +2621,232 @@ func (m *Model) getDatabaseCLICommand(db *core.DatabaseInfoVM) (string, []string
 	}
 }
 
+// ============================================
+// Shell Session Functions
+// ============================================
+
+// createShellSession creates a new shell session
+func (m *Model) createShellSession(sessionType, projectID, projectName string) tea.Cmd {
+	if m.terminalManager == nil {
+		return nil
+	}
+
+	// Get shell path
+	shellPath := "/bin/bash"
+	if m.state.Capabilities != nil && m.state.Capabilities.Shell.Path != "" {
+		shellPath = m.state.Capabilities.Shell.Path
+	}
+
+	// Determine work directory
+	var workDir string
+	var sessionName string
+	var args []string
+
+	switch sessionType {
+	case "home":
+		workDir, _ = os.UserHomeDir()
+		sessionName = "Home"
+	case "sudo":
+		workDir = "/root"
+		sessionName = "Root (sudo)"
+		// Use sudo -i to get root shell
+		args = []string{"-i"}
+		shellPath = "sudo"
+	case "project":
+		// Get project path from state
+		if m.state.Projects != nil {
+			for _, proj := range m.state.Projects.Projects {
+				if proj.ID == projectID {
+					workDir = proj.Path
+					sessionName = proj.Name
+					break
+				}
+			}
+		}
+		if workDir == "" {
+			workDir, _ = os.UserHomeDir()
+			sessionName = projectName
+		}
+	default:
+		workDir, _ = os.UserHomeDir()
+		sessionName = "Shell"
+	}
+
+	// Create session ID
+	sessionID := fmt.Sprintf("shell-%s-%d", sessionType, time.Now().UnixNano())
+
+	// Create terminal using TmuxPrefixShell prefix
+	var t TerminalInterface
+	if sessionType == "sudo" {
+		t = m.terminalManager.GetOrCreateCommandWithPrefix(sessionID, shellPath, args, TmuxPrefixShell)
+	} else {
+		// For regular shell, use a command-based approach
+		t = m.terminalManager.GetOrCreateCommandWithPrefix(sessionID, shellPath, []string{}, TmuxPrefixShell)
+	}
+
+	if t == nil {
+		m.lastError = "Failed to create shell terminal"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+
+	// Start the terminal
+	if err := t.Start(sessionID); err != nil {
+		m.lastError = fmt.Sprintf("Failed to start shell: %v", err)
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+
+	// Switch to this session
+	m.shellActiveSession = sessionID
+	m.focusArea = FocusMain
+
+	// Header event
+	m.state.SetHeaderEvent(core.NewHeaderEvent(core.HeaderEventSuccess, "Shell started: "+sessionName))
+
+	// Update tree menu
+	m.updateShellTree()
+
+	return m.scheduleTerminalRefresh()
+}
+
+// stopShellTerminal stops the shell terminal
+func (m *Model) stopShellTerminal(sessionID string) tea.Cmd {
+	if m.terminalManager == nil {
+		return nil
+	}
+
+	t := m.terminalManager.Get(sessionID)
+	if t == nil {
+		return nil
+	}
+
+	// Stop the terminal
+	go t.Stop()
+
+	// Exit terminal mode if this was active
+	if m.shellActiveSession == sessionID && m.terminalMode {
+		m.terminalMode = false
+	}
+
+	// Clear active session
+	if m.shellActiveSession == sessionID {
+		m.shellActiveSession = ""
+	}
+
+	// Header event
+	m.state.SetHeaderEvent(core.NewHeaderEvent(core.HeaderEventInfo, "Shell disconnected"))
+
+	// Update tree menu
+	m.updateShellTree()
+
+	return nil
+}
+
+// switchToShellSession switches to an existing shell session
+func (m *Model) switchToShellSession(sessionID string) tea.Cmd {
+	if m.terminalManager == nil {
+		return nil
+	}
+
+	t := m.terminalManager.Get(sessionID)
+	if t == nil || !t.IsRunning() {
+		m.lastError = "Session not running"
+		m.lastErrorTime = time.Now()
+		return nil
+	}
+
+	m.shellActiveSession = sessionID
+	m.focusArea = FocusMain
+	m.updateShellTree()
+
+	return m.scheduleTerminalRefresh()
+}
+
+// updateShellTree updates the shell sessions tree menu
+func (m *Model) updateShellTree() {
+	if m.state.Shell == nil {
+		return
+	}
+
+	// Create root items for special sessions and projects
+	var items []TreeMenuItem
+
+	// Special sessions category (Home, Root)
+	var specialItems []TreeMenuItem
+
+	// Check for active home and sudo sessions in terminal manager
+	if m.terminalManager != nil {
+		for _, sessionID := range m.terminalManager.GetRunning() {
+			if strings.HasPrefix(sessionID, "shell-home-") {
+				specialItems = append(specialItems, TreeMenuItem{
+					ID:       sessionID,
+					Label:    "Home",
+					Icon:     "~",
+					IsActive: sessionID == m.shellActiveSession,
+				})
+			} else if strings.HasPrefix(sessionID, "shell-sudo-") {
+				specialItems = append(specialItems, TreeMenuItem{
+					ID:       sessionID,
+					Label:    "Root (sudo)",
+					Icon:     "#",
+					IsActive: sessionID == m.shellActiveSession,
+				})
+			}
+		}
+	}
+
+	if len(specialItems) > 0 {
+		items = append(items, TreeMenuItem{
+			ID:       "_special",
+			Label:    "Special",
+			Children: specialItems,
+		})
+	}
+
+	// Project sessions
+	projectSessionMap := make(map[string][]TreeMenuItem)
+
+	if m.terminalManager != nil {
+		for _, sessionID := range m.terminalManager.GetRunning() {
+			if strings.HasPrefix(sessionID, "shell-project-") {
+				// Extract project from session (need to track this better)
+				parts := strings.Split(sessionID, "-")
+				if len(parts) >= 3 {
+					projectID := parts[2] // This is simplified, may need improvement
+					projectSessionMap[projectID] = append(projectSessionMap[projectID], TreeMenuItem{
+						ID:       sessionID,
+						Label:    "Shell",
+						Icon:     "$",
+						IsActive: sessionID == m.shellActiveSession,
+					})
+				}
+			}
+		}
+	}
+
+	// Add projects with their sessions
+	if m.state.Projects != nil {
+		for _, proj := range m.state.Projects.Projects {
+			projSessions := projectSessionMap[proj.ID]
+			projItem := TreeMenuItem{
+				ID:       proj.ID,
+				Label:    proj.Name,
+				Children: projSessions,
+			}
+			items = append(items, projItem)
+		}
+	}
+
+	// Create or update tree menu
+	if m.shellTreeMenu == nil {
+		m.shellTreeMenu = NewTreeMenu(items)
+		m.shellTreeMenu.SetSize(30, 20)
+	} else {
+		m.shellTreeMenu.SetItems(items)
+	}
+}
+
 // handleClaudeInput handles text input in Claude chat mode
 // Controls:
 //   - Enter: send message, stay in input mode
@@ -2507,11 +2871,6 @@ func (m *Model) handleClaudeInput(msg tea.KeyMsg) tea.Cmd {
 			m.claudeTextInput.Blur()
 			m.focusArea = FocusDetail // Switch to sessions panel
 			m.claudeLastEscTime = time.Time{} // Reset
-			// Debug
-			if f, _ := os.OpenFile("/tmp/esc_debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); f != nil {
-				f.WriteString(fmt.Sprintf("double-ESC: focusArea=%d (FocusDetail=%d)\n", m.focusArea, FocusDetail))
-				f.Close()
-			}
 			return nil
 		}
 		m.claudeLastEscTime = now
