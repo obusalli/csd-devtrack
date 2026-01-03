@@ -3777,7 +3777,7 @@ func (m *Model) updateClaudeTree() {
 						}
 					}
 
-					// Also try with resolved symlinks (handles /home/user/data -> /data symlinks)
+					// Also try with resolved symlinks on project path
 					if realPath, err := filepath.EvalSymlinks(node.Path); err == nil && realPath != node.Path {
 						encodedRealPath := strings.ReplaceAll(realPath, "/", "-")
 						if sess.ClaudeProjectDir == encodedRealPath ||
@@ -3788,34 +3788,23 @@ func (m *Model) updateClaudeTree() {
 							}
 						}
 					}
-
-					// Try reverse: decode session's ClaudeProjectDir and resolve symlinks
-					// This handles case where session was created via symlink path
-					sessionPath := strings.ReplaceAll(sess.ClaudeProjectDir, "-", "/")
-					if realSessionPath, err := filepath.EvalSymlinks(sessionPath); err == nil {
-						if realSessionPath == node.Path || strings.HasPrefix(realSessionPath, node.Path+"/") {
-							if len(node.Path) > bestMatchLen {
-								bestMatch = node
-								bestMatchLen = len(node.Path)
-							}
-						}
-						// Also compare resolved session path with resolved project path
-						if realPath, err := filepath.EvalSymlinks(node.Path); err == nil {
-							if realSessionPath == realPath || strings.HasPrefix(realSessionPath, realPath+"/") {
-								if len(node.Path) > bestMatchLen {
-									bestMatch = node
-									bestMatchLen = len(node.Path)
-								}
-							}
-						}
-					}
 				}
 
-				// Also check if session WorkDir is under project path (handles subdirectories)
-				// e.g., session in /data/project/cli matches project at /data/project
+				// Use WorkDir (from cwd in JSONL) with symlink resolution for matching
+				// This is more reliable than trying to decode ClaudeProjectDir
 				if sess.WorkDir != "" && node.Path != "" {
-					if strings.HasPrefix(sess.WorkDir, node.Path+"/") || sess.WorkDir == node.Path {
-						// Keep the longest matching path (most specific parent)
+					// Resolve symlinks on both paths for comparison
+					realWorkDir := sess.WorkDir
+					if resolved, err := filepath.EvalSymlinks(sess.WorkDir); err == nil {
+						realWorkDir = resolved
+					}
+					realNodePath := node.Path
+					if resolved, err := filepath.EvalSymlinks(node.Path); err == nil {
+						realNodePath = resolved
+					}
+
+					// Match if resolved paths are equal or session is in subdirectory
+					if realWorkDir == realNodePath || strings.HasPrefix(realWorkDir, realNodePath+"/") {
 						if len(node.Path) > bestMatchLen {
 							bestMatch = node
 							bestMatchLen = len(node.Path)
