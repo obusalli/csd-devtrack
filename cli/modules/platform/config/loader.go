@@ -125,14 +125,17 @@ func (l *Loader) Exists() bool {
 
 // FindConfigFile searches for config file in standard locations
 func FindConfigFile() string {
-	// Priority order:
+	// Priority order for EXISTING files:
 	// 1. Current directory
 	// 2. Executable directory
-	// 3. User config directory
+	// 3. User config directory (~/.csd-devtrack/)
+	//
+	// If no file exists, default to user config directory (NOT current directory)
+	// to avoid creating config files in project directories
 
 	// 1. Current directory
-	cwd, err := os.Getwd()
-	if err == nil {
+	cwd, _ := os.Getwd()
+	if cwd != "" {
 		configPath := filepath.Join(cwd, DefaultConfigFileName)
 		if _, err := os.Stat(configPath); err == nil {
 			return configPath
@@ -149,18 +152,19 @@ func FindConfigFile() string {
 		}
 	}
 
-	// 3. User config directory
+	// 3. User config directory (~/.csd-devtrack/)
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
-		configPath := filepath.Join(homeDir, ".config", "csd-devtrack", DefaultConfigFileName)
+		configPath := filepath.Join(homeDir, ".csd-devtrack", DefaultConfigFileName)
 		if _, err := os.Stat(configPath); err == nil {
 			return configPath
 		}
 	}
 
-	// Default to current directory
-	if cwd != "" {
-		return filepath.Join(cwd, DefaultConfigFileName)
+	// Default to user config directory (NOT current directory)
+	// This prevents creating config files in project directories
+	if homeDir != "" {
+		return filepath.Join(homeDir, ".csd-devtrack", DefaultConfigFileName)
 	}
 
 	return DefaultConfigFileName
