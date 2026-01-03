@@ -1615,18 +1615,19 @@ func (p *AppPresenter) refreshClaude() {
 	p.state.Claude.Sessions = make([]ClaudeSessionVM, len(sessions))
 	for i, s := range sessions {
 		p.state.Claude.Sessions[i] = ClaudeSessionVM{
-			ID:           s.ID,
-			Name:         s.Name,
-			ProjectID:    s.ProjectID,
-			ProjectName:  s.ProjectName,
-			WorkDir:      s.WorkDir,
-			State:        string(s.State),
-			MessageCount: s.MessageCount,
-			CreatedAt:    s.CreatedAt,
-			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
-			LastActiveAt: s.LastActiveAt,
-			IsActive:     s.ID == p.state.Claude.ActiveSessionID,
-			IsPersistent: persistentSessions[s.ID],
+			ID:               s.ID,
+			Name:             s.Name,
+			ProjectID:        s.ProjectID,
+			ProjectName:      s.ProjectName,
+			WorkDir:          s.WorkDir,
+			ClaudeProjectDir: s.ClaudeProjectDir,
+			State:            string(s.State),
+			MessageCount:     s.MessageCount,
+			CreatedAt:        s.CreatedAt,
+			LastActive:       s.LastActiveAt.Format("2006-01-02 15:04"),
+			LastActiveAt:     s.LastActiveAt,
+			IsActive:         s.ID == p.state.Claude.ActiveSessionID,
+			IsPersistent:     persistentSessions[s.ID],
 		}
 	}
 
@@ -1666,18 +1667,27 @@ func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
 	if session == nil {
 		return nil
 	}
+
+	// Extract Claude project directory from session file path
+	// e.g., ~/.claude/projects/-data-devel-infra-csd-devtrack/session.jsonl -> -data-devel-infra-csd-devtrack
+	claudeProjectDir := ""
+	if session.SessionFile != "" {
+		claudeProjectDir = filepath.Base(filepath.Dir(session.SessionFile))
+	}
+
 	return &ClaudeSessionVM{
-		ID:           session.ID,
-		Name:         session.DisplayName(), // Use custom name if set
-		ProjectID:    session.ProjectID,
-		ProjectName:  session.ProjectName,
-		WorkDir:      session.WorkDir,
-		State:        string(session.State),
-		MessageCount: len(session.Messages),
-		CreatedAt:    session.CreatedAt,
-		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
-		LastActiveAt: session.LastActiveAt,
-		IsActive:     true,
+		ID:               session.ID,
+		Name:             session.DisplayName(), // Use custom name if set
+		ProjectID:        session.ProjectID,
+		ProjectName:      session.ProjectName,
+		WorkDir:          session.WorkDir,
+		ClaudeProjectDir: claudeProjectDir,
+		State:            string(session.State),
+		MessageCount:     len(session.Messages),
+		CreatedAt:        session.CreatedAt,
+		LastActive:       session.LastActiveAt.Format("2006-01-02 15:04"),
+		LastActiveAt:     session.LastActiveAt,
+		IsActive:         true,
 	}
 }
 

@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,29 +64,38 @@ func (s *Session) DisplayName() string {
 
 // SessionSummary is a lightweight version for listing
 type SessionSummary struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	ProjectID    string       `json:"project_id"`
-	ProjectName  string       `json:"project_name"`
-	WorkDir      string       `json:"work_dir"`
-	State        SessionState `json:"state"`
-	MessageCount int          `json:"message_count"`
-	CreatedAt    time.Time    `json:"created_at"`
-	LastActiveAt time.Time    `json:"last_active_at"`
+	ID               string       `json:"id"`
+	Name             string       `json:"name"`
+	ProjectID        string       `json:"project_id"`
+	ProjectName      string       `json:"project_name"`
+	WorkDir          string       `json:"work_dir"`
+	ClaudeProjectDir string       `json:"claude_project_dir"` // Raw Claude project directory name
+	State            SessionState `json:"state"`
+	MessageCount     int          `json:"message_count"`
+	CreatedAt        time.Time    `json:"created_at"`
+	LastActiveAt     time.Time    `json:"last_active_at"`
 }
 
 // ToSummary converts a Session to SessionSummary
 func (s *Session) ToSummary() SessionSummary {
+	// Extract Claude project directory from session file path
+	// e.g., ~/.claude/projects/-data-devel-infra-csd-devtrack/session.jsonl -> -data-devel-infra-csd-devtrack
+	claudeProjectDir := ""
+	if s.SessionFile != "" {
+		claudeProjectDir = filepath.Base(filepath.Dir(s.SessionFile))
+	}
+
 	return SessionSummary{
-		ID:           s.ID,
-		Name:         s.DisplayName(), // Use custom name if set
-		ProjectID:    s.ProjectID,
-		ProjectName:  s.ProjectName,
-		WorkDir:      s.WorkDir,
-		State:        s.State,
-		MessageCount: len(s.Messages),
-		CreatedAt:    s.CreatedAt,
-		LastActiveAt: s.LastActiveAt,
+		ID:               s.ID,
+		Name:             s.DisplayName(), // Use custom name if set
+		ProjectID:        s.ProjectID,
+		ProjectName:      s.ProjectName,
+		WorkDir:          s.WorkDir,
+		ClaudeProjectDir: claudeProjectDir,
+		State:            s.State,
+		MessageCount:     len(s.Messages),
+		CreatedAt:        s.CreatedAt,
+		LastActiveAt:     s.LastActiveAt,
 	}
 }
 

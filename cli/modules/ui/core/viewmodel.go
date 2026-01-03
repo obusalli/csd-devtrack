@@ -218,6 +218,7 @@ type ClaudeSessionVM struct {
 	ProjectID       string    `json:"project_id"`
 	ProjectName     string    `json:"project_name"`
 	WorkDir         string    `json:"work_dir"`          // Working directory for Claude
+	ClaudeProjectDir string   `json:"claude_project_dir"` // Raw Claude project directory name (e.g., -data-devel-infra-csd-devtrack)
 	State           string    `json:"state"`             // idle, running, waiting, error
 	MessageCount    int       `json:"message_count"`
 	CreatedAt       time.Time `json:"created_at"`        // Session creation time

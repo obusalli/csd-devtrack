@@ -3399,7 +3399,23 @@ func (m *Model) updateClaudeTree() {
 					break
 				}
 
-				// Check if session WorkDir is under project path (handles subdirectories)
+				// Try matching by Claude project directory name
+				// e.g., session in -data-devel-infra-csd-devtrack matches project at /data/devel/infra/csd-devtrack
+				if sess.ClaudeProjectDir != "" && node.Path != "" {
+					// Encode project path to Claude format: /data/devel/project -> -data-devel-project
+					encodedPath := strings.ReplaceAll(node.Path, "/", "-")
+					// Match if session's Claude dir equals or starts with encoded project path
+					if sess.ClaudeProjectDir == encodedPath ||
+						strings.HasPrefix(sess.ClaudeProjectDir, encodedPath+"-") {
+						// Keep the longest matching path (most specific parent)
+						if len(node.Path) > bestMatchLen {
+							bestMatch = node
+							bestMatchLen = len(node.Path)
+						}
+					}
+				}
+
+				// Also check if session WorkDir is under project path (handles subdirectories)
 				// e.g., session in /data/project/cli matches project at /data/project
 				if sess.WorkDir != "" && node.Path != "" {
 					if strings.HasPrefix(sess.WorkDir, node.Path+"/") || sess.WorkDir == node.Path {
