@@ -579,8 +579,10 @@ func (t *TerminalTmux) Stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.stopCh != nil {
+	// Only close the channel if it's not already closed
+	if t.stopCh != nil && t.state == TerminalRunning {
 		close(t.stopCh)
+		t.stopCh = nil
 	}
 
 	// Kill the tmux session

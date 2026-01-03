@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // Layout constants
@@ -255,4 +256,67 @@ func GitStatusIcon(clean bool) string {
 		return GitCleanStyle.Render(IconGitClean)
 	}
 	return GitDirtyStyle.Render(IconGitDirty)
+}
+
+// ShortcutStyle is the style used for highlighting shortcut keys in labels
+var ShortcutStyle = lipgloss.NewStyle().
+	Foreground(ColorSecondary).
+	Bold(true)
+
+// SupportsColoredShortcuts returns true if terminal supports colors for shortcuts
+func SupportsColoredShortcuts() bool {
+	profile := lipgloss.ColorProfile()
+	return profile != termenv.Ascii
+}
+
+// StripShortcutBrackets removes [X] syntax from label, returning clean text and shortcut position
+// Returns the clean label and the position of the shortcut character (-1 if not found)
+// Example: "[D]ashboard" -> ("Dashboard", 0)
+// Example: "Coc[K]pit" -> ("Cockpit", 3)
+func StripShortcutBrackets(label string) (clean string, shortcutPos int) {
+	// Find [X] pattern (single character in brackets)
+	for i := 0; i < len(label); i++ {
+		if label[i] == '[' && i+2 < len(label) && label[i+2] == ']' {
+			// Found [X] - remove brackets
+			before := label[:i]
+			shortcut := string(label[i+1])
+			after := label[i+3:]
+			return before + shortcut + after, len(before)
+		}
+	}
+	// No [X] pattern found
+	return label, -1
+}
+
+// ApplyShortcutColor applies color to the character at the given position
+// Used after truncation to color the shortcut if still visible
+func ApplyShortcutColor(label string, pos int) string {
+	if pos < 0 || pos >= len(label) {
+		return label
+	}
+	// Don't color if position is in the "..." suffix
+	if len(label) > 3 && label[len(label)-3:] == "..." && pos >= len(label)-3 {
+		return label
+	}
+	runes := []rune(label)
+	if pos >= len(runes) {
+		return label
+	}
+	before := string(runes[:pos])
+	char := string(runes[pos])
+	after := string(runes[pos+1:])
+	return before + ShortcutStyle.Render(char) + after
+}
+
+// RenderShortcutLabel renders a label with [X] syntax, using color if supported
+// or keeping brackets if the terminal doesn't support styling.
+// NOTE: This is the simple version. For proper truncation handling,
+// use StripShortcutBrackets + truncate + ApplyShortcutColor
+func RenderShortcutLabel(label string) string {
+	if !SupportsColoredShortcuts() {
+		// No color support - keep brackets as-is
+		return label
+	}
+	clean, pos := StripShortcutBrackets(label)
+	return ApplyShortcutColor(clean, pos)
 }

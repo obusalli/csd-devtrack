@@ -13,16 +13,17 @@ type AppState struct {
 	CurrentView ViewModelType
 
 	// View models (cached)
-	Dashboard *DashboardVM
-	Projects  *ProjectsVM
-	Builds    *BuildsVM
-	Processes *ProcessesVM
-	Logs      *LogsVM
-	Git       *GitVM
-	Config    *ConfigVM
-	Claude    *ClaudeVM
-	Cockpit   *CockpitVM
-	Database  *DatabaseVM
+	Dashboard    *DashboardVM
+	Projects     *ProjectsVM
+	Builds       *BuildsVM
+	Processes    *ProcessesVM
+	Logs         *LogsVM
+	Git          *GitVM
+	Config       *ConfigVM
+	Claude       *ClaudeVM
+	Cockpit      *CockpitVM
+	Database     *DatabaseVM
+	Capabilities *CapabilitiesVM
 
 	// Global state
 	IsConnected   bool
@@ -31,8 +32,8 @@ type AppState struct {
 	LastRefresh   time.Time
 	Notifications []*Notification
 
-	// Header event (transient status message shown in header center)
-	HeaderEvent *HeaderEvent
+	// Header events queue (ticker-style scrolling in header center)
+	HeaderEvents []*HeaderEvent
 }
 
 // NewAppState creates a new application state
@@ -48,8 +49,9 @@ func NewAppState() *AppState {
 		Git:          &GitVM{BaseViewModel: BaseViewModel{VMType: VMGit}},
 		Config:       &ConfigVM{BaseViewModel: BaseViewModel{VMType: VMConfig}},
 		Claude:       &ClaudeVM{BaseViewModel: BaseViewModel{VMType: VMClaude}},
-		Cockpit:      &CockpitVM{BaseViewModel: BaseViewModel{VMType: VMCockpit}},
-		Database:     &DatabaseVM{BaseViewModel: BaseViewModel{VMType: VMDatabase}},
+		Cockpit:       &CockpitVM{BaseViewModel: BaseViewModel{VMType: VMCockpit}},
+		Database:      &DatabaseVM{BaseViewModel: BaseViewModel{VMType: VMDatabase}},
+		Capabilities:  &CapabilitiesVM{},
 		Notifications: make([]*Notification, 0),
 	}
 }
@@ -144,25 +146,90 @@ func (s *AppState) ClearNotifications() {
 	s.Notifications = make([]*Notification, 0)
 }
 
-// SetHeaderEvent sets the current header event
+// SetHeaderEvent adds a header event to the queue (for ticker display)
 func (s *AppState) SetHeaderEvent(event *HeaderEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.HeaderEvent = event
+
+	// Always remove persistent events when any new event arrives
+	// (persistent events show "in progress" states that are now complete)
+	if len(s.HeaderEvents) > 0 {
+		filtered := make([]*HeaderEvent, 0, len(s.HeaderEvents))
+		for _, e := range s.HeaderEvents {
+			if !e.Persistent {
+				filtered = append(filtered, e)
+			}
+		}
+		s.HeaderEvents = filtered
+	}
+
+	// Don't add duplicate of the most recent event (same message)
+	if len(s.HeaderEvents) > 0 {
+		lastEvent := s.HeaderEvents[len(s.HeaderEvents)-1]
+		if lastEvent.Message == event.Message {
+			// Same message - update timestamp instead of adding duplicate
+			lastEvent.CreatedAt = event.CreatedAt
+			return
+		}
+	}
+
+	// Add to queue (max 10 events)
+	s.HeaderEvents = append(s.HeaderEvents, event)
+	if len(s.HeaderEvents) > 10 {
+		s.HeaderEvents = s.HeaderEvents[len(s.HeaderEvents)-10:]
+	}
 }
 
-// ClearHeaderEvent clears the current header event
+// ClearHeaderEvent clears all header events
 func (s *AppState) ClearHeaderEvent() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.HeaderEvent = nil
+	s.HeaderEvents = nil
 }
 
-// GetHeaderEvent returns the current header event
+// ClearExpiredHeaderEvents removes expired events from the queue
+func (s *AppState) ClearExpiredHeaderEvents() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.HeaderEvents) == 0 {
+		return
+	}
+
+	filtered := make([]*HeaderEvent, 0, len(s.HeaderEvents))
+	for _, e := range s.HeaderEvents {
+		if !e.IsExpired() {
+			filtered = append(filtered, e)
+		}
+	}
+	s.HeaderEvents = filtered
+}
+
+// GetHeaderEvent returns the first non-expired header event (for compatibility)
 func (s *AppState) GetHeaderEvent() *HeaderEvent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.HeaderEvent
+
+	for _, e := range s.HeaderEvents {
+		if !e.IsExpired() {
+			return e
+		}
+	}
+	return nil
+}
+
+// GetHeaderEvents returns all non-expired header events
+func (s *AppState) GetHeaderEvents() []*HeaderEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*HeaderEvent, 0, len(s.HeaderEvents))
+	for _, e := range s.HeaderEvents {
+		if !e.IsExpired() {
+			result = append(result, e)
+		}
+	}
+	return result
 }
 
 // ============================================

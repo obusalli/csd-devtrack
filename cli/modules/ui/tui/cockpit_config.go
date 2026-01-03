@@ -406,7 +406,7 @@ func (m *Model) renameCurrentCockpitProfile(newName string) {
 }
 
 // renderCockpitConfigOverlay renders the configuration overlay
-func (m *Model) renderCockpitConfigOverlay(baseContent string, width, height int) string {
+func (m *Model) renderCockpitConfigOverlay(width, height int) string {
 	// Determine overlay content based on current step
 	var title string
 	var content string
@@ -444,7 +444,6 @@ func (m *Model) renderCockpitConfigOverlay(baseContent string, width, height int
 
 	// Create overlay box
 	overlayWidth := 50
-	overlayHeight := 16
 
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -454,9 +453,9 @@ func (m *Model) renderCockpitConfigOverlay(baseContent string, width, height int
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorPrimary).
+		Background(ColorBgAlt).
 		Padding(1, 2).
-		Width(overlayWidth - 4).
-		Height(overlayHeight - 4)
+		Width(overlayWidth - 4)
 
 	// Footer hints
 	footerStyle := lipgloss.NewStyle().
@@ -478,12 +477,15 @@ func (m *Model) renderCockpitConfigOverlay(baseContent string, width, height int
 
 	overlay = boxStyle.Render(overlay)
 
-	// Center overlay on screen
-	overlayX := (width - overlayWidth) / 2
-	overlayY := (height - overlayHeight) / 2
-
-	// Overlay on base content
-	return m.overlayBox(baseContent, overlay, overlayX, overlayY, width, height)
+	// Center overlay on screen using lipgloss.Place
+	return lipgloss.Place(
+		width,
+		height,
+		lipgloss.Center,
+		lipgloss.Center,
+		overlay,
+		lipgloss.WithWhitespaceBackground(ColorBg),
+	)
 }
 
 // renderProfileNameInput renders the profile name input field
@@ -501,44 +503,6 @@ func (m *Model) renderProfileNameInput() string {
 	// Show input with cursor
 	display := m.cockpitNewName + cursorStyle.Render(" ")
 	return inputStyle.Render(display)
-}
-
-// overlayBox places an overlay box on top of base content
-func (m *Model) overlayBox(base, overlay string, x, y, width, height int) string {
-	baseLines := strings.Split(base, "\n")
-	overlayLines := strings.Split(overlay, "\n")
-
-	// Ensure base has enough lines
-	for len(baseLines) < height {
-		baseLines = append(baseLines, strings.Repeat(" ", width))
-	}
-
-	// Overlay each line
-	for i, overlayLine := range overlayLines {
-		lineY := y + i
-		if lineY >= 0 && lineY < len(baseLines) {
-			baseLine := baseLines[lineY]
-			baseRunes := []rune(baseLine)
-
-			// Ensure base line is long enough
-			for len(baseRunes) < width {
-				baseRunes = append(baseRunes, ' ')
-			}
-
-			// Overlay the content
-			overlayRunes := []rune(overlayLine)
-			for j, r := range overlayRunes {
-				posX := x + j
-				if posX >= 0 && posX < len(baseRunes) {
-					baseRunes[posX] = r
-				}
-			}
-
-			baseLines[lineY] = string(baseRunes)
-		}
-	}
-
-	return strings.Join(baseLines, "\n")
 }
 
 // handleCockpitConfigNavigation handles navigation in config mode

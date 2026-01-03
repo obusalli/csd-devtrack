@@ -175,11 +175,12 @@ const (
 
 // HeaderEvent represents a transient event to display in the header
 type HeaderEvent struct {
-	Type      HeaderEventType `json:"type"`
-	Message   string          `json:"message"`
-	Icon      string          `json:"icon"`       // Optional icon prefix
-	CreatedAt time.Time       `json:"created_at"` // For expiration
-	Duration  time.Duration   `json:"duration"`   // How long to display (default 3s)
+	Type       HeaderEventType `json:"type"`
+	Message    string          `json:"message"`
+	Icon       string          `json:"icon"`        // Optional icon prefix
+	CreatedAt  time.Time       `json:"created_at"`  // For expiration
+	Duration   time.Duration   `json:"duration"`    // How long to display (0 = persistent until replaced)
+	Persistent bool            `json:"persistent"`  // If true, stays until explicitly cleared/replaced
 }
 
 // NewHeaderEvent creates a new header event with default 3s duration
@@ -196,16 +197,28 @@ func NewHeaderEvent(etype HeaderEventType, message string) *HeaderEvent {
 		icon = "●"
 	}
 	return &HeaderEvent{
-		Type:      etype,
-		Message:   message,
-		Icon:      icon,
-		CreatedAt: time.Now(),
-		Duration:  3 * time.Second,
+		Type:       etype,
+		Message:    message,
+		Icon:       icon,
+		CreatedAt:  time.Now(),
+		Duration:   10 * time.Second,
+		Persistent: false,
 	}
+}
+
+// NewPersistentHeaderEvent creates a header event that stays until replaced
+func NewPersistentHeaderEvent(etype HeaderEventType, message string) *HeaderEvent {
+	event := NewHeaderEvent(etype, message)
+	event.Persistent = true
+	event.Duration = 0
+	return event
 }
 
 // IsExpired returns true if the event has exceeded its display duration
 func (e *HeaderEvent) IsExpired() bool {
+	if e.Persistent {
+		return false // Never expires automatically
+	}
 	return time.Since(e.CreatedAt) > e.Duration
 }
 

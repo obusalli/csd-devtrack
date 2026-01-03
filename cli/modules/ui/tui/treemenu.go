@@ -636,16 +636,33 @@ func (tm *TreeMenu) Render() string {
 				availableForLabel = 10
 			}
 
-			// Show rename input if this item is being renamed
+			// Handle shortcut labels ([X] syntax)
+			// If color is supported: strip brackets and color the shortcut
+			// If no color: keep brackets as-is
 			displayLabel := label
+			shortcutPos := -1
+			if SupportsColoredShortcuts() {
+				displayLabel, shortcutPos = StripShortcutBrackets(label)
+			}
+
+			// Show rename input if this item is being renamed
 			if isSelected && tm.renameActive && !hasChildren {
 				displayLabel = tm.renameText + "█"
 				countSuffix = "" // Hide count when renaming
 				trailingIcon = ""
 				arrow = ""
+				shortcutPos = -1 // No shortcut when renaming
 			}
 
-			line := indicator + iconPart + truncate(displayLabel, availableForLabel) + countSuffix + trailingIcon + arrow
+			// Truncate the label (no ANSI codes yet)
+			displayLabel = truncate(displayLabel, availableForLabel)
+
+			// Apply shortcut coloring after truncation (if color supported and shortcut visible)
+			if shortcutPos >= 0 {
+				displayLabel = ApplyShortcutColor(displayLabel, shortcutPos)
+			}
+
+			line := indicator + iconPart + displayLabel + countSuffix + trailingIcon + arrow
 
 			// Apply style
 			var style lipgloss.Style

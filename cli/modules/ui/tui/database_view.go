@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"csd-devtrack/cli/modules/ui/core"
@@ -230,35 +231,36 @@ func (m *Model) buildDatabaseTreeItems() []TreeMenuItem {
 		projectNames[db.ProjectID] = db.ProjectName
 	}
 
-	// Group sessions by project
-	projectSessions := make(map[string][]core.DatabaseSessionVM)
-	for _, sess := range m.state.Database.Sessions {
-		projectSessions[sess.ProjectID] = append(projectSessions[sess.ProjectID], sess)
-	}
-
-	// Get sorted project IDs
+	// Get sorted project IDs (must sort to avoid flickering from non-deterministic map iteration)
 	var projectIDs []string
 	for pid := range projectDatabases {
 		projectIDs = append(projectIDs, pid)
 	}
+	// Sort by project name (alphabetical, case-insensitive)
+	sort.Slice(projectIDs, func(i, j int) bool {
+		return strings.ToLower(projectNames[projectIDs[i]]) < strings.ToLower(projectNames[projectIDs[j]])
+	})
 
 	var items []TreeMenuItem
 
 	for _, projectID := range projectIDs {
 		projectName := projectNames[projectID]
 		databases := projectDatabases[projectID]
-		sessions := projectSessions[projectID]
+
+		// Sort databases by name (alphabetical, case-insensitive)
+		sort.Slice(databases, func(i, j int) bool {
+			return strings.ToLower(databases[i].DatabaseName) < strings.ToLower(databases[j].DatabaseName)
+		})
 
 		// Project header
 		projectIcon := "📁"
-		itemCount := len(databases) + len(sessions)
 
 		projectItem := TreeMenuItem{
 			ID:        "project:" + projectID,
 			Label:     projectName,
 			Icon:      projectIcon,
 			IconColor: ColorSecondary,
-			Count:     itemCount,
+			Count:     len(databases),
 			Data: databaseTreeItem{
 				IsProject: true,
 				ProjectID: projectID,
@@ -267,43 +269,24 @@ func (m *Model) buildDatabaseTreeItems() []TreeMenuItem {
 
 		// Add databases as children
 		for _, db := range databases {
-			dbIcon := "🗄️"
-			switch db.Type {
-			case "postgres":
-				dbIcon = "🐘"
-			case "mysql":
-				dbIcon = "🐬"
-			case "sqlite":
-				dbIcon = "📦"
+			dbIcon := "○"
+			iconColor := ColorMuted
+
+			// Show active state if this database has running terminal
+			if db.ID == m.databaseActiveSession {
+				dbIcon = "●"
+				iconColor = ColorSuccess
 			}
 
 			dbItem := TreeMenuItem{
 				ID:        "db:" + db.ID,
 				Label:     db.DatabaseName,
 				Icon:      dbIcon,
-				IconColor: ColorMuted,
+				IconColor: iconColor,
+				IsActive:  db.ID == m.databaseActiveSession,
 				Data:      db,
 			}
 			projectItem.Children = append(projectItem.Children, dbItem)
-		}
-
-		// Add sessions as children
-		for _, sess := range sessions {
-			sessionIcon := "⚡"
-			iconColor := ColorMuted
-			if sess.State == "running" {
-				iconColor = ColorSuccess
-			}
-
-			sessionItem := TreeMenuItem{
-				ID:        "session:" + sess.ID,
-				Label:     sess.Name,
-				Icon:      sessionIcon,
-				IconColor: iconColor,
-				IsActive:  sess.ID == m.databaseActiveSession,
-				Data:      sess,
-			}
-			projectItem.Children = append(projectItem.Children, sessionItem)
 		}
 
 		items = append(items, projectItem)

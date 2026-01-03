@@ -108,6 +108,9 @@ type Model struct {
 	// Pending new session creation
 	pendingNewSessionProjectID string // Project ID for new session dialog
 
+	// Header ticker animation
+	tickerScrollPos int // Current scroll position for header event ticker
+
 	// Log filtering
 	logLevelFilter   string // "", "error", "warn", "info", "debug"
 	logSourceFilter  string // "", "project-id", "project-id/component"
@@ -291,6 +294,15 @@ func NewModel(presenter core.Presenter) *Model {
 			if claude, ok := vm.(*core.ClaudeVM); ok {
 				state.Claude = claude
 			}
+		}
+		if vm, err := presenter.GetViewModel(core.VMDatabase); err == nil {
+			if database, ok := vm.(*core.DatabaseVM); ok {
+				state.Database = database
+			}
+		}
+		// Sync capabilities from presenter state
+		if presenterState := presenter.GetState(); presenterState != nil {
+			state.Capabilities = presenterState.Capabilities
 		}
 	}
 
@@ -553,9 +565,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
-		// Toggle blink state for TreeMenu animations
-		if m.sessionsTreeMenu != nil {
+		// Only continue spinner when actually needed (loading states)
+		needsSpinner := m.state.Initializing || m.state.GitLoading ||
+			(m.state.Claude != nil && m.state.Claude.IsProcessing)
+		if needsSpinner {
+			cmds = append(cmds, cmd)
+		}
+		// Toggle blink state for TreeMenu animations (only when spinner is active)
+		if needsSpinner && m.sessionsTreeMenu != nil {
 			m.sessionsTreeMenu.ToggleBlink()
 		}
 
@@ -592,9 +609,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Clear expired header events
-		if event := m.state.GetHeaderEvent(); event != nil && event.IsExpired() {
-			m.state.ClearHeaderEvent()
-		}
+		m.state.ClearExpiredHeaderEvents()
+
+		// Advance ticker scroll position (for header event animation)
+		m.tickerScrollPos++
+
 		cmds = append(cmds, m.refreshData, tickCmd())
 
 	case gitDiffMsg:
@@ -777,6 +796,10 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 		}
+		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
+			m.databaseTreeMenu.MoveUp()
+			return nil
+		}
 		m.navigateUp()
 		// Git view: auto-load diff when selection changes
 		if m.currentView == core.VMGit && m.focusArea == FocusMain {
@@ -797,6 +820,10 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 		}
+		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
+			m.databaseTreeMenu.MoveDown()
+			return nil
+		}
 		m.navigateDown()
 		// Git view: auto-load diff when selection changes
 		if m.currentView == core.VMGit && m.focusArea == FocusMain {
@@ -807,6 +834,11 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Claude sessions panel: drill up
 		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
 			m.sessionsTreeMenu.DrillUp()
+			return nil
+		}
+		// Database panel: drill up
+		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
+			m.databaseTreeMenu.DrillUp()
 			return nil
 		}
 		// TreeMenu views: drill up in project tree
@@ -829,6 +861,11 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		// Claude sessions panel: drill down
 		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
 			m.sessionsTreeMenu.DrillDown()
+			return nil
+		}
+		// Database panel: drill down
+		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
+			m.databaseTreeMenu.DrillDown()
 			return nil
 		}
 		// TreeMenu views: drill down in project tree
@@ -900,6 +937,18 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			// If Select() returned nil, it drilled down - nothing more to do
 			return nil
 		}
+		// Database panel: use TreeMenu to select/drill-down
+		if m.currentView == core.VMDatabase && m.focusArea == FocusDetail {
+			if item := m.databaseTreeMenu.Select(); item != nil {
+				// Leaf item selected (database) - connect directly
+				if _, isDB := item.Data.(core.DatabaseInfoVM); isDB {
+					dbID := strings.TrimPrefix(item.ID, "db:")
+					return m.connectToDatabase(dbID)
+				}
+			}
+			// If Select() returned nil, it drilled down - nothing more to do
+			return nil
+		}
 		return m.handleEnter()
 
 	// Refresh
@@ -945,7 +994,7 @@ func (m *Model) cycleFocus(direction int) {
 // hasDetailPanel returns true if the current view has a detail panel
 func (m *Model) hasDetailPanel() bool {
 	switch m.currentView {
-	case core.VMProjects, core.VMGit, core.VMProcesses:
+	case core.VMProjects, core.VMGit, core.VMProcesses, core.VMDatabase:
 		return true
 	default:
 		return false
@@ -1238,6 +1287,16 @@ func (m *Model) selectViewByType(viewType core.ViewModelType) tea.Cmd {
 		}
 	}
 
+	// Initialize Database view
+	if m.currentView == core.VMDatabase {
+		// Update TreeMenu with current data
+		m.updateDatabaseMenu()
+		// Default focus to sessions panel so user can select/create a session
+		if m.databaseActiveSession == "" {
+			m.focusArea = FocusDetail
+		}
+	}
+
 	// Reset widgets config mode when leaving/entering view
 	if m.currentView != core.VMCockpit {
 		m.cockpitConfigMode = false
@@ -1325,11 +1384,11 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	// Quick view navigation shortcuts (uppercase only)
 	// These ALWAYS navigate to views - no exceptions
 	switch key {
-	case "D":
+	case "B":
 		return m.selectViewByType(core.VMDashboard)
 	case "P":
 		return m.selectViewByType(core.VMProjects)
-	case "B":
+	case "U":
 		return m.selectViewByType(core.VMBuild)
 	case "O":
 		return m.selectViewByType(core.VMProcesses)
@@ -1340,15 +1399,33 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	case "K":
 		return m.selectViewByType(core.VMCockpit)
 	case "C":
-		// Claude Code view (only if installed)
-		if m.state.Claude != nil && m.state.Claude.IsInstalled {
+		// Claude Code view (requires tmux + claude)
+		if m.state.Capabilities != nil && m.state.Capabilities.HasClaude() {
 			return m.selectViewByType(core.VMClaude)
 		}
+		if m.state.Capabilities != nil && !m.state.Capabilities.Tmux.Available {
+			m.lastError = "tmux required for Claude view"
+			m.lastErrorTime = time.Now()
+		} else if m.state.Capabilities != nil && !m.state.Capabilities.Claude.Available {
+			m.lastError = "claude CLI not found"
+			m.lastErrorTime = time.Now()
+		}
 		return nil
-	case "A":
-		// Database view (only if databases found)
-		if m.state.Database != nil && len(m.state.Database.Databases) > 0 {
+	case "D":
+		// Database view (requires tmux + db client + databases configured)
+		if m.state.Capabilities != nil && m.state.Capabilities.HasDatabase() &&
+			m.state.Database != nil && len(m.state.Database.Databases) > 0 {
 			return m.selectViewByType(core.VMDatabase)
+		}
+		if m.state.Capabilities != nil && !m.state.Capabilities.Tmux.Available {
+			m.lastError = "tmux required for Database view"
+			m.lastErrorTime = time.Now()
+		} else if m.state.Capabilities != nil && !m.state.Capabilities.HasDatabase() {
+			m.lastError = "No database client found (psql, mysql, sqlite3)"
+			m.lastErrorTime = time.Now()
+		} else if m.state.Database == nil || len(m.state.Database.Databases) == 0 {
+			m.lastError = "No databases configured"
+			m.lastErrorTime = time.Now()
 		}
 		return nil
 	case "S":
@@ -1710,10 +1787,20 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 
 		switch key {
 		case "n":
-			// New session - only when focused on sessions panel and on a project
+			// New session - when focused on sessions panel and on/in a project
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
 				projectID, _, isProject, _ := m.getSelectedTreeItem()
-				if isProject && projectID != "" {
+
+				// If drilled down into a project, get project ID from drill path
+				if !isProject && projectID == "" {
+					drillPath := m.sessionsTreeMenu.DrillDownPath()
+					if len(drillPath) > 0 {
+						projectID = drillPath[0]
+					}
+				}
+
+				// Create new session if we have a project (either selected or drilled into)
+				if projectID != "" {
 					// Generate default session name
 					defaultName := m.generateDefaultSessionName(projectID)
 					m.pendingNewSessionProjectID = projectID
@@ -1792,61 +1879,15 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	// Database view specific keys
 	if m.currentView == core.VMDatabase {
 		switch key {
-		case "n":
-			// New session - only when focused on database panel and on a database
-			if m.focusArea == FocusDetail {
-				_, dbID, isDatabase := m.getSelectedDatabaseTreeItem()
-				if isDatabase && dbID != "" {
-					return m.createDatabaseSession(dbID)
-				}
-			}
-			return nil
-		case "x":
-			// Delete selected session
-			if m.focusArea == FocusDetail {
-				_, sessionID, isDatabase := m.getSelectedDatabaseTreeItem()
-				if !isDatabase && sessionID != "" {
-					sessionName := sessionID
-					if item := m.databaseTreeMenu.SelectedItem(); item != nil {
-						sessionName = item.Label
-					}
-					m.dialogType = "delete_database_session"
-					m.dialogMessage = fmt.Sprintf("Delete session \"%s\"?", sessionName)
-					m.showDialog = true
-				}
-			}
-			return nil
-		case "r":
-			// Rename selected session
-			if m.focusArea == FocusDetail {
-				_, sessionID, isDatabase := m.getSelectedDatabaseTreeItem()
-				if !isDatabase && sessionID != "" {
-					m.databaseTreeMenu.SetRenameActive(true)
-				}
-			}
-			return nil
 		case "s":
-			// Stop database terminal session
-			if m.focusArea == FocusDetail {
-				_, sessionID, isDatabase := m.getSelectedDatabaseTreeItem()
-				if !isDatabase && sessionID != "" {
-					return m.stopDatabaseTerminal(sessionID)
-				}
+			// Stop database terminal
+			if m.databaseActiveSession != "" {
+				return m.stopDatabaseTerminal(m.databaseActiveSession)
 			}
 			return nil
 		case "enter":
-			// Start/connect to database
-			if m.focusArea == FocusDetail {
-				_, itemID, isDatabase := m.getSelectedDatabaseTreeItem()
-				if !isDatabase && itemID != "" {
-					// It's a session - start terminal
-					return m.startDatabaseSession(itemID)
-				} else if isDatabase && itemID != "" {
-					// It's a database - create new session and start
-					return m.createAndStartDatabaseSession(itemID)
-				}
-			} else if m.focusArea == FocusMain && m.databaseActiveSession != "" {
-				// Enter terminal mode if session is running
+			// Enter terminal mode when focused on terminal panel
+			if m.focusArea == FocusMain && m.databaseActiveSession != "" {
 				if t := m.terminalManager.Get(m.databaseActiveSession); t != nil && t.IsRunning() {
 					m.terminalMode = true
 				}
@@ -1862,10 +1903,6 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				m.focusArea = FocusMain
 				return nil
 			}
-			return nil
-		case "c":
-			// Clear filter
-			m.databaseFilterProject = ""
 			return nil
 		}
 	}
@@ -2225,49 +2262,9 @@ func (m *Model) stopClaudeTerminal(sessionID string) tea.Cmd {
 // Database view helper functions
 // ============================================
 
-// getSelectedDatabaseTreeItem returns the selected item from the database TreeMenu
-// Returns (projectID, itemID, isDatabase)
-// itemID is either a database ID (db:xxx) or session ID (session:xxx)
-func (m *Model) getSelectedDatabaseTreeItem() (string, string, bool) {
-	if m.databaseTreeMenu == nil {
-		return "", "", false
-	}
-
-	item := m.databaseTreeMenu.SelectedItem()
-	if item == nil {
-		return "", "", false
-	}
-
-	// Check if it's a database (starts with "db:")
-	if strings.HasPrefix(item.ID, "db:") {
-		dbID := strings.TrimPrefix(item.ID, "db:")
-		if db, ok := item.Data.(core.DatabaseInfoVM); ok {
-			return db.ProjectID, dbID, true
-		}
-		return "", dbID, true
-	}
-
-	// Check if it's a session (starts with "session:")
-	if strings.HasPrefix(item.ID, "session:") {
-		sessionID := strings.TrimPrefix(item.ID, "session:")
-		if sess, ok := item.Data.(core.DatabaseSessionVM); ok {
-			return sess.ProjectID, sessionID, false
-		}
-		return "", sessionID, false
-	}
-
-	// It's a project node
-	if strings.HasPrefix(item.ID, "project:") {
-		projectID := strings.TrimPrefix(item.ID, "project:")
-		return projectID, "", false
-	}
-
-	return "", "", false
-}
-
-// createDatabaseSession creates a new database session for the selected database
-func (m *Model) createDatabaseSession(databaseID string) tea.Cmd {
-	if m.state.Database == nil {
+// connectToDatabase starts a terminal directly for a database config
+func (m *Model) connectToDatabase(databaseID string) tea.Cmd {
+	if m.terminalManager == nil || m.state.Database == nil {
 		return nil
 	}
 
@@ -2281,59 +2278,7 @@ func (m *Model) createDatabaseSession(databaseID string) tea.Cmd {
 	}
 
 	if db == nil {
-		m.lastError = "Database not found"
-		m.lastErrorTime = time.Now()
-		return nil
-	}
-
-	event := core.NewEvent(core.EventDatabaseCreateSession).WithProject(db.ProjectID)
-	event.Data["database_id"] = databaseID
-	event.Data["project_name"] = db.ProjectName
-	return m.sendEvent(event)
-}
-
-// createAndStartDatabaseSession creates a session and starts it immediately
-func (m *Model) createAndStartDatabaseSession(databaseID string) tea.Cmd {
-	// First create the session
-	cmd := m.createDatabaseSession(databaseID)
-
-	// The terminal will be started when the session is created and selected
-	return cmd
-}
-
-// startDatabaseSession starts the database CLI terminal for a session
-func (m *Model) startDatabaseSession(sessionID string) tea.Cmd {
-	if m.terminalManager == nil || m.state.Database == nil {
-		return nil
-	}
-
-	// Find the session
-	var sess *core.DatabaseSessionVM
-	for i := range m.state.Database.Sessions {
-		if m.state.Database.Sessions[i].ID == sessionID {
-			sess = &m.state.Database.Sessions[i]
-			break
-		}
-	}
-
-	if sess == nil {
-		m.lastError = "Session not found"
-		m.lastErrorTime = time.Now()
-		return nil
-	}
-
-	// Find the database info to get the connection URL
-	var db *core.DatabaseInfoVM
-	for i := range m.state.Database.Databases {
-		if m.state.Database.Databases[i].DatabaseName == sess.DatabaseName &&
-			m.state.Database.Databases[i].ProjectID == sess.ProjectID {
-			db = &m.state.Database.Databases[i]
-			break
-		}
-	}
-
-	if db == nil {
-		m.lastError = "Database info not found"
+		m.lastError = "Database not found: " + databaseID
 		m.lastErrorTime = time.Now()
 		return nil
 	}
@@ -2346,11 +2291,14 @@ func (m *Model) startDatabaseSession(sessionID string) tea.Cmd {
 		return nil
 	}
 
-	// Set active session
-	m.databaseActiveSession = sessionID
+	// Use database ID as the terminal session ID
+	m.databaseActiveSession = databaseID
+
+	// Switch focus to terminal
+	m.focusArea = FocusMain
 
 	// Get or create terminal
-	t := m.terminalManager.GetOrCreateWithCommand(sessionID, cliCmd, cliArgs)
+	t := m.terminalManager.GetOrCreateWithCommand(databaseID, cliCmd, cliArgs)
 
 	// Size the terminal appropriately
 	headerHeight := 3
@@ -2364,7 +2312,7 @@ func (m *Model) startDatabaseSession(sessionID string) tea.Cmd {
 
 	// Start if not already running
 	if !t.IsRunning() {
-		if err := t.Start(sessionID); err != nil {
+		if err := t.Start(databaseID); err != nil {
 			m.lastError = "Failed to start database CLI: " + err.Error()
 			m.lastErrorTime = time.Now()
 			return nil
@@ -2373,21 +2321,20 @@ func (m *Model) startDatabaseSession(sessionID string) tea.Cmd {
 
 	// Enter terminal mode
 	m.terminalMode = true
-	m.focusArea = FocusMain
 
-	// Update session state
-	m.sendEvent(core.NewEvent(core.EventDatabaseSelectSession).WithData("session_id", sessionID))
+	// Header event
+	m.state.SetHeaderEvent(core.NewHeaderEvent(core.HeaderEventSuccess, "Connected to "+db.DatabaseName))
 
 	return m.scheduleTerminalRefresh()
 }
 
-// stopDatabaseTerminal stops the database CLI terminal for a session
-func (m *Model) stopDatabaseTerminal(sessionID string) tea.Cmd {
+// stopDatabaseTerminal stops the database CLI terminal
+func (m *Model) stopDatabaseTerminal(databaseID string) tea.Cmd {
 	if m.terminalManager == nil {
 		return nil
 	}
 
-	t := m.terminalManager.Get(sessionID)
+	t := m.terminalManager.Get(databaseID)
 	if t == nil {
 		return nil
 	}
@@ -2396,12 +2343,17 @@ func (m *Model) stopDatabaseTerminal(sessionID string) tea.Cmd {
 	go t.Stop()
 
 	// Exit terminal mode if this was active
-	if m.databaseActiveSession == sessionID && m.terminalMode {
+	if m.databaseActiveSession == databaseID && m.terminalMode {
 		m.terminalMode = false
 	}
 
-	m.lastError = "Terminal stopped"
-	m.lastErrorTime = time.Now()
+	// Clear active session
+	if m.databaseActiveSession == databaseID {
+		m.databaseActiveSession = ""
+	}
+
+	// Header event
+	m.state.SetHeaderEvent(core.NewHeaderEvent(core.HeaderEventInfo, "Database disconnected"))
 
 	return nil
 }
@@ -2996,6 +2948,12 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
 	if presenterState := m.presenter.GetState(); presenterState != nil {
 		m.state.Initializing = presenterState.Initializing
 		m.state.GitLoading = presenterState.GitLoading
+		m.state.Capabilities = presenterState.Capabilities
+
+		// Sync header event
+		if headerEvent := presenterState.GetHeaderEvent(); headerEvent != nil {
+			m.state.SetHeaderEvent(headerEvent)
+		}
 	}
 
 	// Always update log source options (logs can come from any view update)

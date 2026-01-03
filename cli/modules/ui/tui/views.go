@@ -108,25 +108,19 @@ func (m *Model) renderHeader() string {
 	left := fmt.Sprintf(" %s %s │ %s%s", title, version, viewName, usageStr)
 	right := fmt.Sprintf("%s │ %s%s%s ", metricsStr, status, runningStr, gitStr)
 
-	// Header event (centered between left and right)
-	centerContent := ""
-	if event := m.state.GetHeaderEvent(); event != nil {
-		eventStyle := lipgloss.NewStyle()
-		switch event.Type {
-		case core.HeaderEventSuccess:
-			eventStyle = eventStyle.Foreground(ColorSuccess)
-		case core.HeaderEventWarning:
-			eventStyle = eventStyle.Foreground(ColorWarning)
-		case core.HeaderEventError:
-			eventStyle = eventStyle.Foreground(ColorError)
-		default:
-			eventStyle = eventStyle.Foreground(ColorSecondary)
-		}
-		centerContent = eventStyle.Render(event.Icon + " " + event.Message)
-	}
-
 	leftWidth := lipgloss.Width(left)
 	rightWidth := lipgloss.Width(right)
+
+	// Header events ticker (scrolling animation)
+	centerContent := ""
+	events := m.state.GetHeaderEvents()
+	if len(events) > 0 {
+		// Build ticker string from all events
+		availableWidth := m.width - leftWidth - rightWidth - 4
+		if availableWidth > 10 {
+			centerContent = m.renderHeaderTicker(events, availableWidth)
+		}
+	}
 	centerWidth := lipgloss.Width(centerContent)
 	totalPadding := m.width - leftWidth - rightWidth - centerWidth
 	if totalPadding < 0 {
@@ -151,6 +145,77 @@ func (m *Model) renderHeader() string {
 		Render(header)
 }
 
+// renderHeaderTicker renders a scrolling ticker of header events
+func (m *Model) renderHeaderTicker(events []*core.HeaderEvent, maxWidth int) string {
+	if len(events) == 0 || maxWidth <= 0 {
+		return ""
+	}
+
+	// Build the full ticker text with separators
+	separator := "  ◆  "
+	var parts []string
+	for _, event := range events {
+		text := event.Icon + " " + event.Message
+		parts = append(parts, text)
+	}
+
+	// Join all events
+	fullText := strings.Join(parts, separator)
+
+	// If only one event and it fits, just show it (no scrolling needed)
+	if len(events) == 1 && lipgloss.Width(fullText) <= maxWidth {
+		eventStyle := m.getEventStyle(events[0].Type)
+		return eventStyle.Render(fullText)
+	}
+
+	// Add separator at end for continuous scroll effect
+	fullText = fullText + separator
+
+	// Calculate scroll position (2 chars per tick for smooth scrolling)
+	textLen := len([]rune(fullText))
+	scrollOffset := (m.tickerScrollPos * 2) % textLen
+
+	// Create scrolling view by rotating the string
+	runes := []rune(fullText)
+	rotated := append(runes[scrollOffset:], runes[:scrollOffset]...)
+
+	// Truncate to available width
+	visible := string(rotated)
+	if lipgloss.Width(visible) > maxWidth {
+		// Truncate carefully to not break in middle of emoji
+		visibleRunes := []rune(visible)
+		width := 0
+		cutPoint := 0
+		for i, r := range visibleRunes {
+			charWidth := lipgloss.Width(string(r))
+			if width+charWidth > maxWidth {
+				break
+			}
+			width += charWidth
+			cutPoint = i + 1
+		}
+		visible = string(visibleRunes[:cutPoint])
+	}
+
+	// Apply color based on first event type (or blend if multiple)
+	eventStyle := m.getEventStyle(events[0].Type)
+	return eventStyle.Render(visible)
+}
+
+// getEventStyle returns the style for a header event type
+func (m *Model) getEventStyle(eventType core.HeaderEventType) lipgloss.Style {
+	switch eventType {
+	case core.HeaderEventSuccess:
+		return lipgloss.NewStyle().Foreground(ColorSuccess)
+	case core.HeaderEventWarning:
+		return lipgloss.NewStyle().Foreground(ColorWarning)
+	case core.HeaderEventError:
+		return lipgloss.NewStyle().Foreground(ColorError)
+	default:
+		return lipgloss.NewStyle().Foreground(ColorSecondary)
+	}
+}
+
 // sidebarView represents a navigation menu item
 type sidebarView struct {
 	name  string // Name with [X] shortcut highlighted
@@ -159,28 +224,29 @@ type sidebarView struct {
 
 // baseSidebarViews defines the base navigation menu items (always shown)
 var baseSidebarViews = []sidebarView{
-	{"[D]ashboard", core.VMDashboard},
+	{"Dash[B]oard", core.VMDashboard},
 	{"Coc[K]pit", core.VMCockpit},
 	{"[P]rojects", core.VMProjects},
-	{"[B]uild", core.VMBuild},
+	{"B[U]ilds", core.VMBuild},
 	{"Pr[O]cesses", core.VMProcesses},
 	{"[L]ogs", core.VMLogs},
 	{"[G]it", core.VMGit},
 }
 
-// getSidebarViews returns the sidebar views, including Claude Code if installed
+// getSidebarViews returns the sidebar views, filtered by available capabilities
 func (m *Model) getSidebarViews() []sidebarView {
 	views := make([]sidebarView, len(baseSidebarViews))
 	copy(views, baseSidebarViews)
 
-	// Add Claude Code view if installed (before Settings)
-	if m.state.Claude != nil && m.state.Claude.IsInstalled {
+	// Add Claude Code view if capabilities available (tmux + claude)
+	if m.state.Capabilities != nil && m.state.Capabilities.HasClaude() {
 		views = append(views, sidebarView{"[C]laude Code", core.VMClaude})
 	}
 
-	// Add Database view if databases are found
-	if m.state.Database != nil && len(m.state.Database.Databases) > 0 {
-		views = append(views, sidebarView{"Data[A]base", core.VMDatabase})
+	// Add Database view if capabilities available (tmux + db client) and databases configured
+	if m.state.Capabilities != nil && m.state.Capabilities.HasDatabase() &&
+		m.state.Database != nil && len(m.state.Database.Databases) > 0 {
+		views = append(views, sidebarView{"[D]atabases", core.VMDatabase})
 	}
 
 	// Settings always last
@@ -374,27 +440,44 @@ func (m *Model) renderContextPanel(width, height int) string {
 		lines = append(lines, "")
 		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Processes ─"))
 
-		runningCount := 0
+		var projectProcesses []core.ProcessVM
 		if m.state.Processes != nil {
 			for _, p := range m.state.Processes.Processes {
-				if p.ProjectID == activeProject.ID && p.State == "running" {
-					runningCount++
+				if p.ProjectID == activeProject.ID {
+					projectProcesses = append(projectProcesses, p)
 				}
 			}
 		}
-		if runningCount > 0 {
-			lines = append(lines, StatusSuccess.Render(fmt.Sprintf("  ▶ %d running", runningCount)))
+
+		if len(projectProcesses) > 0 {
+			// Show up to 3 most recent processes
+			maxProcs := 3
+			if len(projectProcesses) < maxProcs {
+				maxProcs = len(projectProcesses)
+			}
+			for i := 0; i < maxProcs; i++ {
+				p := projectProcesses[i]
+				var icon string
+				var style lipgloss.Style
+				switch p.State {
+				case "running":
+					icon = "●"
+					style = StatusSuccess
+				case "stopped":
+					icon = "○"
+					style = SubtitleStyle
+				default:
+					icon = "✗"
+					style = StatusError
+				}
+				name := truncate(string(p.Component), innerWidth-8)
+				lines = append(lines, style.Render(fmt.Sprintf("  %s %s", icon, name)))
+			}
+			if len(projectProcesses) > maxProcs {
+				lines = append(lines, SubtitleStyle.Render(fmt.Sprintf("    +%d more", len(projectProcesses)-maxProcs)))
+			}
 		} else {
 			lines = append(lines, labelStyle.Render("  ○ none"))
-		}
-
-		// ─── Daemon ───
-		lines = append(lines, "")
-		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Daemon ─"))
-		if m.state.IsConnected {
-			lines = append(lines, StatusSuccess.Render("  ● connected"))
-		} else {
-			lines = append(lines, StatusError.Render("  ○ offline"))
 		}
 
 		// ─── Recent Logs ───
@@ -466,15 +549,6 @@ func (m *Model) renderContextPanel(width, height int) string {
 		lines = append(lines, "")
 		noProjectStyle := lipgloss.NewStyle().Foreground(ColorMuted).Italic(true).Padding(0, 2)
 		lines = append(lines, noProjectStyle.Render("No project selected"))
-
-		// Still show daemon status
-		lines = append(lines, "")
-		lines = append(lines, sectionStyle.Padding(0, 2).Render("─ Daemon ─"))
-		if m.state.IsConnected {
-			lines = append(lines, StatusSuccess.Render("  ● connected"))
-		} else {
-			lines = append(lines, StatusError.Render("  ○ offline"))
-		}
 	}
 
 	// Join content
@@ -2759,26 +2833,3 @@ func max(a, b int) int {
 	return b
 }
 
-// highlightShortcut highlights the [X] shortcut in a menu name
-// e.g., "[D]ashboard" -> styled "[D]" + "ashboard"
-func highlightShortcut(name string) string {
-	// Find [X] pattern
-	start := strings.Index(name, "[")
-	end := strings.Index(name, "]")
-
-	if start == -1 || end == -1 || end <= start {
-		return name
-	}
-
-	before := name[:start]
-	shortcut := name[start : end+1] // includes [ and ]
-	after := name[end+1:]
-
-	// Style the shortcut with accent color
-	styledShortcut := lipgloss.NewStyle().
-		Foreground(ColorSecondary).
-		Bold(true).
-		Render(shortcut)
-
-	return before + styledShortcut + after
-}
