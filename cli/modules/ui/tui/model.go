@@ -3776,6 +3776,39 @@ func (m *Model) updateClaudeTree() {
 							bestMatchLen = len(node.Path)
 						}
 					}
+
+					// Also try with resolved symlinks (handles /home/user/data -> /data symlinks)
+					if realPath, err := filepath.EvalSymlinks(node.Path); err == nil && realPath != node.Path {
+						encodedRealPath := strings.ReplaceAll(realPath, "/", "-")
+						if sess.ClaudeProjectDir == encodedRealPath ||
+							strings.HasPrefix(sess.ClaudeProjectDir, encodedRealPath+"-") {
+							if len(node.Path) > bestMatchLen {
+								bestMatch = node
+								bestMatchLen = len(node.Path)
+							}
+						}
+					}
+
+					// Try reverse: decode session's ClaudeProjectDir and resolve symlinks
+					// This handles case where session was created via symlink path
+					sessionPath := strings.ReplaceAll(sess.ClaudeProjectDir, "-", "/")
+					if realSessionPath, err := filepath.EvalSymlinks(sessionPath); err == nil {
+						if realSessionPath == node.Path || strings.HasPrefix(realSessionPath, node.Path+"/") {
+							if len(node.Path) > bestMatchLen {
+								bestMatch = node
+								bestMatchLen = len(node.Path)
+							}
+						}
+						// Also compare resolved session path with resolved project path
+						if realPath, err := filepath.EvalSymlinks(node.Path); err == nil {
+							if realSessionPath == realPath || strings.HasPrefix(realSessionPath, realPath+"/") {
+								if len(node.Path) > bestMatchLen {
+									bestMatch = node
+									bestMatchLen = len(node.Path)
+								}
+							}
+						}
+					}
 				}
 
 				// Also check if session WorkDir is under project path (handles subdirectories)
