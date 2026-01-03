@@ -651,6 +651,10 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 		}
 
 		if session != nil {
+			// Skip sessions with no messages (empty or metadata-only files)
+			if len(session.Messages) == 0 {
+				continue
+			}
 			// Apply custom name if one exists
 			if customName, ok := s.customNames[sessionID]; ok {
 				session.CustomName = customName
@@ -1508,7 +1512,9 @@ func (s *Service) ListSessionsForProject(projectID string) []*Session {
 	return sessions
 }
 
-// RenameSession sets a custom name for a session (persisted locally)
+// RenameSession sets a custom name for a session
+// Note: Claude CLI doesn't have a native rename command, so we store custom names locally
+// Claude auto-generates summaries based on conversation content, but we can override with custom names
 func (s *Service) RenameSession(sessionID, newName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1518,11 +1524,9 @@ func (s *Service) RenameSession(sessionID, newName string) error {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
-	// Store the custom name (no prefix required for custom names)
 	sess.CustomName = newName
 	s.customNames[sessionID] = newName
 
-	// Save custom names to file
 	go s.saveCustomNames()
 	return nil
 }

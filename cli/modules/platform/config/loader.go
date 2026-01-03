@@ -209,17 +209,28 @@ func ensureSelfProject(cfg *Config, configPath string) bool {
 	}
 	configDir, _ = filepath.Abs(configDir)
 
+	// If we're in a "cli" subdirectory with csd-devtrack.go, use parent as project root
+	// This handles the case where config is in /project/cli/ but project root is /project/
+	projectDir := configDir
+	if filepath.Base(configDir) == "cli" {
+		// Check if csd-devtrack.go exists in this directory
+		if _, err := os.Stat(filepath.Join(configDir, "csd-devtrack.go")); err == nil {
+			// Use parent directory as project root
+			projectDir = filepath.Dir(configDir)
+		}
+	}
+
 	// Check if a project with the same path already exists
 	for _, p := range cfg.Projects {
 		projectPath, _ := filepath.Abs(p.Path)
-		if projectPath == configDir {
+		if projectPath == projectDir {
 			return false // Already has a project for this directory
 		}
 	}
 
 	// Try to detect csd-devtrack project structure
 	detector := projects.NewDetector()
-	selfProject, err := detector.DetectProject(configDir)
+	selfProject, err := detector.DetectProject(projectDir)
 	if err != nil {
 		return false // Not a valid project directory
 	}

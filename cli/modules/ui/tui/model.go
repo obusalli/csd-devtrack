@@ -3749,10 +3749,9 @@ func (m *Model) updateClaudeTree() {
 	// Sessions in subdirectories should be matched to their parent project
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
-			// Try to match session with a registered project
+			// Try to match session with a registered project (exact match only)
 			matched := false
 			var bestMatch *projectNode
-			bestMatchLen := 0
 
 			for _, node := range projectMap {
 				// First, try exact ProjectID match (most reliable)
@@ -3762,36 +3761,8 @@ func (m *Model) updateClaudeTree() {
 					break
 				}
 
-				// Try matching by Claude project directory name
-				// e.g., session in -data-devel-infra-csd-devtrack matches project at /data/devel/infra/csd-devtrack
-				if sess.ClaudeProjectDir != "" && node.Path != "" {
-					// Encode project path to Claude format: /data/devel/project -> -data-devel-project
-					encodedPath := strings.ReplaceAll(node.Path, "/", "-")
-					// Match if session's Claude dir equals or starts with encoded project path
-					if sess.ClaudeProjectDir == encodedPath ||
-						strings.HasPrefix(sess.ClaudeProjectDir, encodedPath+"-") {
-						// Keep the longest matching path (most specific parent)
-						if len(node.Path) > bestMatchLen {
-							bestMatch = node
-							bestMatchLen = len(node.Path)
-						}
-					}
-
-					// Also try with resolved symlinks on project path
-					if realPath, err := filepath.EvalSymlinks(node.Path); err == nil && realPath != node.Path {
-						encodedRealPath := strings.ReplaceAll(realPath, "/", "-")
-						if sess.ClaudeProjectDir == encodedRealPath ||
-							strings.HasPrefix(sess.ClaudeProjectDir, encodedRealPath+"-") {
-							if len(node.Path) > bestMatchLen {
-								bestMatch = node
-								bestMatchLen = len(node.Path)
-							}
-						}
-					}
-				}
-
-				// Use WorkDir (from cwd in JSONL) with symlink resolution for matching
-				// This is more reliable than trying to decode ClaudeProjectDir
+				// Primary: Use WorkDir (cwd from JSONL) for matching
+				// This is the most reliable source as it's the actual directory where the session was used
 				if sess.WorkDir != "" && node.Path != "" {
 					// Resolve symlinks on both paths for comparison
 					realWorkDir := sess.WorkDir
@@ -3803,11 +3774,18 @@ func (m *Model) updateClaudeTree() {
 						realNodePath = resolved
 					}
 
-					// Match if resolved paths are equal or session is in subdirectory
-					if realWorkDir == realNodePath || strings.HasPrefix(realWorkDir, realNodePath+"/") {
-						if len(node.Path) > bestMatchLen {
+					// Exact match takes priority
+					if realWorkDir == realNodePath {
+						bestMatch = node
+						break // Exact match found, stop searching
+					}
+
+					// Also match if session is from a subdirectory of this project
+					// Use the most specific (longest path) parent project
+					if strings.HasPrefix(realWorkDir, realNodePath+"/") {
+						if bestMatch == nil || len(realNodePath) > len(bestMatch.Path) {
 							bestMatch = node
-							bestMatchLen = len(node.Path)
+							// Don't break - continue searching for a more specific match
 						}
 					}
 				}

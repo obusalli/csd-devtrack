@@ -407,6 +407,7 @@ func runAsDaemon() {
 		} else {
 			log.Info("No databases configured")
 		}
+
 	}
 
 	// Handle shutdown signals
