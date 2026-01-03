@@ -8,12 +8,17 @@ import (
 
 // TreeMenuItem represents an item in the tree menu
 type TreeMenuItem struct {
-	ID       string
-	Label    string
-	Icon     string         // emoji or character
-	Children []TreeMenuItem
-	Data     interface{}    // arbitrary data attached to the item
-	Count    int            // optional count to display (e.g., number of children)
+	ID           string
+	Label        string
+	Icon         string              // emoji or character (left side)
+	IconColor    lipgloss.TerminalColor // optional color for the icon
+	TrailingIcon string              // emoji or character (right side, e.g., ⚡ for attached)
+	Children     []TreeMenuItem
+	Data         interface{}         // arbitrary data attached to the item
+	Count        int                 // optional count to display (e.g., number of children)
+	IsActive     bool                // whether this item is the currently active one
+	Blink        bool                // whether the icon should blink (for deleting state)
+	Disabled     bool                // whether this item is disabled (can't be selected)
 }
 
 // TreeMenu is a navigable tree menu with drill-down support
@@ -28,9 +33,17 @@ type TreeMenu struct {
 	searchQuery  string
 	searchActive bool
 
+	// Rename
+	renameActive bool
+	renameText   string
+
 	// Styling
-	width  int
-	height int
+	width           int
+	height          int
+	rightSidePanel  bool // If true, apply width adjustment to prevent right border cutoff
+
+	// Animation
+	blinkState bool // Toggles for blinking items
 }
 
 // NewTreeMenu creates a new tree menu
@@ -52,10 +65,20 @@ func (tm *TreeMenu) SetTitle(title string) {
 func (tm *TreeMenu) SetItems(items []TreeMenuItem) {
 	tm.items = items
 	// Reset selection if out of bounds
-	currentItems := tm.visibleItems()
-	if tm.selectedIndex >= len(currentItems) {
-		tm.selectedIndex = max(0, len(currentItems)-1)
+	total := tm.TotalVisibleCount()
+	if tm.selectedIndex >= total {
+		tm.selectedIndex = max(0, total-1)
 	}
+}
+
+// Items returns the root menu items
+func (tm *TreeMenu) Items() []TreeMenuItem {
+	return tm.items
+}
+
+// VisibleItems returns the currently visible items (at current drill level, filtered)
+func (tm *TreeMenu) VisibleItems() []TreeMenuItem {
+	return tm.visibleItems()
 }
 
 // SetFocused sets the focus state
@@ -67,6 +90,16 @@ func (tm *TreeMenu) SetFocused(focused bool) {
 func (tm *TreeMenu) SetSize(width, height int) {
 	tm.width = width
 	tm.height = height
+}
+
+// ToggleBlink toggles the blink state for animated items
+func (tm *TreeMenu) ToggleBlink() {
+	tm.blinkState = !tm.blinkState
+}
+
+// SetRightSidePanel sets whether this is a right-side panel (applies width adjustment)
+func (tm *TreeMenu) SetRightSidePanel(isRight bool) {
+	tm.rightSidePanel = isRight
 }
 
 // SetSearchQuery sets the search filter
@@ -88,6 +121,46 @@ func (tm *TreeMenu) SetSearchActive(active bool) {
 // IsSearchActive returns whether search input is active
 func (tm *TreeMenu) IsSearchActive() bool {
 	return tm.searchActive
+}
+
+// SetRenameActive sets whether rename input is active
+func (tm *TreeMenu) SetRenameActive(active bool) {
+	tm.renameActive = active
+	if active {
+		// Start with current label
+		if item := tm.SelectedItem(); item != nil {
+			tm.renameText = item.Label
+		}
+	} else {
+		tm.renameText = ""
+	}
+}
+
+// IsRenameActive returns whether rename input is active
+func (tm *TreeMenu) IsRenameActive() bool {
+	return tm.renameActive
+}
+
+// RenameText returns the current rename text
+func (tm *TreeMenu) RenameText() string {
+	return tm.renameText
+}
+
+// SetRenameText sets the rename text
+func (tm *TreeMenu) SetRenameText(text string) {
+	tm.renameText = text
+}
+
+// AppendRenameText appends to rename text
+func (tm *TreeMenu) AppendRenameText(s string) {
+	tm.renameText += s
+}
+
+// BackspaceRenameText removes last character from rename text
+func (tm *TreeMenu) BackspaceRenameText() {
+	if len(tm.renameText) > 0 {
+		tm.renameText = tm.renameText[:len(tm.renameText)-1]
+	}
 }
 
 // currentLevelItems returns the items at the current drill-down level (unfiltered)
@@ -164,13 +237,24 @@ func (tm *TreeMenu) currentParent() *TreeMenuItem {
 	return parent
 }
 
-// SelectedItem returns the currently selected item, or nil if none
+// SelectedItem returns the currently selected item, or nil if back item or none
 func (tm *TreeMenu) SelectedItem() *TreeMenuItem {
-	items := tm.visibleItems()
-	if tm.selectedIndex < 0 || tm.selectedIndex >= len(items) {
+	// If back item is selected, return nil
+	if tm.hasBackItem() && tm.selectedIndex == 0 {
 		return nil
 	}
-	return &items[tm.selectedIndex]
+
+	items := tm.visibleItems()
+	idx := tm.adjustedIndex()
+	if idx < 0 || idx >= len(items) {
+		return nil
+	}
+	return &items[idx]
+}
+
+// IsBackSelected returns true if the back item is currently selected
+func (tm *TreeMenu) IsBackSelected() bool {
+	return tm.hasBackItem() && tm.selectedIndex == 0
 }
 
 // SelectedIndex returns the current selection index
@@ -200,18 +284,81 @@ func (tm *TreeMenu) DrillDownPath() []string {
 	return tm.drillDownPath
 }
 
-// MoveUp moves selection up
+// MoveUp moves selection up, skipping disabled items
 func (tm *TreeMenu) MoveUp() {
 	if tm.selectedIndex > 0 {
 		tm.selectedIndex--
+		// Skip disabled items
+		for tm.selectedIndex > 0 && tm.isIndexDisabled(tm.selectedIndex) {
+			tm.selectedIndex--
+		}
+		// If landed on disabled, try to find next enabled going down
+		if tm.isIndexDisabled(tm.selectedIndex) {
+			tm.moveToNextEnabled(1)
+		}
 	}
 }
 
-// MoveDown moves selection down
+// MoveDown moves selection down, skipping disabled items
 func (tm *TreeMenu) MoveDown() {
-	items := tm.visibleItems()
-	if tm.selectedIndex < len(items)-1 {
+	total := tm.TotalVisibleCount()
+	if tm.selectedIndex < total-1 {
 		tm.selectedIndex++
+		// Skip disabled items
+		for tm.selectedIndex < total-1 && tm.isIndexDisabled(tm.selectedIndex) {
+			tm.selectedIndex++
+		}
+		// If landed on disabled, try to find next enabled going up
+		if tm.isIndexDisabled(tm.selectedIndex) {
+			tm.moveToNextEnabled(-1)
+		}
+	}
+}
+
+// isIndexDisabled checks if the item at the given index is disabled
+func (tm *TreeMenu) isIndexDisabled(index int) bool {
+	items := tm.visibleItems()
+	// Account for parent back item
+	offset := 0
+	if tm.hasBackItem() {
+		if index == 0 {
+			return false // Back item is never disabled
+		}
+		offset = 1
+	}
+	actualIndex := index - offset
+	if actualIndex < 0 || actualIndex >= len(items) {
+		return false
+	}
+	return items[actualIndex].Disabled
+}
+
+// MoveAwayFromDisabled moves selection away from disabled items (call after disabling)
+func (tm *TreeMenu) MoveAwayFromDisabled() {
+	if tm.isIndexDisabled(tm.selectedIndex) {
+		tm.moveToNextEnabled(1) // Try down first
+		if tm.isIndexDisabled(tm.selectedIndex) {
+			tm.moveToNextEnabled(-1) // Then try up
+		}
+	}
+}
+
+// moveToNextEnabled finds the next non-disabled item in the given direction
+func (tm *TreeMenu) moveToNextEnabled(direction int) {
+	total := tm.TotalVisibleCount()
+	for i := 0; i < total; i++ {
+		tm.selectedIndex += direction
+		if tm.selectedIndex < 0 {
+			tm.selectedIndex = 0
+			return
+		}
+		if tm.selectedIndex >= total {
+			tm.selectedIndex = total - 1
+			return
+		}
+		if !tm.isIndexDisabled(tm.selectedIndex) {
+			return
+		}
 	}
 }
 
@@ -241,14 +388,26 @@ func (tm *TreeMenu) DrillUp() bool {
 }
 
 // Select activates the current item (drill-down if has children, otherwise return the item)
-// Returns the selected leaf item, or nil if drilled down
+// Returns the selected leaf item, or nil if drilled down/up
 func (tm *TreeMenu) Select() *TreeMenuItem {
+	// Back item selected - drill up
+	if tm.IsBackSelected() {
+		tm.DrillUp()
+		return nil
+	}
+
 	item := tm.SelectedItem()
 	if item == nil {
 		return nil
 	}
+	// Check if it has children - drill down
 	if len(item.Children) > 0 {
 		tm.DrillDown()
+		return nil
+	}
+	// Check if it's a container (e.g., project) with no children - don't treat as leaf
+	if dataStr, ok := item.Data.(string); ok && dataStr == "project" {
+		// It's a project with no sessions - don't return as leaf
 		return nil
 	}
 	return item
@@ -297,6 +456,28 @@ func (tm *TreeMenu) CalcWidth() int {
 	return width
 }
 
+// hasBackItem returns true if there's a back item at index 0
+func (tm *TreeMenu) hasBackItem() bool {
+	return len(tm.drillDownPath) > 0
+}
+
+// adjustedIndex returns the real item index accounting for back item
+func (tm *TreeMenu) adjustedIndex() int {
+	if tm.hasBackItem() {
+		return tm.selectedIndex - 1
+	}
+	return tm.selectedIndex
+}
+
+// TotalVisibleCount returns total items including back item
+func (tm *TreeMenu) TotalVisibleCount() int {
+	count := len(tm.visibleItems())
+	if tm.hasBackItem() {
+		count++
+	}
+	return count
+}
+
 // Render renders the tree menu
 func (tm *TreeMenu) Render() string {
 	width := tm.width
@@ -304,33 +485,40 @@ func (tm *TreeMenu) Render() string {
 		width = tm.CalcWidth()
 	}
 
+	// Adjust render width to prevent right border cutoff (only for right-side panels)
+	renderWidth := width
+	if tm.rightSidePanel {
+		renderWidth = width - 5
+		if renderWidth < 20 {
+			renderWidth = 20
+		}
+	}
+
 	items := tm.visibleItems()
 	parent := tm.currentParent()
-	innerWidth := width - 4 // Account for border
+	innerWidth := renderWidth - 4 // Account for border
+	contentWidth := innerWidth - 4 // Account for padding
 
 	var lines []string
 
-	// Header
+	// Header (title only, back is now a selectable item)
 	headerStyle := lipgloss.NewStyle().
 		Foreground(ColorSecondary).
-		Bold(true)
-
-	if parent != nil {
-		// Show back button with parent name
-		backLine := "← " + truncate(parent.Label, innerWidth-4)
-		lines = append(lines, headerStyle.Render(backLine))
-	} else {
-		lines = append(lines, headerStyle.Render(tm.title))
-	}
+		Bold(true).
+		Padding(0, 2).
+		Width(innerWidth)
+	lines = append(lines, headerStyle.Render(tm.title))
 
 	// Separator
 	lines = append(lines, lipgloss.NewStyle().
 		Foreground(ColorBorder).
-		Render(strings.Repeat("─", innerWidth)))
+		Padding(0, 2).
+		Width(innerWidth).
+		Render(strings.Repeat("─", contentWidth)))
 
 	// Search bar (if active or has query)
 	if tm.searchActive || tm.searchQuery != "" {
-		searchStyle := lipgloss.NewStyle().Foreground(ColorMuted)
+		searchStyle := lipgloss.NewStyle().Foreground(ColorMuted).Padding(0, 2).Width(innerWidth)
 		searchIcon := "🔍 "
 		searchText := tm.searchQuery
 		if tm.searchActive {
@@ -340,15 +528,43 @@ func (tm *TreeMenu) Render() string {
 			searchText = "type to search..."
 		}
 		searchLine := searchIcon + searchText
-		lines = append(lines, searchStyle.Render(truncate(searchLine, innerWidth)))
+		lines = append(lines, searchStyle.Render(truncate(searchLine, contentWidth)))
 		lines = append(lines, lipgloss.NewStyle().
 			Foreground(ColorBorder).
-			Render(strings.Repeat("─", innerWidth)))
+			Padding(0, 2).
+			Width(innerWidth).
+			Render(strings.Repeat("─", contentWidth)))
+	}
+
+	// Back item (when drilled down)
+	if parent != nil {
+		isBackSelected := tm.selectedIndex == 0 && tm.focused
+		cursor := "  "
+		if isBackSelected {
+			cursor = "▶ "
+		}
+		backLine := cursor + "← " + truncate(parent.Label, contentWidth-6)
+
+		var backStyle lipgloss.Style
+		if isBackSelected {
+			backStyle = lipgloss.NewStyle().
+				Bold(true).
+				Background(ColorBgAlt).
+				Foreground(ColorSecondary).
+				Padding(0, 2).
+				Width(innerWidth)
+		} else {
+			backStyle = lipgloss.NewStyle().
+				Foreground(ColorSecondary).
+				Padding(0, 2).
+				Width(innerWidth)
+		}
+		lines = append(lines, backStyle.Render(backLine))
 	}
 
 	// Items
-	if len(items) == 0 {
-		emptyStyle := lipgloss.NewStyle().Foreground(ColorMuted)
+	if len(items) == 0 && parent == nil {
+		emptyStyle := lipgloss.NewStyle().Foreground(ColorMuted).Padding(0, 2).Width(innerWidth)
 		if tm.searchQuery != "" {
 			lines = append(lines, emptyStyle.Render("No matches"))
 		} else {
@@ -356,23 +572,34 @@ func (tm *TreeMenu) Render() string {
 		}
 	} else {
 		for i, item := range items {
-			isSelected := i == tm.selectedIndex
+			// Adjust index for back item
+			displayIndex := i
+			if parent != nil {
+				displayIndex = i + 1
+			}
+			isSelected := displayIndex == tm.selectedIndex
 			hasChildren := len(item.Children) > 0
 
 			// Build the line
 			icon := item.Icon
-			if icon == "" {
-				if hasChildren {
-					icon = "📁"
+			iconPart := ""
+			if icon != "" {
+				// Handle blinking: hide icon when blink is true and blinkState is false
+				if item.Blink && !tm.blinkState {
+					iconPart = "  " // Space instead of icon
+				} else if item.IconColor != nil {
+					iconPart = lipgloss.NewStyle().Foreground(item.IconColor).Render(icon) + " "
 				} else {
-					icon = "○"
+					iconPart = icon + " "
 				}
 			}
 
-			// Cursor
-			cursor := "  "
+			// Cursor/indicator: ▶ for selected/active, space otherwise
+			indicator := "  "
 			if isSelected && tm.focused {
-				cursor = "> "
+				indicator = "▶ "
+			} else if item.IsActive {
+				indicator = "▶ "
 			}
 
 			// Label with optional count
@@ -388,6 +615,12 @@ func (tm *TreeMenu) Render() string {
 				)
 			}
 
+			// Trailing icon (e.g., ⚡ for attached terminal)
+			trailingIcon := ""
+			if item.TrailingIcon != "" {
+				trailingIcon = " " + item.TrailingIcon
+			}
+
 			// Arrow for items with children
 			arrow := ""
 			if hasChildren {
@@ -395,13 +628,24 @@ func (tm *TreeMenu) Render() string {
 			}
 
 			// Calculate available space for label
-			// cursor(2) + icon(2) + space(1) + label + count + arrow
-			availableForLabel := innerWidth - 2 - 3 - len(countSuffix) - len(arrow)
+			// Use lipgloss.Width for accurate display width (handles emojis, unicode)
+			prefixWidth := lipgloss.Width(indicator) + lipgloss.Width(iconPart)
+			suffixWidth := lipgloss.Width(countSuffix) + lipgloss.Width(trailingIcon) + lipgloss.Width(arrow)
+			availableForLabel := contentWidth - prefixWidth - suffixWidth
 			if availableForLabel < 10 {
 				availableForLabel = 10
 			}
 
-			line := cursor + icon + " " + truncate(label, availableForLabel) + countSuffix + arrow
+			// Show rename input if this item is being renamed
+			displayLabel := label
+			if isSelected && tm.renameActive && !hasChildren {
+				displayLabel = tm.renameText + "█"
+				countSuffix = "" // Hide count when renaming
+				trailingIcon = ""
+				arrow = ""
+			}
+
+			line := indicator + iconPart + truncate(displayLabel, availableForLabel) + countSuffix + trailingIcon + arrow
 
 			// Apply style
 			var style lipgloss.Style
@@ -410,36 +654,23 @@ func (tm *TreeMenu) Render() string {
 					Bold(true).
 					Background(ColorBgAlt).
 					Foreground(ColorText).
+					Padding(0, 2).
 					Width(innerWidth)
-			} else if isSelected {
+			} else if item.IsActive {
 				style = lipgloss.NewStyle().
+					Bold(true).
 					Foreground(ColorPrimary).
+					Padding(0, 2).
 					Width(innerWidth)
 			} else {
+				// Unfocused selected items use normal text color (only active is purple)
 				style = lipgloss.NewStyle().
 					Foreground(ColorText).
+					Padding(0, 2).
 					Width(innerWidth)
 			}
 
 			lines = append(lines, style.Render(line))
-		}
-	}
-
-	// Spacer
-	lines = append(lines, "")
-
-	// Hints
-	hintStyle := lipgloss.NewStyle().Foreground(ColorMuted)
-	if tm.searchActive {
-		lines = append(lines, hintStyle.Render("Esc:cancel /clear"))
-	} else if parent != nil {
-		lines = append(lines, hintStyle.Render("←/Esc:back /:search"))
-	} else {
-		item := tm.SelectedItem()
-		if item != nil && len(item.Children) > 0 {
-			lines = append(lines, hintStyle.Render("↑↓:nav →/Enter:open /:search"))
-		} else {
-			lines = append(lines, hintStyle.Render("↑↓:nav Enter:select /:search"))
 		}
 	}
 
@@ -454,7 +685,7 @@ func (tm *TreeMenu) Render() string {
 	}
 
 	return style.
-		Width(width).
+		Width(renderWidth).
 		Height(tm.height).
 		Render(content)
 }

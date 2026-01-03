@@ -460,26 +460,6 @@ type persistentProcess struct {
 	mu       sync.Mutex
 }
 
-// sessionWatcher watches a session file for changes
-type sessionWatcher struct {
-	sessionID  string
-	filePath   string
-	lastOffset int64
-	cancel     context.CancelFunc
-	outputCh   chan SessionUpdate
-}
-
-// SessionUpdate represents an update from watching a session
-type SessionUpdate struct {
-	SessionID string
-	Type      string // "user", "assistant", "tool_use", "tool_result", "end"
-	Content   string
-	Role      string
-	ToolName  string
-	ToolInput map[string]interface{}
-	Timestamp time.Time
-}
-
 // Service manages Claude Code integration
 type Service struct {
 	mu              sync.RWMutex
@@ -491,7 +471,6 @@ type Service struct {
 	activeProcs     map[string]*exec.Cmd
 	persistentProcs map[string]*persistentProcess // Persistent processes per session
 	outputChans     map[string]chan ClaudeOutput
-	watchers        map[string]*sessionWatcher // File watchers for external sessions
 }
 
 // NewService creates a new Claude service
@@ -503,7 +482,6 @@ func NewService(dataDir string) *Service {
 		activeProcs:     make(map[string]*exec.Cmd),
 		persistentProcs: make(map[string]*persistentProcess),
 		outputChans:     make(map[string]chan ClaudeOutput),
-		watchers:        make(map[string]*sessionWatcher),
 	}
 	s.detectClaude()
 	s.loadCustomNames()
@@ -651,13 +629,27 @@ func (s *Service) loadProjectSessions(projectPath, projectName string) {
 			continue
 		}
 
-		// Skip empty sessions
+		var session *Session
+
+		// Handle empty sessions (newly created, not yet used)
 		if info.Size() == 0 {
-			continue
+			// Create minimal session for empty file
+			session = &Session{
+				ID:            sessionID,
+				Name:          sessionID[:8], // Short ID as default name
+				ProjectName:   projectName,
+				State:         SessionIdle,
+				Messages:      make([]Message, 0),
+				CreatedAt:     info.ModTime(),
+				LastActiveAt:  info.ModTime(),
+				IsRealSession: true,
+				SessionFile:   sessionFile,
+			}
+		} else {
+			// Load session metadata from JSONL (workDir will be extracted from cwd field)
+			session = s.parseSessionFile(sessionID, sessionFile)
 		}
 
-		// Load session metadata from JSONL (workDir will be extracted from cwd field)
-		session := s.parseSessionFile(sessionID, sessionFile)
 		if session != nil {
 			// Apply custom name if one exists
 			if customName, ok := s.customNames[sessionID]; ok {
@@ -735,7 +727,12 @@ func (s *Service) parseSessionFile(sessionID, filePath string) *Session {
 					}
 
 					var contentBuilder strings.Builder
-					if c, ok := msg["content"].([]interface{}); ok {
+					// Content can be a string (user messages) or array (assistant messages)
+					if contentStr, ok := msg["content"].(string); ok {
+						// User messages have content as a simple string
+						contentBuilder.WriteString(contentStr)
+					} else if c, ok := msg["content"].([]interface{}); ok {
+						// Assistant messages have content as array of blocks
 						for _, item := range c {
 							if block, ok := item.(map[string]interface{}); ok {
 								blockType, _ := block["type"].(string)
@@ -845,26 +842,22 @@ func (s *Service) CreateSession(projectID, projectName, workDir, name string) (*
 	// Generate a real UUID for Claude CLI compatibility
 	sessionID := GenerateSessionID()
 
-	// Generate session name with project prefix if not provided
-	if name == "" {
-		// Count existing sessions for this project
-		count := 0
-		for _, sess := range s.sessions {
-			if sess.ProjectID == projectID {
-				count++
-			}
-		}
-		name = fmt.Sprintf("%s-session-%d", projectID, count+1)
-	} else {
-		// Ensure name has project prefix
-		if !strings.HasPrefix(name, projectID+"-") {
-			name = projectID + "-" + name
-		}
-	}
-
 	// Build the expected session file path
 	claudeProjectName := workDirToClaudeProject(workDir)
 	sessionFile := filepath.Join(claudeProjectsDir(), claudeProjectName, sessionID+".jsonl")
+
+	// Create the directory if it doesn't exist
+	sessionDir := filepath.Dir(sessionFile)
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create session directory: %w", err)
+	}
+
+	// Create an empty JSONL file so it persists and is picked up by ScanSessions
+	f, err := os.Create(sessionFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session file: %w", err)
+	}
+	f.Close()
 
 	session := &Session{
 		ID:            sessionID,
@@ -881,6 +874,12 @@ func (s *Service) CreateSession(projectID, projectName, workDir, name string) (*
 	}
 
 	s.sessions[session.ID] = session
+
+	// Save custom name if provided
+	if name != "" {
+		s.customNames[sessionID] = name
+		go s.saveCustomNames()
+	}
 
 	return session, nil
 }
@@ -1545,7 +1544,7 @@ func (s *Service) ClearSessionCustomName(sessionID string) error {
 	return nil
 }
 
-// DeleteSession removes a session
+// DeleteSession removes a session and its JSONL file
 func (s *Service) DeleteSession(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1563,8 +1562,23 @@ func (s *Service) DeleteSession(sessionID string) error {
 		}
 	}
 
+	// Delete the actual session file (Claude CLI JSONL)
+	if sess.SessionFile != "" {
+		if err := os.Remove(sess.SessionFile); err != nil && !os.IsNotExist(err) {
+			// Log but don't fail - the file might already be gone
+			// or we might not have permissions
+		}
+	}
+
+	// Remove custom name if any
+	delete(s.customNames, sessionID)
+
+	// Remove from in-memory map
 	delete(s.sessions, sessionID)
-	go s.saveSessions()
+
+	// Save custom names (to remove the deleted session's custom name)
+	go s.saveCustomNames()
+
 	return nil
 }
 
@@ -1766,229 +1780,10 @@ func (s *Service) ClearSessionHistory(sessionID string) error {
 	return nil
 }
 
-// WatchSession starts watching a session file for real-time updates
-// Useful for following sessions running outside of csd-devtrack
-func (s *Service) WatchSession(sessionID string) (chan SessionUpdate, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Check if already watching
-	if w, exists := s.watchers[sessionID]; exists {
-		return w.outputCh, nil
-	}
-
-	// Find session file
-	sess, ok := s.sessions[sessionID]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", sessionID)
-	}
-
-	if sess.SessionFile == "" {
-		return nil, fmt.Errorf("session has no file: %s", sessionID)
-	}
-
-	// Get current file size as starting offset
-	info, err := os.Stat(sess.SessionFile)
-	if err != nil {
-		return nil, fmt.Errorf("cannot stat session file: %w", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	outputCh := make(chan SessionUpdate, 100)
-
-	watcher := &sessionWatcher{
-		sessionID:  sessionID,
-		filePath:   sess.SessionFile,
-		lastOffset: info.Size(),
-		cancel:     cancel,
-		outputCh:   outputCh,
-	}
-
-	s.watchers[sessionID] = watcher
-
-	// Start watching goroutine
-	go s.watchSessionFile(ctx, watcher)
-
-	return outputCh, nil
-}
-
-// StopWatchSession stops watching a session
-func (s *Service) StopWatchSession(sessionID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if w, exists := s.watchers[sessionID]; exists {
-		w.cancel()
-		close(w.outputCh)
-		delete(s.watchers, sessionID)
-	}
-}
-
-// IsWatching returns true if a session is being watched
-func (s *Service) IsWatching(sessionID string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, exists := s.watchers[sessionID]
-	return exists
-}
-
-// watchSessionFile polls the session file for new content
-func (s *Service) watchSessionFile(ctx context.Context, w *sessionWatcher) {
-	ticker := time.NewTicker(500 * time.Millisecond) // Poll every 500ms
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			s.checkSessionFileUpdates(w)
-		}
-	}
-}
-
-// checkSessionFileUpdates reads new lines from the session file
-func (s *Service) checkSessionFileUpdates(w *sessionWatcher) {
-	info, err := os.Stat(w.filePath)
-	if err != nil {
-		return
-	}
-
-	// Check if file has grown
-	currentSize := info.Size()
-	if currentSize <= w.lastOffset {
-		return
-	}
-
-	// Open and seek to last position
-	file, err := os.Open(w.filePath)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-
-	if _, err := file.Seek(w.lastOffset, 0); err != nil {
-		return
-	}
-
-	// Read the new content
-	newContent := make([]byte, currentSize-w.lastOffset)
-	n, err := io.ReadFull(file, newContent)
-	if err != nil && err != io.ErrUnexpectedEOF {
-		return
-	}
-
-	// Update offset to current file size
-	w.lastOffset = currentSize
-
-	// Parse lines from the new content
-	lines := strings.Split(string(newContent[:n]), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		update := s.parseSessionLine(w.sessionID, []byte(line))
-		if update != nil {
-			select {
-			case w.outputCh <- *update:
-			default:
-				// Channel full, skip
-			}
-		}
-	}
-}
-
-// parseSessionLine parses a single JSONL line into a SessionUpdate
-func (s *Service) parseSessionLine(sessionID string, line []byte) *SessionUpdate {
-	var entry map[string]interface{}
-	if err := json.Unmarshal(line, &entry); err != nil {
-		return nil
-	}
-
-	entryType, _ := entry["type"].(string)
-
-	var timestamp time.Time
-	if ts, ok := entry["timestamp"].(string); ok {
-		timestamp, _ = time.Parse(time.RFC3339, ts)
-	}
-
-	switch entryType {
-	case "user", "assistant":
-		// Parse message content
-		msg, ok := entry["message"].(map[string]interface{})
-		if !ok {
-			return nil
-		}
-
-		role, _ := msg["role"].(string)
-		var contentBuilder strings.Builder
-
-		if contents, ok := msg["content"].([]interface{}); ok {
-			for _, item := range contents {
-				block, ok := item.(map[string]interface{})
-				if !ok {
-					continue
-				}
-
-				blockType, _ := block["type"].(string)
-				switch blockType {
-				case "text":
-					if text, ok := block["text"].(string); ok {
-						contentBuilder.WriteString(text)
-					}
-				case "tool_use":
-					toolName, _ := block["name"].(string)
-					input, _ := block["input"].(map[string]interface{})
-					contentBuilder.WriteString("\n")
-					contentBuilder.WriteString(formatToolUseForDisplay(toolName, input))
-				case "tool_result":
-					// Tool result
-					if content, ok := block["content"].(string); ok {
-						contentBuilder.WriteString("\n  ⎿  ")
-						if len(content) > 100 {
-							contentBuilder.WriteString(content[:100] + "...")
-						} else {
-							contentBuilder.WriteString(content)
-						}
-						contentBuilder.WriteString("\n")
-					}
-				}
-			}
-		}
-
-		return &SessionUpdate{
-			SessionID: sessionID,
-			Type:      entryType,
-			Role:      role,
-			Content:   contentBuilder.String(),
-			Timestamp: timestamp,
-		}
-
-	case "result":
-		// End of turn
-		return &SessionUpdate{
-			SessionID: sessionID,
-			Type:      "end",
-			Timestamp: timestamp,
-		}
-	}
-
-	return nil
-}
-
 // Shutdown cleans up all resources
 func (s *Service) Shutdown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// Stop all watchers
-	for id, w := range s.watchers {
-		w.cancel()
-		close(w.outputCh)
-		delete(s.watchers, id)
-	}
 
 	// Stop all active one-shot processes
 	for id, cmd := range s.activeProcs {

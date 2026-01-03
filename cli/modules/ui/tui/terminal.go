@@ -227,6 +227,8 @@ func (t *Terminal) HandleKey(key string) (consumed bool, exitTerminal bool) {
 // keyToBytes converts a bubbletea key to bytes
 func keyToBytes(key string) []byte {
 	switch key {
+	case "esc":
+		return []byte{0x1b}
 	case "enter":
 		return []byte{'\r'}
 	case "backspace":

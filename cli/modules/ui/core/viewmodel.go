@@ -210,17 +210,18 @@ type ConfigVM struct {
 
 // ClaudeSessionVM represents a Claude session for display
 type ClaudeSessionVM struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	ProjectID    string `json:"project_id"`
-	ProjectName  string `json:"project_name"`
-	WorkDir      string `json:"work_dir"`       // Working directory for Claude
-	State        string `json:"state"` // idle, running, waiting, error
-	MessageCount int    `json:"message_count"`
-	LastActive   string `json:"last_active"`
-	IsActive     bool   `json:"is_active"`      // Currently selected session
-	IsPersistent bool   `json:"is_persistent"`  // Has active persistent process (fast mode)
-	IsWatching   bool   `json:"is_watching"`    // Watching external session for updates
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	ProjectID       string    `json:"project_id"`
+	ProjectName     string    `json:"project_name"`
+	WorkDir         string    `json:"work_dir"`          // Working directory for Claude
+	State           string    `json:"state"`             // idle, running, waiting, error
+	MessageCount    int       `json:"message_count"`
+	LastActive      string    `json:"last_active"`       // Formatted date string
+	LastActiveAt    time.Time `json:"last_active_at"`    // Raw time for relative calculation
+	LastUserMessage string    `json:"last_user_message"` // Last user message (truncated)
+	IsActive     bool `json:"is_active"`     // Currently selected session
+	IsPersistent bool `json:"is_persistent"` // Has active persistent process (fast mode)
 }
 
 // ClaudeMessageVM represents a message for display
@@ -250,15 +251,6 @@ type ClaudeUsageVM struct {
 	CostUSD        float64 `json:"cost_usd,omitempty"` // Estimated cost
 }
 
-// ClaudeSettingsVM represents Claude settings for the UI
-type ClaudeSettingsVM struct {
-	AllowedTools    []string `json:"allowed_tools"`    // Tools Claude can use
-	AutoApprove     bool     `json:"auto_approve"`     // Auto-approve safe operations
-	OutputFormat    string   `json:"output_format"`    // text, json, stream-json
-	MaxTurns        int      `json:"max_turns"`        // Max conversation turns
-	PlanModeEnabled bool     `json:"plan_mode_enabled"` // Use plan mode for complex tasks
-}
-
 // ClaudeInteractiveVM represents the current interactive state
 type ClaudeInteractiveVM struct {
 	Type        string   `json:"type"`          // "none", "permission", "question", "plan"
@@ -273,16 +265,18 @@ type ClaudeInteractiveVM struct {
 // ClaudeVM is the view model for the Claude AI view
 type ClaudeVM struct {
 	BaseViewModel
-	IsInstalled     bool              `json:"is_installed"`
-	ClaudePath      string            `json:"claude_path,omitempty"`
-	Sessions        []ClaudeSessionVM `json:"sessions"`
-	ActiveSessionID string            `json:"active_session_id,omitempty"`
-	ActiveSession   *ClaudeSessionVM  `json:"active_session,omitempty"`
-	Messages        []ClaudeMessageVM `json:"messages,omitempty"`
-	InputText       string            `json:"input_text"`      // Current input being typed
-	IsTyping        bool              `json:"is_typing"`       // User is typing
-	IsProcessing    bool              `json:"is_processing"`   // Claude is processing
-	FilterProject   string            `json:"filter_project"`  // Filter sessions by project
+	IsInstalled            bool              `json:"is_installed"`
+	ClaudePath             string            `json:"claude_path,omitempty"`
+	Sessions               []ClaudeSessionVM `json:"sessions"`
+	ActiveSessionID        string            `json:"active_session_id,omitempty"`
+	ActiveSession          *ClaudeSessionVM  `json:"active_session,omitempty"`
+	NewlyCreatedSessionID        string `json:"newly_created_session_id,omitempty"`         // Set when a new session is created
+	NewlyCreatedSessionProjectID string `json:"newly_created_session_project_id,omitempty"` // Project ID of newly created session
+	Messages               []ClaudeMessageVM `json:"messages,omitempty"`
+	InputText              string            `json:"input_text"`      // Current input being typed
+	IsTyping               bool              `json:"is_typing"`       // User is typing
+	IsProcessing           bool              `json:"is_processing"`   // Claude is processing
+	FilterProject          string            `json:"filter_project"`  // Filter sessions by project
 
 	// Plan mode
 	PlanMode        bool               `json:"plan_mode"`        // Claude is in plan mode
@@ -295,7 +289,4 @@ type ClaudeVM struct {
 
 	// Usage stats (for current session)
 	Usage           *ClaudeUsageVM    `json:"usage,omitempty"`
-
-	// Settings
-	Settings        *ClaudeSettingsVM `json:"settings,omitempty"`
 }

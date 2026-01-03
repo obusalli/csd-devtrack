@@ -31,9 +31,6 @@ type TerminalTmux struct {
 	scrollOffset int // 0 = at bottom, positive = scrolled up
 	totalLines   int
 
-	// ESC ESC detection
-	lastEscTime time.Time
-
 	// Callbacks
 	onOutput func()
 	onExit   func()
@@ -157,9 +154,16 @@ func (t *TerminalTmux) doStart(sessionID string) error {
 	t.mu.RUnlock()
 
 	// Build command for Claude
+	// Only use --resume if the session file exists and has content
 	claudeArgs := []string{}
 	if sessionID != "" && isValidUUID(sessionID) {
-		claudeArgs = append(claudeArgs, "--resume", sessionID)
+		// Check if session file exists and has content
+		sessionFile := getClaudeSessionFile(workDir, sessionID)
+		if info, err := os.Stat(sessionFile); err == nil && info.Size() > 0 {
+			// Session has content, resume it
+			claudeArgs = append(claudeArgs, "--resume", sessionID)
+		}
+		// If file is empty or doesn't exist, start fresh (Claude will use the workDir)
 	}
 
 	// Create new tmux session with Claude
@@ -365,34 +369,6 @@ func (t *TerminalTmux) WriteString(s string) error {
 
 // HandleKey processes a key press
 func (t *TerminalTmux) HandleKey(key string) (consumed bool, exitTerminal bool) {
-	// Check for ESC ESC
-	if key == "esc" {
-		now := time.Now()
-		if now.Sub(t.lastEscTime) < 300*time.Millisecond {
-			t.lastEscTime = time.Time{}
-			return true, true
-		}
-		t.lastEscTime = now
-		go func() {
-			time.Sleep(350 * time.Millisecond)
-			t.mu.RLock()
-			lastEsc := t.lastEscTime
-			t.mu.RUnlock()
-			if !lastEsc.IsZero() && time.Since(lastEsc) >= 300*time.Millisecond {
-				t.Write([]byte{0x1b})
-				t.mu.Lock()
-				t.lastEscTime = time.Time{}
-				t.mu.Unlock()
-			}
-		}()
-		return true, false
-	}
-
-	if !t.lastEscTime.IsZero() {
-		t.Write([]byte{0x1b})
-		t.lastEscTime = time.Time{}
-	}
-
 	// Handle scrolling locally (don't send to tmux)
 	if key == "pgup" {
 		t.ScrollUp(t.height / 2)
@@ -580,6 +556,51 @@ func (t *TerminalTmux) SetCallbacks(onOutput, onExit func()) {
 	t.onExit = onExit
 }
 
+// TmuxSessionExists checks if a tmux session exists for a given Claude session ID
+func TmuxSessionExists(sessionID string) bool {
+	shortID := sessionID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	tmuxName := fmt.Sprintf("csd-dt-%s", shortID)
+	cmd := exec.Command("tmux", "has-session", "-t", tmuxName)
+	return cmd.Run() == nil
+}
+
+// ListTmuxSessions returns a set of session IDs (8-char prefix) that have tmux sessions
+func ListTmuxSessions() map[string]bool {
+	result := make(map[string]bool)
+	// tmux ls -F "#{session_name}" lists all session names
+	cmd := exec.Command("tmux", "ls", "-F", "#{session_name}")
+	output, err := cmd.Output()
+	if err != nil {
+		return result
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "csd-dt-") {
+			// Extract the 8-char session ID
+			shortID := strings.TrimPrefix(line, "csd-dt-")
+			if len(shortID) >= 8 {
+				shortID = shortID[:8]
+			}
+			result[shortID] = true
+		}
+	}
+	return result
+}
+
+// KillTmuxSession kills the tmux session for a given Claude session ID
+func KillTmuxSession(sessionID string) error {
+	shortID := sessionID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	tmuxName := fmt.Sprintf("csd-dt-%s", shortID)
+	cmd := exec.Command("tmux", "kill-session", "-t", tmuxName)
+	return cmd.Run()
+}
+
 // LineCount returns the number of lines
 func (t *TerminalTmux) LineCount() int {
 	t.mu.RLock()
@@ -606,4 +627,16 @@ func (t *TerminalTmux) GetLines() []string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return strings.Split(t.content, "\n")
+}
+
+// getClaudeSessionFile returns the path to the Claude session file
+func getClaudeSessionFile(workDir, sessionID string) string {
+	// Claude stores sessions in ~/.claude/projects/<project-name>/<session-id>.jsonl
+	// Project name is derived from workDir (last path component)
+	homeDir, _ := os.UserHomeDir()
+	projectName := workDir
+	if idx := strings.LastIndex(workDir, "/"); idx >= 0 {
+		projectName = workDir[idx+1:]
+	}
+	return fmt.Sprintf("%s/.claude/projects/%s/%s.jsonl", homeDir, projectName, sessionID)
 }

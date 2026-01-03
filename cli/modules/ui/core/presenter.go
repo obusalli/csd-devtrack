@@ -267,10 +267,6 @@ func (p *AppPresenter) HandleEvent(event *Event) error {
 		return p.handleClaudeApprovePlan(event)
 	case EventClaudeRejectPlan:
 		return p.handleClaudeRejectPlan(event)
-	case EventClaudeWatchSession:
-		return p.handleClaudeWatchSession(event)
-	case EventClaudeStopWatch:
-		return p.handleClaudeStopWatch(event)
 
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)
@@ -1042,15 +1038,34 @@ func (p *AppPresenter) handleClaudeCreateSession(event *Event) error {
 		return err
 	}
 
+	// Get session name from event data (optional)
+	sessionName := ""
+	if event.Data != nil {
+		sessionName = event.Data["session_name"]
+	}
+
 	// Create session
-	session, err := p.claudeService.CreateSession(projectID, proj.Name, proj.Path, "")
+	session, err := p.claudeService.CreateSession(projectID, proj.Name, proj.Path, sessionName)
 	if err != nil {
 		p.notify(NotifyError, "Create Session Failed", err.Error())
 		return err
 	}
 
+	// Set the newly created session ID and project ID so the UI can select it
+	p.mu.Lock()
+	p.state.Claude.NewlyCreatedSessionID = session.ID
+	p.state.Claude.NewlyCreatedSessionProjectID = projectID
+	p.mu.Unlock()
+
 	p.notify(NotifySuccess, "Session Created", fmt.Sprintf("Created %s", session.Name))
 	p.refreshClaude()
+
+	// Clear after first refresh so it's not sent again
+	p.mu.Lock()
+	p.state.Claude.NewlyCreatedSessionID = ""
+	p.state.Claude.NewlyCreatedSessionProjectID = ""
+	p.mu.Unlock()
+
 	return nil
 }
 
@@ -1063,15 +1078,6 @@ func (p *AppPresenter) handleClaudeSelectSession(event *Event) error {
 	session, err := p.claudeService.GetSession(sessionID)
 	if err != nil {
 		return err
-	}
-
-	// Stop watching previous session if different
-	p.mu.RLock()
-	previousSessionID := p.state.Claude.ActiveSessionID
-	p.mu.RUnlock()
-
-	if previousSessionID != "" && previousSessionID != sessionID {
-		p.claudeService.StopWatchSession(previousSessionID)
 	}
 
 	// Start persistent process for faster responses
@@ -1088,9 +1094,6 @@ func (p *AppPresenter) handleClaudeSelectSession(event *Event) error {
 	p.state.Claude.ActiveSession = p.sessionToVM(session)
 	p.state.Claude.Messages = p.messagesToVM(session.Messages)
 	p.mu.Unlock()
-
-	// Automatically start watching for external updates
-	go p.startAutoWatch(sessionID)
 
 	p.notifyStateUpdate(VMClaude, p.state.Claude)
 	return nil
@@ -1487,63 +1490,6 @@ func (p *AppPresenter) handleClaudeRejectPlan(event *Event) error {
 	return nil
 }
 
-func (p *AppPresenter) handleClaudeWatchSession(event *Event) error {
-	sessionID := event.Data["session_id"]
-	if sessionID == "" {
-		sessionID = p.state.Claude.ActiveSessionID
-	}
-	if sessionID == "" {
-		return fmt.Errorf("session ID required")
-	}
-
-	// Toggle watching (manual override)
-	if p.claudeService.IsWatching(sessionID) {
-		p.claudeService.StopWatchSession(sessionID)
-		p.notify(NotifyInfo, "Auto-refresh disabled", "Manual mode")
-		p.refreshClaude()
-		return nil
-	}
-
-	// Restart watching
-	p.startAutoWatch(sessionID)
-	p.notify(NotifySuccess, "Auto-refresh enabled", "Watching for updates...")
-	p.refreshClaude()
-	return nil
-}
-
-func (p *AppPresenter) handleClaudeStopWatch(event *Event) error {
-	sessionID := event.Data["session_id"]
-	if sessionID == "" {
-		sessionID = p.state.Claude.ActiveSessionID
-	}
-	if sessionID == "" {
-		return fmt.Errorf("session ID required")
-	}
-
-	p.claudeService.StopWatchSession(sessionID)
-	p.notify(NotifyInfo, "Watch Stopped", "No longer watching session")
-	p.refreshClaude()
-	return nil
-}
-
-// startAutoWatch automatically starts watching a session for external updates
-func (p *AppPresenter) startAutoWatch(sessionID string) {
-	// Don't watch if already watching this session
-	if p.claudeService.IsWatching(sessionID) {
-		return
-	}
-
-	// Start watching for file changes
-	updateCh, err := p.claudeService.WatchSession(sessionID)
-	if err != nil {
-		// Silently ignore - session might not have a file yet
-		return
-	}
-
-	// Handle updates in background
-	go p.handleWatchUpdates(sessionID, updateCh)
-}
-
 // loadSessionMessages loads messages from a session into the UI state
 func (p *AppPresenter) loadSessionMessages(sessionID string) {
 	session, err := p.claudeService.GetSession(sessionID)
@@ -1559,50 +1505,6 @@ func (p *AppPresenter) loadSessionMessages(sessionID string) {
 	p.notifyStateUpdate(VMClaude, p.state.Claude)
 }
 
-// handleWatchUpdates processes updates from a watched session
-func (p *AppPresenter) handleWatchUpdates(sessionID string, updateCh chan claude.SessionUpdate) {
-	for update := range updateCh {
-		// Skip empty content updates (except for end signals)
-		if update.Content == "" && update.Type != "end" {
-			continue
-		}
-
-		// Use Type as Role if Role is empty (common in JSONL)
-		role := update.Role
-		if role == "" {
-			role = update.Type
-		}
-
-		// Create a message from the update
-		msg := ClaudeMessageVM{
-			ID:        fmt.Sprintf("watch-%d", time.Now().UnixNano()),
-			Role:      role,
-			Content:   update.Content,
-			Timestamp: update.Timestamp,
-			TimeStr:   update.Timestamp.Format("060102 - 15:04:05"),
-		}
-
-		p.mu.Lock()
-		// Add message if this is the active session being watched
-		if p.state.Claude.ActiveSessionID == sessionID {
-			// Don't add empty messages
-			if msg.Content != "" {
-				p.state.Claude.Messages = append(p.state.Claude.Messages, msg)
-			}
-
-			// Update session state based on update type
-			if update.Type == "assistant" || update.Type == "user" {
-				p.state.Claude.IsProcessing = update.Type == "assistant"
-			} else if update.Type == "end" {
-				p.state.Claude.IsProcessing = false
-			}
-		}
-		p.mu.Unlock()
-
-		p.notifyStateUpdate(VMClaude, p.state.Claude)
-	}
-}
-
 // ============================================
 // Claude refresh and converters
 // ============================================
@@ -1613,7 +1515,6 @@ func (p *AppPresenter) refreshClaude() {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	// Update installation status
 	p.state.Claude.IsInstalled = p.claudeService.IsInstalled()
@@ -1630,31 +1531,30 @@ func (p *AppPresenter) refreshClaude() {
 	p.state.Claude.Sessions = make([]ClaudeSessionVM, len(sessions))
 	for i, s := range sessions {
 		p.state.Claude.Sessions[i] = ClaudeSessionVM{
-			ID:           s.ID,
-			Name:         s.Name,
-			ProjectID:    s.ProjectID,
-			ProjectName:  s.ProjectName,
-			WorkDir:      s.WorkDir,
-			State:        string(s.State),
-			MessageCount: s.MessageCount,
-			LastActive:   s.LastActiveAt.Format("2006-01-02 15:04"),
-			IsActive:     s.ID == p.state.Claude.ActiveSessionID,
-			IsPersistent: persistentSessions[s.ID],
-			IsWatching:   p.claudeService.IsWatching(s.ID),
+			ID:              s.ID,
+			Name:            s.Name,
+			ProjectID:       s.ProjectID,
+			ProjectName:     s.ProjectName,
+			WorkDir:         s.WorkDir,
+			State:           string(s.State),
+			MessageCount:    s.MessageCount,
+			LastActive:      s.LastActiveAt.Format("2006-01-02 15:04"),
+			LastActiveAt:    s.LastActiveAt,
+			LastUserMessage: s.LastUserMessage,
+			IsActive:        s.ID == p.state.Claude.ActiveSessionID,
+			IsPersistent:    persistentSessions[s.ID],
 		}
 	}
 
-	// Load settings from config
-	if p.config != nil && p.config.Settings != nil && p.config.Settings.Claude != nil {
-		cfg := p.config.Settings.Claude
-		p.state.Claude.Settings = &ClaudeSettingsVM{
-			AllowedTools:    cfg.AllowedTools,
-			AutoApprove:     cfg.AutoApprove,
-			OutputFormat:    cfg.OutputFormat,
-			MaxTurns:        cfg.MaxTurns,
-			PlanModeEnabled: cfg.PlanModeEnabled,
-		}
-	}
+	// Sort sessions by LastActiveAt descending (most recent first)
+	sort.Slice(p.state.Claude.Sessions, func(i, j int) bool {
+		return p.state.Claude.Sessions[i].LastActiveAt.After(p.state.Claude.Sessions[j].LastActiveAt)
+	})
+
+	p.mu.Unlock()
+
+	// Notify UI of the update
+	p.notifyStateUpdate(VMClaude, p.state.Claude)
 }
 
 // refreshClaudeMessages syncs messages from the service for a specific session
@@ -1682,16 +1582,38 @@ func (p *AppPresenter) sessionToVM(session *claude.Session) *ClaudeSessionVM {
 	if session == nil {
 		return nil
 	}
+	// Get last user message (skip system/internal messages)
+	lastUserMsg := ""
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		if session.Messages[i].Role == "user" {
+			content := session.Messages[i].Content
+			// Skip system/internal messages
+			if strings.HasPrefix(content, "[") ||
+				strings.HasPrefix(content, "<") ||
+				strings.HasPrefix(content, "Warmup") ||
+				content == "Goodbye!" ||
+				len(content) < 3 {
+				continue
+			}
+			lastUserMsg = content
+			if len(lastUserMsg) > 100 {
+				lastUserMsg = lastUserMsg[:100] + "..."
+			}
+			break
+		}
+	}
 	return &ClaudeSessionVM{
-		ID:           session.ID,
-		Name:         session.DisplayName(), // Use custom name if set
-		ProjectID:    session.ProjectID,
-		ProjectName:  session.ProjectName,
-		WorkDir:      session.WorkDir,
-		State:        string(session.State),
-		MessageCount: len(session.Messages),
-		LastActive:   session.LastActiveAt.Format("2006-01-02 15:04"),
-		IsActive:     true,
+		ID:              session.ID,
+		Name:            session.DisplayName(), // Use custom name if set
+		ProjectID:       session.ProjectID,
+		ProjectName:     session.ProjectName,
+		WorkDir:         session.WorkDir,
+		State:           string(session.State),
+		MessageCount:    len(session.Messages),
+		LastActive:      session.LastActiveAt.Format("2006-01-02 15:04"),
+		LastActiveAt:    session.LastActiveAt,
+		LastUserMessage: lastUserMsg,
+		IsActive:        true,
 	}
 }
 

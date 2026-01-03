@@ -102,6 +102,11 @@ type Model struct {
 	dialogType    string
 	dialogMessage string
 	dialogConfirm bool
+	dialogInput   textinput.Model // Text input for input dialogs
+	dialogInputActive bool        // Whether the dialog has an input field
+
+	// Pending new session creation
+	pendingNewSessionProjectID string // Project ID for new session dialog
 
 	// Log filtering
 	logLevelFilter   string // "", "error", "warn", "info", "debug"
@@ -126,17 +131,26 @@ type Model struct {
 	// Pending actions (for dialogs)
 	pendingRemovePath string // Path of project to remove (for confirmation dialog)
 
+	// Projects view state
+	projectsMenu *TreeMenu // Tree menu for projects and components
+
+	// Processes view state
+	processesMenu *TreeMenu // Tree menu for processes
+
 	// Git view state
-	gitShowDiff       bool     // Showing diff view
-	gitDiffContent    []string // Diff content lines
-	gitFiles          []GitFileEntry // Flat list of all files for current project
-	gitFilesProjectID string   // Project ID for which gitFiles was built
+	gitDiffContent       []string // Diff content lines
+	gitDiffLoading       bool     // Loading diff content
+	gitLastSelectedFile  string   // Last selected file ID (for auto-load detection)
+	gitFiles             []GitFileEntry // Flat list of all files for current project
+	gitFilesProjectID    string   // Project ID for which gitFiles was built
+	gitMenu              *TreeMenu       // Tree menu for git projects and files
 
 	// Claude view state
-	claudeInstalled      bool            // Is Claude CLI installed
-	claudeMode           string          // "sessions", "chat", "settings"
-	claudeActiveSession  string          // Active session ID
-	claudeSessionLoading bool            // Loading session data
+	claudeInstalled      bool              // Is Claude CLI installed
+	claudeMode           string            // "sessions", "chat", "settings"
+	claudeActiveSession  string            // Active session ID
+	claudeSessionLoading bool              // Loading session data
+	deletingSessions     map[string]bool   // Sessions being deleted (for visual feedback)
 	claudeInputText      string          // Current input text (deprecated, use claudeTextInput)
 	claudeInputActive    bool            // User is typing
 	claudeChatScroll     int             // Scroll offset for chat messages
@@ -151,6 +165,7 @@ type Model struct {
 	claudeTextInput      textinput.Model // Optimized text input component
 	claudeLastEscTime    time.Time       // For double-ESC detection
 	sessionsTreeMenu     *TreeMenu       // Tree menu for sessions panel
+	sidebarMenu          *TreeMenu       // Tree menu for sidebar navigation
 
 	// Terminal mode (embedded Claude terminal)
 	terminalManager      *TerminalManager // Manages terminal sessions
@@ -269,6 +284,12 @@ func NewModel(presenter core.Presenter) *Model {
 	ti.CharLimit = 4096
 	ti.Width = 80
 
+	// Create text input for dialogs
+	dialogTi := textinput.New()
+	dialogTi.Placeholder = "Enter name..."
+	dialogTi.CharLimit = 100
+	dialogTi.Width = 40
+
 	// Get Claude path for terminal manager
 	claudePath := "claude" // Default
 	if state.Claude != nil && state.Claude.ClaudePath != "" {
@@ -281,11 +302,28 @@ func NewModel(presenter core.Presenter) *Model {
 		}
 	}
 
-	// Create sessions tree menu
+	// Create sessions tree menu (right-side panel)
 	sessionsMenu := NewTreeMenu(nil)
 	sessionsMenu.SetTitle("Sessions")
+	sessionsMenu.SetRightSidePanel(true)
 
-	return &Model{
+	// Create sidebar menu
+	sidebarMenu := NewTreeMenu(nil)
+	sidebarMenu.SetTitle("≡ MENU")
+
+	// Create git menu
+	gitMenu := NewTreeMenu(nil)
+	gitMenu.SetTitle("Git")
+
+	// Create projects menu
+	projectsMenu := NewTreeMenu(nil)
+	projectsMenu.SetTitle("Projects")
+
+	// Create processes menu
+	processesMenu := NewTreeMenu(nil)
+	processesMenu.SetTitle("Processes")
+
+	model := &Model{
 		presenter:           presenter,
 		state:               state,
 		keys:                DefaultKeyMap(),
@@ -295,6 +333,9 @@ func NewModel(presenter core.Presenter) *Model {
 		help:                h,
 		spinner:             s,
 		claudeTextInput:     ti,
+		claudeMode:          ClaudeModeChat, // Initialize to avoid empty mode issues
+		dialogInput:         dialogTi,
+		deletingSessions:    make(map[string]bool),
 		notifications:       make([]*core.Notification, 0),
 		visibleMainRows:     10,
 		visibleDetailRows:   5,
@@ -306,7 +347,16 @@ func NewModel(presenter core.Presenter) *Model {
 		metricsCollector:    metricsCollector,
 		terminalManager:     NewTerminalManager(claudePath),
 		sessionsTreeMenu:    sessionsMenu,
+		sidebarMenu:         sidebarMenu,
+		gitMenu:             gitMenu,
+		projectsMenu:        projectsMenu,
+		processesMenu:       processesMenu,
 	}
+
+	// Initialize sidebar menu items
+	model.updateSidebarMenu()
+
+	return model
 }
 
 // saveViewState saves the current view state
@@ -397,16 +447,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.scheduleTerminalRefresh()
 
 	case tea.KeyMsg:
-		// Terminal mode - forward all keys to terminal
+		// Terminal mode - forward most keys to terminal
 		if m.terminalMode && m.claudeActiveSession != "" {
-			if t := m.terminalManager.Get(m.claudeActiveSession); t != nil {
-				keyStr := msg.String()
-				consumed, exitTerminal := t.HandleKey(keyStr)
-				if exitTerminal {
-					// ESC ESC detected - exit terminal mode
-					m.terminalMode = false
-					return m, nil
-				}
+			keyStr := msg.String()
+
+			// Tab and Shift+Tab are handled by the global focus navigation
+			// Don't consume them here - let them fall through
+			if keyStr == "tab" || keyStr == "shift+tab" {
+				// Will be handled by key.Matches below
+			} else if t := m.terminalManager.Get(m.claudeActiveSession); t != nil {
+				consumed, _ := t.HandleKey(keyStr)
 				if consumed {
 					return m, nil
 				}
@@ -478,9 +528,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
+		// Toggle blink state for TreeMenu animations
+		if m.sessionsTreeMenu != nil {
+			m.sessionsTreeMenu.ToggleBlink()
+		}
 
 	case stateUpdateMsg:
-		m.handleStateUpdate(msg.update)
+		needTerminalRefresh := m.handleStateUpdate(msg.update)
 		// Force spinner tick when git is loading in background
 		if m.state.GitLoading {
 			cmds = append(cmds, m.spinner.Tick)
@@ -488,6 +542,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Force spinner tick and schedule next refresh when Claude is processing
 		if m.state.Claude != nil && m.state.Claude.IsProcessing {
 			cmds = append(cmds, m.spinner.Tick, claudeRefreshCmd())
+		}
+		// Start terminal refresh loop if a new session was just created
+		if needTerminalRefresh {
+			cmds = append(cmds, m.scheduleTerminalRefresh())
 		}
 
 	case claudeRefreshMsg:
@@ -511,7 +569,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case gitDiffMsg:
 		m.gitDiffContent = msg.lines
-		m.gitShowDiff = true
+		m.gitDiffLoading = false
 		m.detailScrollOffset = 0
 
 	case tuiStateRestoreMsg:
@@ -590,13 +648,6 @@ func (m Model) renderInitializingView() string {
 func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	// Handle Escape for context-specific exits
 	if msg.String() == "esc" {
-		// Git diff view - go back to file list
-		if m.currentView == core.VMGit && m.gitShowDiff {
-			m.gitShowDiff = false
-			m.gitDiffContent = nil
-			m.detailScrollOffset = 0
-			return nil
-		}
 		// Focus detail -> back to main
 		if m.focusArea == FocusDetail {
 			m.focusArea = FocusMain
@@ -605,8 +656,8 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 
-	// Handle Shift+Up/Down for page scrolling in git diff view
-	if m.currentView == core.VMGit && m.gitShowDiff {
+	// Handle Shift+Up/Down for page scrolling in git diff panel
+	if m.currentView == core.VMGit && m.focusArea == FocusDetail {
 		switch msg.String() {
 		case "shift+up":
 			m.gitDiffPageUp()
@@ -639,43 +690,40 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 		m.showHelp = !m.showHelp
 		return nil
 
-	// Focus navigation (Tab/Shift+Tab)
-	// Special handling for Claude view: Tab toggles Chat <-> Sessions, Shift+Tab for Sidebar
+	// Focus navigation - consistent across all views:
+	// Shift+Tab: always go to sidebar
+	// Tab: cycle between other panels (Main <-> Detail)
+	case key.Matches(msg, m.keys.ShiftTab):
+		// Shift+Tab always goes to sidebar (from any panel)
+		if m.focusArea != FocusSidebar {
+			m.focusArea = FocusSidebar
+			m.terminalMode = false
+			m.claudeInputActive = false
+		} else {
+			// From sidebar, go to main panel
+			m.focusArea = FocusMain
+		}
+		return nil
 	case key.Matches(msg, m.keys.Tab):
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat {
-			// Claude view: Tab toggles between Chat and Sessions (fast switching)
-			if m.focusArea == FocusMain {
-				// Chat -> Sessions
-				m.focusArea = FocusDetail
-				m.claudeInputActive = false
-			} else {
-				// Sessions (or Sidebar) -> Chat
-				m.focusArea = FocusMain
-				// Only activate input if a session is selected
-				if m.claudeActiveSession != "" {
-					m.claudeInputActive = true
-					m.claudeTextInput.Focus()
-					return m.claudeTextInput.Cursor.BlinkCmd()
+		// Tab cycles between Main and Detail panels (skips sidebar)
+		if m.focusArea == FocusSidebar {
+			// From sidebar, go to main
+			m.focusArea = FocusMain
+		} else if m.focusArea == FocusMain {
+			// Main -> Detail
+			m.focusArea = FocusDetail
+			m.terminalMode = false
+			m.claudeInputActive = false
+		} else {
+			// Detail -> Main (and re-enter terminal if applicable)
+			m.focusArea = FocusMain
+			// Re-enter terminal mode if there's an active terminal
+			if m.currentView == core.VMClaude && m.claudeActiveSession != "" {
+				if t := m.terminalManager.Get(m.claudeActiveSession); t != nil && t.IsRunning() {
+					m.terminalMode = true
 				}
 			}
-			return nil
 		}
-		m.cycleFocus(1)
-		return nil
-	case key.Matches(msg, m.keys.ShiftTab):
-		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat {
-			// Claude view: Shift+Tab goes to Sidebar (or back from it)
-			if m.focusArea == FocusSidebar {
-				// Sidebar -> Sessions
-				m.focusArea = FocusDetail
-			} else {
-				// Chat/Sessions -> Sidebar
-				m.focusArea = FocusSidebar
-				m.claudeInputActive = false
-			}
-			return nil
-		}
-		m.cycleFocus(-1)
 		return nil
 
 	// Directional navigation
@@ -683,10 +731,8 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 	case key.Matches(msg, m.keys.Up):
 		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && !m.claudeInputActive {
 			if m.focusArea == FocusDetail {
-				// Sessions panel: navigate tree
-				if m.mainIndex > 0 {
-					m.mainIndex--
-				}
+				// Sessions panel: navigate tree using TreeMenu
+				m.sessionsTreeMenu.MoveUp()
 				return nil
 			} else if m.focusArea == FocusMain {
 				// Chat panel: scroll up
@@ -695,14 +741,16 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		m.navigateUp()
+		// Git view: auto-load diff when selection changes
+		if m.currentView == core.VMGit && m.focusArea == FocusMain {
+			return m.loadGitDiffForSelection()
+		}
 		return nil
 	case key.Matches(msg, m.keys.Down):
 		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && !m.claudeInputActive {
 			if m.focusArea == FocusDetail {
-				// Sessions panel: navigate tree
-				if m.mainIndex < m.claudeTreeItemCount-1 {
-					m.mainIndex++
-				}
+				// Sessions panel: navigate tree using TreeMenu
+				m.sessionsTreeMenu.MoveDown()
 				return nil
 			} else if m.focusArea == FocusMain {
 				// Chat panel: scroll down
@@ -713,11 +761,53 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		m.navigateDown()
+		// Git view: auto-load diff when selection changes
+		if m.currentView == core.VMGit && m.focusArea == FocusMain {
+			return m.loadGitDiffForSelection()
+		}
 		return nil
 	case key.Matches(msg, m.keys.Left):
+		// Claude sessions panel: drill up
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
+			m.sessionsTreeMenu.DrillUp()
+			return nil
+		}
+		// TreeMenu views: drill up in project tree
+		if m.focusArea == FocusMain {
+			switch m.currentView {
+			case core.VMGit:
+				m.gitMenu.DrillUp()
+				return m.loadGitDiffForSelection()
+			case core.VMProjects:
+				m.projectsMenu.DrillUp()
+				return nil
+			case core.VMProcesses:
+				m.processesMenu.DrillUp()
+				return nil
+			}
+		}
 		m.navigateLeft()
 		return nil
 	case key.Matches(msg, m.keys.Right):
+		// Claude sessions panel: drill down
+		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail && !m.claudeInputActive {
+			m.sessionsTreeMenu.DrillDown()
+			return nil
+		}
+		// TreeMenu views: drill down in project tree
+		if m.focusArea == FocusMain {
+			switch m.currentView {
+			case core.VMGit:
+				m.gitMenu.DrillDown()
+				return m.loadGitDiffForSelection()
+			case core.VMProjects:
+				m.projectsMenu.DrillDown()
+				return nil
+			case core.VMProcesses:
+				m.processesMenu.DrillDown()
+				return nil
+			}
+		}
 		m.navigateRight()
 		return nil
 
@@ -760,9 +850,18 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
 
 	// Enter - select/activate
 	case key.Matches(msg, m.keys.Enter):
-		// Claude sessions panel: switch to selected session
+		// Claude sessions panel: use TreeMenu to select/drill-down
 		if m.currentView == core.VMClaude && m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-			return m.switchToSelectedSession()
+			if item := m.sessionsTreeMenu.Select(); item != nil {
+				// Verify it's actually a session (not a project without children)
+				if _, isSession := item.Data.(core.ClaudeSessionVM); isSession {
+					// Leaf item selected (session) - switch to it
+					return m.switchToSessionByID(item.ID)
+				}
+				// It's a project with no sessions - do nothing
+			}
+			// If Select() returned nil, it drilled down - nothing more to do
+			return nil
 		}
 		return m.handleEnter()
 
@@ -838,26 +937,32 @@ func (m *Model) gitDiffPageDown() {
 
 // navigateUp moves selection up in current focus area
 func (m *Model) navigateUp() {
-	// Special handling for git diff view - scroll the diff
-	if m.currentView == core.VMGit && m.gitShowDiff {
-		if m.detailScrollOffset > 0 {
-			m.detailScrollOffset--
-		}
-		return
-	}
-
 	switch m.focusArea {
 	case FocusSidebar:
-		if m.sidebarIndex > 0 {
-			m.sidebarIndex--
-		}
+		m.sidebarMenu.MoveUp()
+		m.sidebarIndex = m.sidebarMenu.SelectedIndex()
 	case FocusMain:
-		if m.mainIndex > 0 {
-			m.mainIndex--
-			m.ensureMainVisible()
+		// Views using TreeMenu
+		switch m.currentView {
+		case core.VMGit:
+			m.gitMenu.MoveUp()
+		case core.VMProjects:
+			m.projectsMenu.MoveUp()
+		case core.VMProcesses:
+			m.processesMenu.MoveUp()
+		default:
+			if m.mainIndex > 0 {
+				m.mainIndex--
+				m.ensureMainVisible()
+			}
 		}
 	case FocusDetail:
-		if m.detailIndex > 0 {
+		// Git view: scroll diff in detail panel
+		if m.currentView == core.VMGit {
+			if m.detailScrollOffset > 0 {
+				m.detailScrollOffset--
+			}
+		} else if m.detailIndex > 0 {
 			m.detailIndex--
 			m.ensureDetailVisible()
 		}
@@ -866,31 +971,36 @@ func (m *Model) navigateUp() {
 
 // navigateDown moves selection down in current focus area
 func (m *Model) navigateDown() {
-	// Special handling for git diff view - scroll the diff
-	if m.currentView == core.VMGit && m.gitShowDiff {
-		maxScroll := len(m.gitDiffContent) - m.visibleDetailRows
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		if m.detailScrollOffset < maxScroll {
-			m.detailScrollOffset++
-		}
-		return
-	}
-
 	switch m.focusArea {
 	case FocusSidebar:
-		maxIndex := len(m.getSidebarViews()) - 1
-		if m.sidebarIndex < maxIndex {
-			m.sidebarIndex++
-		}
+		m.sidebarMenu.MoveDown()
+		m.sidebarIndex = m.sidebarMenu.SelectedIndex()
 	case FocusMain:
-		if m.mainIndex < m.maxMainItems-1 {
-			m.mainIndex++
-			m.ensureMainVisible()
+		// Views using TreeMenu
+		switch m.currentView {
+		case core.VMGit:
+			m.gitMenu.MoveDown()
+		case core.VMProjects:
+			m.projectsMenu.MoveDown()
+		case core.VMProcesses:
+			m.processesMenu.MoveDown()
+		default:
+			if m.mainIndex < m.maxMainItems-1 {
+				m.mainIndex++
+				m.ensureMainVisible()
+			}
 		}
 	case FocusDetail:
-		if m.detailIndex < m.maxDetailItems-1 {
+		// Git view: scroll diff in detail panel
+		if m.currentView == core.VMGit {
+			maxScroll := len(m.gitDiffContent) - m.visibleDetailRows
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if m.detailScrollOffset < maxScroll {
+				m.detailScrollOffset++
+			}
+		} else if m.detailIndex < m.maxDetailItems-1 {
 			m.detailIndex++
 			m.ensureDetailVisible()
 		}
@@ -975,6 +1085,7 @@ func (m *Model) pageDown() {
 func (m *Model) goToStart() {
 	switch m.focusArea {
 	case FocusSidebar:
+		m.sidebarMenu.SetSelectedIndex(0)
 		m.sidebarIndex = 0
 	case FocusMain:
 		m.mainIndex = 0
@@ -989,7 +1100,9 @@ func (m *Model) goToStart() {
 func (m *Model) goToEnd() {
 	switch m.focusArea {
 	case FocusSidebar:
-		m.sidebarIndex = len(m.getSidebarViews()) - 1
+		lastIndex := m.sidebarMenu.TotalVisibleCount() - 1
+		m.sidebarMenu.SetSelectedIndex(lastIndex)
+		m.sidebarIndex = lastIndex
 	case FocusMain:
 		m.mainIndex = m.maxMainItems - 1
 		if m.mainIndex < 0 {
@@ -1093,21 +1206,43 @@ func (m *Model) handleEnter() tea.Cmd {
 		// Depending on view, enter can mean different things
 		switch m.currentView {
 		case core.VMProjects:
-			// Enter on a project -> go to build view for that project
-			m.focusArea = FocusDetail
-		case core.VMProcesses:
-			// Enter on a process -> view logs
-			return m.viewLogs()
-		case core.VMGit:
-			// Git view - move focus to file list
-			if m.state.Git != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Git.Projects) {
-				// Build git files for the selected project
-				p := m.state.Git.Projects[m.mainIndex]
-				m.buildGitFileList(&p)
+			// Projects view uses TreeMenu
+			selectedItem := m.projectsMenu.SelectedItem()
+			if selectedItem != nil {
+				// If it's a component (leaf), focus the detail panel
+				if _, ok := selectedItem.Data.(core.ComponentVM); ok {
+					m.focusArea = FocusDetail
+					return nil
+				}
+				// Otherwise drill down (project with children)
+				m.projectsMenu.Select()
 			}
-			m.focusArea = FocusDetail
-			m.detailIndex = 0
-			m.detailScrollOffset = 0
+		case core.VMProcesses:
+			// Processes view uses TreeMenu
+			selectedItem := m.processesMenu.SelectedItem()
+			if selectedItem != nil {
+				// If it's a process (leaf), view logs
+				if proc, ok := selectedItem.Data.(core.ProcessVM); ok {
+					// Set the process ID for log viewing
+					m.focusArea = FocusDetail
+					_ = proc // Will be used for log viewing
+					return nil
+				}
+				// Otherwise drill down (project with children)
+				m.processesMenu.Select()
+			}
+		case core.VMGit:
+			// Git view uses TreeMenu
+			selectedItem := m.gitMenu.SelectedItem()
+			if selectedItem != nil {
+				// If it's a file (leaf), focus the detail panel
+				if _, ok := selectedItem.Data.(GitFileEntry); ok {
+					m.focusArea = FocusDetail
+					return nil
+				}
+				// Otherwise drill down (project with children)
+				m.gitMenu.Select() // This handles drill-down
+			}
 		case core.VMConfig:
 			// Config view - depends on current tab
 			if m.configMode == "browser" {
@@ -1128,12 +1263,7 @@ func (m *Model) handleEnter() tea.Cmd {
 			// Sessions panel Enter is handled in handleKeyPress
 		}
 	case FocusDetail:
-		// Detail panel Enter actions
-		switch m.currentView {
-		case core.VMGit:
-			// Show diff for selected file
-			return m.showGitFileDiff()
-		}
+		// Detail panel Enter actions (none for Git - diff shown automatically)
 	}
 	return nil
 }
@@ -1466,68 +1596,56 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 		}
 
 		switch key {
-		case "1":
-			m.claudeMode = ClaudeModeChat
-			m.focusArea = FocusMain
-			return nil
-		case "2":
-			m.claudeMode = ClaudeModeSettings
-			m.focusArea = FocusMain
-			m.mainIndex = 0
-			return nil
-		case "]", "shift+right":
-			// Toggle between Chat and Settings
-			if m.claudeMode == ClaudeModeChat {
-				m.claudeMode = ClaudeModeSettings
-			} else {
-				m.claudeMode = ClaudeModeChat
-			}
-			m.focusArea = FocusMain
-			return nil
-		case "[", "shift+left":
-			// Toggle between Chat and Settings
-			if m.claudeMode == ClaudeModeSettings {
-				m.claudeMode = ClaudeModeChat
-			} else {
-				m.claudeMode = ClaudeModeSettings
-			}
-			m.focusArea = FocusMain
-			return nil
 		case "n":
 			// New session - only when focused on sessions panel and on a project
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
-					item := m.claudeTreeItems[m.mainIndex]
-					if item.IsProject {
-						return m.createClaudeSession()
-					}
+				projectID, _, isProject, _ := m.getSelectedTreeItem()
+				if isProject && projectID != "" {
+					// Generate default session name
+					defaultName := m.generateDefaultSessionName(projectID)
+					m.pendingNewSessionProjectID = projectID
+					m.dialogType = "new_claude_session"
+					m.dialogMessage = "New session name:"
+					m.dialogInput.SetValue(defaultName)
+					m.dialogInput.Focus()
+					m.dialogInputActive = true
+					m.showDialog = true
+					return m.dialogInput.Cursor.BlinkCmd()
 				}
 			}
 			return nil
 		case "x":
 			// Delete selected session (when focus is on sessions panel)
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
-					item := m.claudeTreeItems[m.mainIndex]
-					// Only allow deleting sessions, not projects
-					if !item.IsProject && item.SessionID != "" {
-						m.dialogType = "delete_claude_session"
-						m.dialogMessage = "Delete this session?"
-						m.showDialog = true
+				_, sessionID, isProject, _ := m.getSelectedTreeItem()
+				if !isProject && sessionID != "" {
+					// Get session name from selected item
+					sessionName := sessionID
+					if item := m.sessionsTreeMenu.SelectedItem(); item != nil {
+						sessionName = item.Label
 					}
+					m.dialogType = "delete_claude_session"
+					m.dialogMessage = fmt.Sprintf("Delete session \"%s\"?", sessionName)
+					m.showDialog = true
 				}
 			}
 			return nil
 		case "r":
 			// Rename selected session (when focus is on sessions panel)
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
-					item := m.claudeTreeItems[m.mainIndex]
-					// Only allow renaming sessions, not projects
-					if !item.IsProject && item.SessionID != "" {
-						m.claudeRenameActive = true
-						m.claudeRenameText = ""
-					}
+				_, sessionID, isProject, _ := m.getSelectedTreeItem()
+				if !isProject && sessionID != "" {
+					m.sessionsTreeMenu.SetRenameActive(true)
+					m.claudeRenameActive = true
+				}
+			}
+			return nil
+		case "s":
+			// Stop tmux session (when focus is on sessions panel and session has terminal)
+			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
+				_, sessionID, isProject, hasTerminal := m.getSelectedTreeItem()
+				if !isProject && sessionID != "" && hasTerminal {
+					return m.stopClaudeTerminal(sessionID)
 				}
 			}
 			return nil
@@ -1537,27 +1655,6 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				m.claudeInputActive = true
 				m.claudeTextInput.Focus()
 				return m.claudeTextInput.Cursor.BlinkCmd()
-			}
-			return nil
-		case "w":
-			// Toggle watching the selected session for external updates
-			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
-				if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
-					item := m.claudeTreeItems[m.mainIndex]
-					if !item.IsProject && item.SessionID != "" {
-						return m.sendEvent(core.NewEvent(core.EventClaudeWatchSession).WithData("session_id", item.SessionID))
-					}
-				}
-			}
-			return nil
-		case "tab":
-			// Toggle focus between chat and sessions panel
-			if m.claudeMode == ClaudeModeChat {
-				if m.focusArea == FocusMain {
-					m.focusArea = FocusDetail
-				} else {
-					m.focusArea = FocusMain
-				}
 			}
 			return nil
 		case "esc":
@@ -1591,13 +1688,75 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// getSelectedTreeItem returns the selected item from the sessions TreeMenu
+// Returns (projectID, sessionID, isProject, hasTerminal)
+func (m *Model) getSelectedTreeItem() (string, string, bool, bool) {
+	if m.sessionsTreeMenu == nil {
+		return "", "", false, false
+	}
+
+	item := m.sessionsTreeMenu.SelectedItem()
+	if item == nil {
+		return "", "", false, false
+	}
+
+	// Check if it's a project (marked with "project" in Data, or has children)
+	if item.Data == "project" || len(item.Children) > 0 {
+		// It's a project
+		return item.ID, "", true, false
+	}
+
+	// It's a session - check if it has terminal attached
+	hasTerminal := false
+	if m.terminalManager != nil {
+		if t := m.terminalManager.Get(item.ID); t != nil && t.IsRunning() {
+			hasTerminal = true
+		}
+	}
+
+	// Get project ID from session data
+	projectID := ""
+	if sess, ok := item.Data.(core.ClaudeSessionVM); ok {
+		projectID = sess.ProjectID
+	}
+
+	return projectID, item.ID, false, hasTerminal
+}
+
+// generateDefaultSessionName generates a default session name for a project
+func (m *Model) generateDefaultSessionName(projectID string) string {
+	// Count existing sessions for this project
+	count := 0
+	if m.state.Claude != nil {
+		for _, sess := range m.state.Claude.Sessions {
+			if sess.ProjectID == projectID {
+				count++
+			}
+		}
+	}
+	return fmt.Sprintf("session-%d", count+1)
+}
+
+// createClaudeSessionWithName creates a new Claude session with a specific name
+func (m *Model) createClaudeSessionWithName(projectID, name string) tea.Cmd {
+	event := core.NewEvent(core.EventClaudeCreateSession).WithProject(projectID)
+	event.Data["session_name"] = name
+	return m.sendEvent(event)
+}
+
 // createClaudeSession creates a new Claude session for the selected project in tree
 func (m *Model) createClaudeSession() tea.Cmd {
-	// If in tree and a project or session is selected, use that project
+	projectID, _, isProject, _ := m.getSelectedTreeItem()
+	if projectID != "" {
+		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(projectID))
+	}
+
+	// Legacy fallback
 	if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
 		item := m.claudeTreeItems[m.mainIndex]
 		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(item.ProjectID))
 	}
+	_ = isProject // unused
 
 	// Fallback to filter project
 	if m.claudeFilterProject != "" {
@@ -1612,6 +1771,65 @@ func (m *Model) createClaudeSession() tea.Cmd {
 	m.lastError = "No projects available"
 	m.lastErrorTime = time.Now()
 	return nil
+}
+
+// selectSessionInTree finds and selects a session in the sessions tree menu
+func (m *Model) selectSessionInTree(sessionID string) {
+	if m.sessionsTreeMenu == nil || sessionID == "" {
+		return
+	}
+
+	// Find the session's project ID
+	var projectID string
+	if m.state.Claude != nil {
+		for _, sess := range m.state.Claude.Sessions {
+			if sess.ID == sessionID {
+				projectID = sess.ProjectID
+				break
+			}
+		}
+	}
+
+	if projectID == "" {
+		return
+	}
+
+	m.selectSessionInTreeWithProject(sessionID, projectID)
+}
+
+// selectSessionInTreeWithProject finds and selects a session in the tree using known project ID
+func (m *Model) selectSessionInTreeWithProject(sessionID, projectID string) {
+	if m.sessionsTreeMenu == nil || sessionID == "" || projectID == "" {
+		return
+	}
+
+	// Navigate to the session:
+	// 1. First, go to root level
+	m.sessionsTreeMenu.DrillUp()
+	for len(m.sessionsTreeMenu.DrillDownPath()) > 0 {
+		m.sessionsTreeMenu.DrillUp()
+	}
+
+	// 2. Find and select the project
+	items := m.sessionsTreeMenu.Items()
+	for i, item := range items {
+		if item.ID == projectID {
+			m.sessionsTreeMenu.SetSelectedIndex(i)
+			// 3. Drill into the project
+			m.sessionsTreeMenu.DrillDown()
+			break
+		}
+	}
+
+	// 4. Find and select the session within the project
+	sessionItems := m.sessionsTreeMenu.VisibleItems()
+	for i, item := range sessionItems {
+		if item.ID == sessionID {
+			// Account for back item (index 0)
+			m.sessionsTreeMenu.SetSelectedIndex(i + 1)
+			break
+		}
+	}
 }
 
 // openClaudeSession opens the selected session in chat mode
@@ -1641,22 +1859,48 @@ func (m *Model) openClaudeSession() tea.Cmd {
 }
 
 // switchToSelectedSession switches to the session selected in the tree
-// If a project is selected, creates a new session for that project
+// Uses TreeMenu for navigation: Enter on project drills in, Enter on session opens it
 func (m *Model) switchToSelectedSession() tea.Cmd {
-	if m.mainIndex < 0 || m.mainIndex >= len(m.claudeTreeItems) {
+	if m.sessionsTreeMenu == nil {
 		return nil
 	}
 
-	item := m.claudeTreeItems[m.mainIndex]
+	// Check if back item is selected
+	if m.sessionsTreeMenu.IsBackSelected() {
+		m.sessionsTreeMenu.DrillUp()
+		return nil
+	}
 
-	if item.IsProject {
-		// Project selected - create new session for this project
-		m.claudeSessionLoading = true
-		return m.sendEvent(core.NewEvent(core.EventClaudeCreateSession).WithProject(item.ProjectID))
+	// Get selected item from TreeMenu
+	treeItem := m.sessionsTreeMenu.SelectedItem()
+	if treeItem == nil {
+		return nil
+	}
+
+	// Check if it's a project (has "project" marker in Data or has children)
+	isProject := false
+	if dataStr, ok := treeItem.Data.(string); ok && dataStr == "project" {
+		isProject = true
+	}
+	if isProject || len(treeItem.Children) > 0 {
+		// Project selected - drill into it to show sessions
+		// Only drill if there are children (sessions)
+		if len(treeItem.Children) > 0 {
+			m.sessionsTreeMenu.DrillDown()
+		}
+		// Either way, don't open a session
+		return nil
+	}
+
+	// Verify it's actually a session (Data should be ClaudeSessionVM, not a string)
+	if _, isSession := treeItem.Data.(core.ClaudeSessionVM); !isSession {
+		// Not a session, do nothing
+		return nil
 	}
 
 	// Session selected - switch to it and start terminal
-	m.claudeActiveSession = item.SessionID
+	sessionID := treeItem.ID
+	m.claudeActiveSession = sessionID
 	m.claudeMode = ClaudeModeChat
 
 	// Switch focus to terminal
@@ -1666,7 +1910,7 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 	workDir := ""
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
-			if sess.ID == item.SessionID {
+			if sess.ID == sessionID {
 				workDir = sess.WorkDir
 				break
 			}
@@ -1677,7 +1921,7 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 		workDir, _ = os.Getwd()
 	}
 
-	t := m.terminalManager.GetOrCreate(item.SessionID, workDir)
+	t := m.terminalManager.GetOrCreate(sessionID, workDir)
 
 	// Set terminal size
 	headerHeight := 3
@@ -1691,7 +1935,7 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 
 	// Start Claude if not already running
 	if !t.IsRunning() {
-		if err := t.Start(item.SessionID); err != nil {
+		if err := t.Start(sessionID); err != nil {
 			m.lastError = "Failed to start Claude: " + err.Error()
 			m.lastErrorTime = time.Now()
 			return nil
@@ -1703,6 +1947,84 @@ func (m *Model) switchToSelectedSession() tea.Cmd {
 
 	// Start terminal refresh loop
 	return m.scheduleTerminalRefresh()
+}
+
+// switchToSessionByID switches to a specific session by ID (used by TreeMenu)
+func (m *Model) switchToSessionByID(sessionID string) tea.Cmd {
+	// Session selected - switch to it and start terminal
+	m.claudeActiveSession = sessionID
+	m.claudeMode = ClaudeModeChat
+
+	// Switch focus to terminal
+	m.focusArea = FocusMain
+
+	// Get work directory for this session
+	workDir := ""
+	if m.state.Claude != nil {
+		for _, sess := range m.state.Claude.Sessions {
+			if sess.ID == sessionID {
+				workDir = sess.WorkDir
+				break
+			}
+		}
+	}
+	if workDir == "" {
+		// Default to current dir
+		workDir, _ = os.Getwd()
+	}
+
+	t := m.terminalManager.GetOrCreate(sessionID, workDir)
+
+	// Set terminal size
+	headerHeight := 3
+	footerHeight := 3
+	sidebarWidth := getSidebarWidth()
+	termWidth := m.width - sidebarWidth - 6
+	termHeight := m.height - headerHeight - footerHeight - 2
+	if termWidth > 20 && termHeight > 5 {
+		t.SetSize(termWidth, termHeight)
+	}
+
+	// Start Claude if not already running
+	if !t.IsRunning() {
+		if err := t.Start(sessionID); err != nil {
+			m.lastError = "Failed to start Claude: " + err.Error()
+			m.lastErrorTime = time.Now()
+			return nil
+		}
+	}
+
+	// Enter terminal mode
+	m.terminalMode = true
+
+	// Start terminal refresh loop
+	return m.scheduleTerminalRefresh()
+}
+
+// stopClaudeTerminal stops the tmux terminal for a session
+func (m *Model) stopClaudeTerminal(sessionID string) tea.Cmd {
+	if m.terminalManager == nil {
+		return nil
+	}
+
+	t := m.terminalManager.Get(sessionID)
+	if t == nil {
+		return nil
+	}
+
+	// Stop the terminal in goroutine to avoid blocking UI
+	go t.Stop()
+
+	// If this was the active terminal, exit terminal mode
+	if m.claudeActiveSession == sessionID && m.terminalMode {
+		m.terminalMode = false
+	}
+
+	// Show feedback
+	m.lastError = "Terminal stopped"
+	m.lastErrorTime = time.Now()
+
+	return nil
 }
 
 // handleClaudeInput handles text input in Claude chat mode
@@ -1801,41 +2123,34 @@ func (m *Model) handleClaudeRenameInput(msg tea.KeyMsg) tea.Cmd {
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.claudeRenameActive = false
-		m.claudeRenameText = ""
+		m.sessionsTreeMenu.SetRenameActive(false)
 		return nil
 	case tea.KeyEnter:
-		if m.claudeRenameText == "" {
+		newName := m.sessionsTreeMenu.RenameText()
+		if newName == "" {
 			m.claudeRenameActive = false
+			m.sessionsTreeMenu.SetRenameActive(false)
 			return nil
 		}
 		// Rename session
-		newName := m.claudeRenameText
-		m.claudeRenameText = ""
 		m.claudeRenameActive = false
-		// Get selected session ID from tree
-		var sessionID string
-		if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
-			item := m.claudeTreeItems[m.mainIndex]
-			if !item.IsProject {
-				sessionID = item.SessionID
-			}
-		}
-		if sessionID == "" {
+		m.sessionsTreeMenu.SetRenameActive(false)
+		// Get selected session ID from TreeMenu
+		_, sessionID, isProject, _ := m.getSelectedTreeItem()
+		if isProject || sessionID == "" {
 			return nil
 		}
 		return m.sendEvent(core.NewEvent(core.EventClaudeRenameSession).
 			WithData("session_id", sessionID).
 			WithData("new_name", newName))
 	case tea.KeyBackspace:
-		if len(m.claudeRenameText) > 0 {
-			m.claudeRenameText = m.claudeRenameText[:len(m.claudeRenameText)-1]
-		}
+		m.sessionsTreeMenu.BackspaceRenameText()
 		return nil
 	case tea.KeySpace:
-		m.claudeRenameText += " "
+		m.sessionsTreeMenu.AppendRenameText(" ")
 		return nil
 	case tea.KeyRunes:
-		m.claudeRenameText += string(msg.Runes)
+		m.sessionsTreeMenu.AppendRenameText(string(msg.Runes))
 		return nil
 	}
 	return nil
@@ -1852,10 +2167,41 @@ func (m *Model) toggleLogLevel(level string) {
 
 // handleDialogKey handles keys when a dialog is open
 func (m *Model) handleDialogKey(msg tea.KeyMsg) tea.Cmd {
+	// Input dialogs have special handling
+	if m.dialogInputActive {
+		switch msg.Type {
+		case tea.KeyEnter:
+			m.showDialog = false
+			m.dialogInputActive = false
+			m.dialogInput.Blur()
+			return m.handleDialogConfirm()
+		case tea.KeyEscape:
+			m.showDialog = false
+			m.dialogInputActive = false
+			m.dialogInput.Blur()
+			m.pendingNewSessionProjectID = ""
+			return nil
+		default:
+			// Pass other keys to the input
+			var cmd tea.Cmd
+			m.dialogInput, cmd = m.dialogInput.Update(msg)
+			return cmd
+		}
+	}
+
+	// Regular confirmation dialogs
 	switch msg.String() {
-	case "y", "Y", "enter":
+	case "y", "Y":
+		// Direct yes - always confirm
 		m.showDialog = false
 		return m.handleDialogConfirm()
+	case "enter":
+		// Enter confirms only if Yes is selected (dialogConfirm = true)
+		m.showDialog = false
+		if m.dialogConfirm {
+			return m.handleDialogConfirm()
+		}
+		return nil
 	case "n", "N", "esc":
 		m.showDialog = false
 	case "left", "right", "tab":
@@ -1890,23 +2236,47 @@ func (m *Model) handleDialogConfirm() tea.Cmd {
 		return nil
 	case "delete_claude_session":
 		// Delete the selected Claude session
-		if m.mainIndex >= 0 && m.mainIndex < len(m.claudeTreeItems) {
-			item := m.claudeTreeItems[m.mainIndex]
-			if !item.IsProject && item.SessionID != "" {
-				sessionID := item.SessionID
-				// Reset active session if deleting it
-				if m.claudeActiveSession == sessionID {
-					m.claudeActiveSession = ""
-				}
-				// Adjust index if needed (move to previous item)
-				if m.mainIndex >= m.claudeTreeItemCount-1 {
-					m.mainIndex = m.claudeTreeItemCount - 2
-					if m.mainIndex < 0 {
-						m.mainIndex = 0
+		_, sessionID, isProject, _ := m.getSelectedTreeItem()
+		if !isProject && sessionID != "" {
+			// Mark session as deleting for visual feedback
+			m.deletingSessions[sessionID] = true
+
+			// Update tree immediately so the Disabled flag is set
+			m.updateClaudeTree()
+
+			// Move selection away from deleting session
+			if m.sessionsTreeMenu != nil {
+				m.sessionsTreeMenu.MoveAwayFromDisabled()
+			}
+
+			// Reset active session if deleting it
+			if m.claudeActiveSession == sessionID {
+				m.claudeActiveSession = ""
+			}
+			// Stop terminal and kill tmux in goroutine to avoid blocking UI
+			tm := m.terminalManager
+			go func() {
+				if tm != nil {
+					if t := tm.Get(sessionID); t != nil {
+						t.Stop()
 					}
 				}
-				return m.sendEvent(core.NewEvent(core.EventClaudeDeleteSession).WithValue(sessionID))
+				// Also kill any persistent tmux session
+				KillTmuxSession(sessionID)
+			}()
+			return m.sendEvent(core.NewEvent(core.EventClaudeDeleteSession).WithValue(sessionID))
+		}
+		return nil
+	case "new_claude_session":
+		// Create a new Claude session with the entered name
+		if m.pendingNewSessionProjectID != "" {
+			sessionName := strings.TrimSpace(m.dialogInput.Value())
+			if sessionName == "" {
+				sessionName = m.generateDefaultSessionName(m.pendingNewSessionProjectID)
 			}
+			projectID := m.pendingNewSessionProjectID
+			m.pendingNewSessionProjectID = ""
+			return m.createClaudeSessionWithName(projectID, sessionName)
 		}
 		return nil
 	}
@@ -2214,7 +2584,8 @@ func (m *Model) sendEvent(event *core.Event) tea.Cmd {
 }
 
 // handleStateUpdate handles state updates from presenter
-func (m *Model) handleStateUpdate(update core.StateUpdate) {
+// Returns true if a terminal refresh loop should be started (new session created)
+func (m *Model) handleStateUpdate(update core.StateUpdate) bool {
 	m.state.UpdateViewModel(update.ViewModel)
 
 	// Sync global state flags from presenter
@@ -2232,6 +2603,51 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 	// Update Claude tree for navigation (must persist across Update calls)
 	m.updateClaudeTree()
 
+	// Handle newly created session - start Claude terminal immediately
+	needTerminalRefresh := false
+	if m.state.Claude != nil && m.state.Claude.NewlyCreatedSessionID != "" {
+		sessionID := m.state.Claude.NewlyCreatedSessionID
+
+		// Set as active session (shows in chat panel)
+		m.claudeActiveSession = sessionID
+		m.claudeMode = ClaudeModeChat
+
+		// Get work directory for this session
+		workDir := ""
+		for _, sess := range m.state.Claude.Sessions {
+			if sess.ID == sessionID {
+				workDir = sess.WorkDir
+				break
+			}
+		}
+		if workDir == "" {
+			workDir, _ = os.Getwd()
+		}
+
+		// Start terminal in background (don't block, don't change focus)
+		t := m.terminalManager.GetOrCreate(sessionID, workDir)
+		if !t.IsRunning() {
+			go func() {
+				t.Start(sessionID)
+			}()
+		}
+		needTerminalRefresh = true
+		// Don't change focus - user stays where they were
+		// Don't enter terminal mode - user can Tab to chat when ready
+	}
+
+	// Update Git menu for navigation
+	m.updateGitMenu()
+
+	// Update Projects menu for navigation
+	m.updateProjectsMenu()
+
+	// Update Processes menu for navigation
+	m.updateProcessesMenu()
+
+	// Update sidebar menu
+	m.updateSidebarMenu()
+
 	// Clear session loading state when the requested session data is received
 	if m.claudeSessionLoading && m.state.Claude != nil && m.state.Claude.ActiveSessionID == m.claudeActiveSession {
 		m.claudeSessionLoading = false
@@ -2243,12 +2659,246 @@ func (m *Model) handleStateUpdate(update core.StateUpdate) {
 		m.claudeInputActive = false
 		m.claudeTextInput.Blur()
 	}
+
+	return needTerminalRefresh
+}
+
+// updateSidebarMenu updates the sidebar TreeMenu items
+func (m *Model) updateSidebarMenu() {
+	if m.sidebarMenu == nil {
+		return
+	}
+
+	views := m.getSidebarViews()
+	var items []TreeMenuItem
+
+	for _, v := range views {
+		items = append(items, TreeMenuItem{
+			ID:       string(v.vtype),
+			Label:    v.name,
+			IsActive: m.currentView == v.vtype,
+			Data:     v.vtype,
+		})
+	}
+
+	m.sidebarMenu.SetItems(items)
+}
+
+// updateGitMenu updates the Git view TreeMenu with projects and their files
+func (m *Model) updateGitMenu() {
+	if m.gitMenu == nil || m.state.Git == nil {
+		return
+	}
+
+	var items []TreeMenuItem
+
+	for _, p := range m.state.Git.Projects {
+		// Create children for each file status category
+		var children []TreeMenuItem
+
+		// Staged files
+		for _, f := range p.Staged {
+			children = append(children, TreeMenuItem{
+				ID:    p.ProjectName + ":staged:" + f,
+				Label: f,
+				Icon:  "A",
+				Data:  GitFileEntry{Path: f, Status: "staged"},
+			})
+		}
+
+		// Modified files
+		for _, f := range p.Modified {
+			children = append(children, TreeMenuItem{
+				ID:    p.ProjectName + ":modified:" + f,
+				Label: f,
+				Icon:  "M",
+				Data:  GitFileEntry{Path: f, Status: "modified"},
+			})
+		}
+
+		// Deleted files
+		for _, f := range p.Deleted {
+			children = append(children, TreeMenuItem{
+				ID:    p.ProjectName + ":deleted:" + f,
+				Label: f,
+				Icon:  "D",
+				Data:  GitFileEntry{Path: f, Status: "deleted"},
+			})
+		}
+
+		// Untracked files
+		for _, f := range p.Untracked {
+			children = append(children, TreeMenuItem{
+				ID:    p.ProjectName + ":untracked:" + f,
+				Label: f,
+				Icon:  "?",
+				Data:  GitFileEntry{Path: f, Status: "untracked"},
+			})
+		}
+
+		// Build project status indicator
+		statusIcon := "●"
+		if p.IsClean {
+			statusIcon = "✓"
+		}
+
+		// Count of changes
+		changeCount := len(p.Staged) + len(p.Modified) + len(p.Deleted) + len(p.Untracked)
+
+		items = append(items, TreeMenuItem{
+			ID:       p.ProjectName,
+			Label:    p.ProjectName,
+			Icon:     statusIcon,
+			Children: children,
+			Count:    changeCount,
+			Data:     p,
+		})
+	}
+
+	m.gitMenu.SetItems(items)
+}
+
+// updateProjectsMenu updates the projects TreeMenu with current project data
+func (m *Model) updateProjectsMenu() {
+	if m.projectsMenu == nil || m.state.Projects == nil {
+		return
+	}
+
+	var items []TreeMenuItem
+
+	for _, p := range m.state.Projects.Projects {
+		// Create children for each component
+		var children []TreeMenuItem
+
+		for _, comp := range p.Components {
+			// Status indicator
+			statusIcon := ""
+			if comp.IsRunning {
+				statusIcon = "●"
+			}
+
+			children = append(children, TreeMenuItem{
+				ID:           p.ID + ":" + string(comp.Type),
+				Label:        string(comp.Type),
+				TrailingIcon: statusIcon,
+				Data:         comp,
+			})
+		}
+
+		// Project status: count running components
+		runningCount := 0
+		for _, comp := range p.Components {
+			if comp.IsRunning {
+				runningCount++
+			}
+		}
+
+		// Project icon based on status
+		projectIcon := ""
+		if p.IsSelf {
+			projectIcon = "*"
+		}
+
+		// Trailing icon for running indicator
+		trailingIcon := ""
+		if runningCount > 0 {
+			trailingIcon = "●"
+		}
+
+		items = append(items, TreeMenuItem{
+			ID:           p.ID,
+			Label:        p.Name,
+			Icon:         projectIcon,
+			TrailingIcon: trailingIcon,
+			Children:     children,
+			Count:        len(p.Components),
+			Data:         p,
+		})
+	}
+
+	m.projectsMenu.SetItems(items)
+}
+
+// updateProcessesMenu updates the processes TreeMenu with current process data
+func (m *Model) updateProcessesMenu() {
+	if m.processesMenu == nil || m.state.Processes == nil {
+		return
+	}
+
+	var items []TreeMenuItem
+
+	// Group processes by project
+	projectProcesses := make(map[string][]core.ProcessVM)
+	var projectOrder []string
+
+	for _, proc := range m.state.Processes.Processes {
+		if _, exists := projectProcesses[proc.ProjectName]; !exists {
+			projectOrder = append(projectOrder, proc.ProjectName)
+		}
+		projectProcesses[proc.ProjectName] = append(projectProcesses[proc.ProjectName], proc)
+	}
+
+	for _, projectName := range projectOrder {
+		procs := projectProcesses[projectName]
+		var children []TreeMenuItem
+
+		for _, proc := range procs {
+			// Status indicator
+			statusIcon := ""
+			if proc.State == "running" {
+				statusIcon = "●"
+			}
+
+			children = append(children, TreeMenuItem{
+				ID:           proc.ID,
+				Label:        string(proc.Component),
+				TrailingIcon: statusIcon,
+				Data:         proc,
+			})
+		}
+
+		// Count running
+		runningCount := 0
+		for _, proc := range procs {
+			if proc.State == "running" {
+				runningCount++
+			}
+		}
+
+		trailingIcon := ""
+		if runningCount > 0 {
+			trailingIcon = "●"
+		}
+
+		items = append(items, TreeMenuItem{
+			ID:           projectName,
+			Label:        projectName,
+			TrailingIcon: trailingIcon,
+			Children:     children,
+			Count:        len(children),
+		})
+	}
+
+	m.processesMenu.SetItems(items)
 }
 
 // updateClaudeTree builds the flattened tree structure for Claude sessions navigation
 func (m *Model) updateClaudeTree() {
+	// Clean up deletingSessions map: remove IDs that are no longer in the sessions list
+	if m.state.Claude != nil && len(m.deletingSessions) > 0 {
+		existingIDs := make(map[string]bool)
+		for _, sess := range m.state.Claude.Sessions {
+			existingIDs[sess.ID] = true
+		}
+		for id := range m.deletingSessions {
+			if !existingIDs[id] {
+				delete(m.deletingSessions, id)
+			}
+		}
+	}
+
 	// Build tree: group sessions by project
-	// Only show projects that are registered in csd-devtrack AND have sessions
+	// Show ALL registered projects, even those without sessions
 	type projectNode struct {
 		ID       string
 		Name     string
@@ -2259,48 +2909,47 @@ func (m *Model) updateClaudeTree() {
 	projectMap := make(map[string]*projectNode)
 	var projectOrder []string
 
-	// Build a map of registered project paths for matching
-	registeredProjects := make(map[string]*projectNode) // path -> node
+	// Add ALL registered projects to the tree
 	if m.state.Projects != nil {
 		for _, proj := range m.state.Projects.Projects {
-			registeredProjects[proj.Path] = &projectNode{
+			node := &projectNode{
 				ID:       proj.ID,
 				Name:     proj.Name,
 				Path:     proj.Path,
 				Sessions: []core.ClaudeSessionVM{},
 			}
+			projectMap[proj.ID] = node
+			projectOrder = append(projectOrder, proj.ID)
 		}
 	}
 
-	// Add sessions only to registered projects (match by project name in path)
+	// Add sessions to their matching projects
 	if m.state.Claude != nil {
 		for _, sess := range m.state.Claude.Sessions {
 			// Try to match session with a registered project
-			// Session ProjectName is the last segment of the workDir (e.g., "csd-devtrack")
-			// Project Path is the full path (e.g., "/data/devel/infra/csd-devtrack")
-			var matchedNode *projectNode
-			for path, node := range registeredProjects {
-				// Match if project path ends with session's project name
-				if sess.ProjectName != "" && strings.HasSuffix(path, "/"+sess.ProjectName) {
-					matchedNode = node
+			matched := false
+			for _, node := range projectMap {
+				// First, try exact ProjectID match (most reliable)
+				if sess.ProjectID != "" && sess.ProjectID == node.ID {
+					node.Sessions = append(node.Sessions, sess)
+					matched = true
 					break
 				}
-				// Also match if project name equals session's project name
+				// Fallback: Match if project path ends with session's project name
+				if sess.ProjectName != "" && strings.HasSuffix(node.Path, "/"+sess.ProjectName) {
+					node.Sessions = append(node.Sessions, sess)
+					matched = true
+					break
+				}
+				// Fallback: Match if project name equals session's project name
 				if node.Name == sess.ProjectName {
-					matchedNode = node
+					node.Sessions = append(node.Sessions, sess)
+					matched = true
 					break
 				}
-			}
-
-			if matchedNode != nil {
-				// Add session to matched project
-				if _, exists := projectMap[matchedNode.ID]; !exists {
-					projectMap[matchedNode.ID] = matchedNode
-					projectOrder = append(projectOrder, matchedNode.ID)
-				}
-				projectMap[matchedNode.ID].Sessions = append(projectMap[matchedNode.ID].Sessions, sess)
 			}
 			// Sessions not matching any registered project are ignored
+			_ = matched
 		}
 	}
 
@@ -2312,7 +2961,8 @@ func (m *Model) updateClaudeTree() {
 	// Sort sessions within each project alphabetically by name
 	for _, node := range projectMap {
 		sort.Slice(node.Sessions, func(i, j int) bool {
-			return strings.ToLower(node.Sessions[i].Name) < strings.ToLower(node.Sessions[j].Name)
+			// Sort by LastActiveAt descending (most recent first)
+			return node.Sessions[i].LastActiveAt.After(node.Sessions[j].LastActiveAt)
 		})
 	}
 
@@ -2339,6 +2989,9 @@ func (m *Model) updateClaudeTree() {
 	m.claudeTreeItemCount = len(m.claudeTreeItems)
 
 	// Build TreeMenu items
+	// List all tmux sessions once for efficient lookup
+	tmuxSessions := ListTmuxSessions()
+
 	var treeItems []TreeMenuItem
 	for _, projID := range projectOrder {
 		node := projectMap[projID]
@@ -2352,23 +3005,52 @@ func (m *Model) updateClaudeTree() {
 				displayName = displayName[idx+1:]
 			}
 
-			// Get state icon
-			icon := "○"
-			switch sess.State {
-			case "running":
-				icon = "●"
-			case "waiting":
-				icon = "◐"
-			case "error":
-				icon = "✗"
+			// Check if terminal is attached (in memory or persistent tmux)
+			hasTmux := false
+			if m.terminalManager != nil {
+				if t := m.terminalManager.Get(sess.ID); t != nil && t.State() == TerminalRunning {
+					hasTmux = true
+				}
+			}
+			// Also check for persistent tmux sessions (using cached list)
+			if !hasTmux {
+				shortID := sess.ID
+				if len(shortID) > 8 {
+					shortID = shortID[:8]
+				}
+				hasTmux = tmuxSessions[shortID]
 			}
 
-			sessionItems = append(sessionItems, TreeMenuItem{
-				ID:    sess.ID,
-				Label: displayName,
-				Icon:  icon,
-				Data:  sess, // Store the full session data
-			})
+			// Check if session is being deleted
+			isDeleting := m.deletingSessions[sess.ID]
+
+			// Use filled circle for tmux sessions, empty otherwise
+			icon := "○"
+			if isDeleting {
+				icon = "●" // Red filled circle for deleting
+			} else if hasTmux {
+				icon = "●"
+			}
+
+			// Check if this is the active session
+			isActive := sess.ID == m.claudeActiveSession
+
+			item := TreeMenuItem{
+				ID:       sess.ID,
+				Label:    displayName,
+				Icon:     icon,
+				IsActive: isActive,
+				Data:     sess, // Store the full session data
+			}
+			// Set icon color based on state
+			if isDeleting {
+				item.IconColor = ColorError
+				item.Blink = true    // Enable blinking for deleting sessions
+				item.Disabled = true // Can't select deleting sessions
+			} else if hasTmux {
+				item.IconColor = ColorSuccess
+			}
+			sessionItems = append(sessionItems, item)
 		}
 
 		// Add project with its sessions as children
@@ -2383,6 +3065,7 @@ func (m *Model) updateClaudeTree() {
 			Icon:     projIcon,
 			Children: sessionItems,
 			Count:    len(sessionItems),
+			Data:     "project", // Mark as project for identification
 		})
 	}
 
@@ -2458,8 +3141,6 @@ func (m *Model) updateItemCounts() {
 			}
 		case ClaudeModeChat:
 			m.maxMainItems = 0 // No list navigation in chat
-		case ClaudeModeSettings:
-			m.maxMainItems = 0 // No navigation in settings
 		}
 	}
 }
@@ -2632,10 +3313,19 @@ func (m *Model) cancelCurrent() tea.Cmd {
 func (m *Model) getSelectedProjectID() string {
 	switch m.currentView {
 	case core.VMProjects:
-		// mainIndex is now a component row index, need to find the project
-		proj := m.getProjectForComponentRow(m.mainIndex)
-		if proj != nil {
-			return proj.ID
+		// Projects view uses TreeMenu
+		if selectedItem := m.projectsMenu.SelectedItem(); selectedItem != nil {
+			// Check if it's a component (get project from drill-down path)
+			if _, ok := selectedItem.Data.(core.ComponentVM); ok {
+				drillPath := m.projectsMenu.DrillDownPath()
+				if len(drillPath) > 0 {
+					return drillPath[0] // Project ID is the first in drill path
+				}
+			}
+			// Check if it's a project
+			if proj, ok := selectedItem.Data.(core.ProjectVM); ok {
+				return proj.ID
+			}
 		}
 	case core.VMDashboard:
 		projects := core.SelectProjects(m.state)
@@ -2643,12 +3333,27 @@ func (m *Model) getSelectedProjectID() string {
 			return projects[m.mainIndex].ID
 		}
 	case core.VMProcesses:
-		if m.state.Processes != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Processes.Processes) {
-			return m.state.Processes.Processes[m.mainIndex].ProjectID
+		// Processes view uses TreeMenu
+		if selectedItem := m.processesMenu.SelectedItem(); selectedItem != nil {
+			if proc, ok := selectedItem.Data.(core.ProcessVM); ok {
+				return proc.ProjectID
+			}
 		}
 	case core.VMGit:
-		if m.state.Git != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Git.Projects) {
-			return m.state.Git.Projects[m.mainIndex].ProjectID
+		// Git view uses TreeMenu
+		if selectedItem := m.gitMenu.SelectedItem(); selectedItem != nil {
+			if proj, ok := selectedItem.Data.(core.GitStatusVM); ok {
+				return proj.ProjectID
+			}
+			// If it's a file, get project from drill-down path
+			drillPath := m.gitMenu.DrillDownPath()
+			if len(drillPath) > 0 {
+				for _, p := range m.state.Git.Projects {
+					if p.ProjectName == drillPath[0] {
+						return p.ProjectID
+					}
+				}
+			}
 		}
 	}
 	return ""
@@ -2678,29 +3383,18 @@ func (m *Model) getProjectForComponentRow(rowIndex int) *core.ProjectVM {
 func (m *Model) getSelectedComponent() projects.ComponentType {
 	switch m.currentView {
 	case core.VMProjects:
-		if m.state.Projects == nil {
-			return ""
-		}
-		currentRow := 0
-		for i := range m.state.Projects.Projects {
-			p := &m.state.Projects.Projects[i]
-			if len(p.Components) == 0 {
-				if m.mainIndex == currentRow {
-					return "" // Project with no components
-				}
-				currentRow++
-			} else {
-				for _, comp := range p.Components {
-					if m.mainIndex == currentRow {
-						return comp.Type
-					}
-					currentRow++
-				}
+		// Projects view uses TreeMenu
+		if selectedItem := m.projectsMenu.SelectedItem(); selectedItem != nil {
+			if comp, ok := selectedItem.Data.(core.ComponentVM); ok {
+				return comp.Type
 			}
 		}
 	case core.VMProcesses:
-		if m.state.Processes != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Processes.Processes) {
-			return m.state.Processes.Processes[m.mainIndex].Component
+		// Processes view uses TreeMenu
+		if selectedItem := m.processesMenu.SelectedItem(); selectedItem != nil {
+			if proc, ok := selectedItem.Data.(core.ProcessVM); ok {
+				return proc.Component
+			}
 		}
 	}
 	return ""
@@ -2710,9 +3404,22 @@ func (m *Model) getSelectedComponent() projects.ComponentType {
 func (m *Model) isSelectedProjectSelf() bool {
 	switch m.currentView {
 	case core.VMProjects:
-		proj := m.getProjectForComponentRow(m.mainIndex)
-		if proj != nil {
-			return proj.IsSelf
+		// Projects view uses TreeMenu
+		if selectedItem := m.projectsMenu.SelectedItem(); selectedItem != nil {
+			if proj, ok := selectedItem.Data.(core.ProjectVM); ok {
+				return proj.IsSelf
+			}
+			// If it's a component, check the parent project from drill-down path
+			if _, ok := selectedItem.Data.(core.ComponentVM); ok {
+				drillPath := m.projectsMenu.DrillDownPath()
+				if len(drillPath) > 0 {
+					for _, p := range m.state.Projects.Projects {
+						if p.ID == drillPath[0] {
+							return p.IsSelf
+						}
+					}
+				}
+			}
 		}
 	case core.VMDashboard:
 		projects := core.SelectProjects(m.state)
@@ -2720,31 +3427,71 @@ func (m *Model) isSelectedProjectSelf() bool {
 			return projects[m.mainIndex].IsSelf
 		}
 	case core.VMProcesses:
-		if m.state.Processes != nil && m.mainIndex >= 0 && m.mainIndex < len(m.state.Processes.Processes) {
-			return m.state.Processes.Processes[m.mainIndex].IsSelf
+		// Processes view uses TreeMenu
+		if selectedItem := m.processesMenu.SelectedItem(); selectedItem != nil {
+			if proc, ok := selectedItem.Data.(core.ProcessVM); ok {
+				return proc.IsSelf
+			}
 		}
 	}
 	return false
 }
 
-// showGitFileDiff shows the diff for the selected file
-func (m *Model) showGitFileDiff() tea.Cmd {
-	if m.state.Git == nil || m.mainIndex < 0 || m.mainIndex >= len(m.state.Git.Projects) {
-		return nil
-	}
-	if m.detailIndex < 0 || m.detailIndex >= len(m.gitFiles) {
+// loadGitDiffForSelection loads the diff if the selection changed to a file
+// Returns a command to load the diff, or nil if no change needed
+func (m *Model) loadGitDiffForSelection() tea.Cmd {
+	if m.gitMenu == nil || m.state.Git == nil {
 		return nil
 	}
 
-	p := m.state.Git.Projects[m.mainIndex]
-	f := m.gitFiles[m.detailIndex]
+	selectedItem := m.gitMenu.SelectedItem()
+	if selectedItem == nil {
+		// Clear diff if nothing selected
+		if m.gitLastSelectedFile != "" {
+			m.gitLastSelectedFile = ""
+			m.gitDiffContent = nil
+		}
+		return nil
+	}
 
-	// Get project path
-	cfg := config.GetGlobal()
+	// Check if it's a file
+	fileEntry, ok := selectedItem.Data.(GitFileEntry)
+	if !ok {
+		// Selected a project, not a file - clear diff
+		if m.gitLastSelectedFile != "" {
+			m.gitLastSelectedFile = ""
+			m.gitDiffContent = nil
+		}
+		return nil
+	}
+
+	// Same file? No need to reload
+	if selectedItem.ID == m.gitLastSelectedFile {
+		return nil
+	}
+
+	// New file selected - load diff
+	m.gitLastSelectedFile = selectedItem.ID
+	m.gitDiffLoading = true
+	m.detailScrollOffset = 0
+
+	// Get project from drill-down path
+	drillPath := m.gitMenu.DrillDownPath()
+	if len(drillPath) == 0 {
+		return nil
+	}
+	projectName := drillPath[0]
+
 	var projectPath string
-	for _, proj := range cfg.Projects {
-		if proj.ID == p.ProjectID {
-			projectPath = proj.Path
+	cfg := config.GetGlobal()
+	for _, p := range m.state.Git.Projects {
+		if p.ProjectName == projectName {
+			for _, proj := range cfg.Projects {
+				if proj.ID == p.ProjectID {
+					projectPath = proj.Path
+					break
+				}
+			}
 			break
 		}
 	}
@@ -2752,7 +3499,7 @@ func (m *Model) showGitFileDiff() tea.Cmd {
 		return nil
 	}
 
-	// Get diff using git command
+	f := fileEntry
 	return func() tea.Msg {
 		var cmd *exec.Cmd
 		if f.Status == "staged" {
@@ -2825,7 +3572,11 @@ type terminalRefreshMsg struct{}
 
 // scheduleTerminalRefresh schedules a terminal output refresh (30ms for smooth display)
 func (m *Model) scheduleTerminalRefresh() tea.Cmd {
-	if !m.terminalMode {
+	// Continue refreshing as long as there's an active running terminal
+	if m.claudeActiveSession == "" || m.terminalManager == nil {
+		return nil
+	}
+	if t := m.terminalManager.Get(m.claudeActiveSession); t == nil || !t.IsRunning() {
 		return nil
 	}
 	return tea.Tick(time.Millisecond*30, func(t time.Time) tea.Msg {
@@ -3088,9 +3839,6 @@ func (m *Model) ExportTUIState() *daemon.TUIState {
 		LogScrollOffset: m.logScrollOffset,
 		LogAutoScroll:   m.logAutoScroll,
 
-		// Git view state
-		GitShowDiff: m.gitShowDiff,
-
 		// Build profile
 		BuildProfile: m.currentBuildProfile,
 	}
@@ -3136,9 +3884,6 @@ func (m *Model) ImportTUIState(state *daemon.TUIState) {
 	m.logSearchText = state.LogSearchText
 	m.logScrollOffset = state.LogScrollOffset
 	m.logAutoScroll = state.LogAutoScroll
-
-	// Restore Git view state
-	m.gitShowDiff = state.GitShowDiff
 
 	// Restore Build profile
 	if state.BuildProfile != "" {
