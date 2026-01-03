@@ -195,6 +195,11 @@ type Model struct {
 	databaseTreeMenu      *TreeMenu // Tree menu for database/sessions panel
 	databaseFilterProject string    // Filter by project ID
 
+	// Codex view state
+	codexActiveSession string    // Active Codex session ID
+	codexTreeMenu      *TreeMenu // Tree menu for sessions panel
+	codexFilterProject string    // Filter by project ID
+
 	// Components
 	help     help.Model
 	spinner  spinner.Model
@@ -1919,8 +1924,8 @@ func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {
 				}
 			}
 			return nil
-		case "s":
-			// Stop tmux session (when focus is on sessions panel and session has terminal)
+		case "d":
+			// Disconnect tmux session (when focus is on sessions panel and session has terminal)
 			if m.claudeMode == ClaudeModeChat && m.focusArea == FocusDetail {
 				_, sessionID, isProject, hasTerminal := m.getSelectedTreeItem()
 				if !isProject && sessionID != "" && hasTerminal {
