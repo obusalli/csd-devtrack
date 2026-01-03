@@ -235,48 +235,74 @@ func (m *Model) renderCockpitHeader(width int) string {
 
 // renderWidgetGrid renders all widgets on a grid
 func (m *Model) renderWidgetGrid(layouts []WidgetLayout, profile *config.WidgetProfile, width, height int) string {
-	// Create a blank canvas
-	canvas := make([][]rune, height)
-	for i := range canvas {
-		canvas[i] = make([]rune, width)
-		for j := range canvas[i] {
-			canvas[i][j] = ' '
-		}
+	if len(layouts) == 0 {
+		return ""
 	}
 
-	// Render each widget and place on canvas
+	gap := GapHorizontal
+	rows := profile.Rows
+	if rows < 1 {
+		rows = 1
+	}
+
+	// Group layouts by row
+	rowLayouts := make([][]WidgetLayout, rows)
+	layoutIndex := make([][]int, rows) // Track original index for focus check
 	for i, layout := range layouts {
-		focused := m.focusArea == FocusMain && m.cockpitFocusedIndex == i
-		content := m.renderWidgetContent(layout, focused)
+		row := layout.Widget.Row
+		if row >= rows {
+			row = rows - 1
+		}
+		rowLayouts[row] = append(rowLayouts[row], layout)
+		layoutIndex[row] = append(layoutIndex[row], i)
+	}
 
-		// Place content on canvas (line by line)
-		lines := strings.Split(content, "\n")
-		for row, line := range lines {
-			if layout.Y+row >= height {
-				break
+	// Render each row
+	var rowStrings []string
+	for rowNum := 0; rowNum < rows; rowNum++ {
+		if len(rowLayouts[rowNum]) == 0 {
+			// Empty row - add spacer
+			rowStrings = append(rowStrings, "")
+			continue
+		}
+
+		// Sort widgets in this row by column
+		rowWidgets := rowLayouts[rowNum]
+		indices := layoutIndex[rowNum]
+
+		// Render each widget in the row
+		var widgetStrings []string
+		for i, layout := range rowWidgets {
+			originalIndex := indices[i]
+			focused := m.focusArea == FocusMain && m.cockpitFocusedIndex == originalIndex
+			content := m.renderWidgetContent(layout, focused)
+			widgetStrings = append(widgetStrings, content)
+		}
+
+		// Join widgets horizontally with gap using lipgloss (handles multi-line properly)
+		gapStr := strings.Repeat(" ", gap)
+		var rowContent string
+		for i, ws := range widgetStrings {
+			if i == 0 {
+				rowContent = ws
+			} else {
+				rowContent = lipgloss.JoinHorizontal(lipgloss.Top, rowContent, gapStr, ws)
 			}
-			runes := []rune(line)
-			for col, r := range runes {
-				if layout.X+col >= width {
-					break
-				}
-				if layout.Y+row >= 0 && layout.X+col >= 0 {
-					canvas[layout.Y+row][layout.X+col] = r
-				}
-			}
+		}
+		rowStrings = append(rowStrings, rowContent)
+	}
+
+	// Join rows vertically with gap
+	gapLine := ""
+	var result []string
+	for i, row := range rowStrings {
+		result = append(result, row)
+		if i < len(rowStrings)-1 {
+			result = append(result, gapLine)
 		}
 	}
 
-	// Convert canvas to string
-	var sb strings.Builder
-	for i, row := range canvas {
-		sb.WriteString(string(row))
-		if i < len(canvas)-1 {
-			sb.WriteRune('\n')
-		}
-	}
-
-	return sb.String()
+	return strings.Join(result, "\n")
 }
 
 // renderWidgetContent renders a single widget's content
@@ -296,11 +322,13 @@ func (m *Model) renderWidgetContent(layout WidgetLayout, focused bool) string {
 	if focused {
 		borderStyle = FocusedBorderStyle.
 			Width(w - 2).
-			Height(h - 2)
+			Height(h - 2).
+			MaxWidth(w)
 	} else {
 		borderStyle = UnfocusedBorderStyle.
 			Width(w - 2).
-			Height(h - 2)
+			Height(h - 2).
+			MaxWidth(w)
 	}
 
 	// Render content based on type
@@ -335,15 +363,19 @@ func (m *Model) renderWidgetContent(layout WidgetLayout, focused bool) string {
 			Render(fmt.Sprintf("Unknown widget type: %s", widget.Type))
 	}
 
-	// Title style
+	// Title style - constrain to content width
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(ColorSecondary)
+		Foreground(ColorSecondary).
+		MaxWidth(contentWidth)
+
+	// Content style - constrain each line to content width
+	contentStyle := lipgloss.NewStyle().MaxWidth(contentWidth)
 
 	// Combine title and content
 	fullContent := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("≡ "+strings.ToUpper(title)),
-		content,
+		contentStyle.Render(content),
 	)
 
 	return borderStyle.Render(fullContent)
@@ -930,27 +962,69 @@ func abs(x int) int {
 	return x
 }
 
-// navigateCockpitNext cycles to the next widget (for Tab navigation)
+// navigateCockpitNext cycles to the next widget in visual order (left to right, top to bottom)
 func (m *Model) navigateCockpitNext() {
 	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 	if profile == nil || len(profile.Widgets) == 0 {
 		return
 	}
 
-	m.cockpitFocusedIndex = (m.cockpitFocusedIndex + 1) % len(profile.Widgets)
+	// Build sorted index list: by row first, then by column
+	type widgetPos struct {
+		index int
+		row   int
+		col   int
+	}
+	positions := make([]widgetPos, len(profile.Widgets))
+	for i, w := range profile.Widgets {
+		positions[i] = widgetPos{index: i, row: w.Row, col: w.Col}
+	}
+
+	// Sort by row, then by column
+	for i := 0; i < len(positions)-1; i++ {
+		for j := i + 1; j < len(positions); j++ {
+			if positions[j].row < positions[i].row ||
+				(positions[j].row == positions[i].row && positions[j].col < positions[i].col) {
+				positions[i], positions[j] = positions[j], positions[i]
+			}
+		}
+	}
+
+	// Find current position in sorted order
+	currentSortedIdx := 0
+	for i, pos := range positions {
+		if pos.index == m.cockpitFocusedIndex {
+			currentSortedIdx = i
+			break
+		}
+	}
+
+	// Move to next in sorted order (wrap around)
+	nextSortedIdx := (currentSortedIdx + 1) % len(positions)
+	m.cockpitFocusedIndex = positions[nextSortedIdx].index
 }
 
-// navigateCockpitPrev cycles to the previous widget (for Shift+Tab navigation)
-func (m *Model) navigateCockpitPrev() {
+// getTopLeftWidgetIndex returns the index of the widget at the top-left position
+func (m *Model) getTopLeftWidgetIndex() int {
 	profile := m.getCockpitProfile(m.getActiveCockpitProfile())
 	if profile == nil || len(profile.Widgets) == 0 {
-		return
+		return 0
 	}
 
-	m.cockpitFocusedIndex--
-	if m.cockpitFocusedIndex < 0 {
-		m.cockpitFocusedIndex = len(profile.Widgets) - 1
+	// Find the widget with the smallest row, then smallest column
+	topLeftIdx := 0
+	topLeftRow := profile.Widgets[0].Row
+	topLeftCol := profile.Widgets[0].Col
+
+	for i, w := range profile.Widgets {
+		if w.Row < topLeftRow || (w.Row == topLeftRow && w.Col < topLeftCol) {
+			topLeftIdx = i
+			topLeftRow = w.Row
+			topLeftCol = w.Col
+		}
 	}
+
+	return topLeftIdx
 }
 
 // switchCockpitProfile switches to a widget profile by number key
